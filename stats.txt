@@ -1,0 +1,43 @@
+
+Clock type: CPU
+Ordered by: totaltime, desc
+
+name                                  ncall  tsub      ttot      tavg      
+..4 _UnixSelectorEventLoop._run_once  159..  3.721523  30.31476  0.000189
+..3/asyncio/events.py:87 Handle._run  159..  0.434314  23.27816  0.000145
+..thon/hsm/hsm.py:1120 HSM.__process  80000  1.437908  16.89452  0.000211
+..n/hsm/hsm.py:1166 HSM.__transition  80000  1.438165  7.376257  0.000092
+..sm/python/hsm/hsm.py:176 Model.get  480..  3.606544  6.547271  0.000014
+..mples/go_bench.py:61 run_benchmark  1      0.510207  5.376271  5.376271
+..ython/hsm/hsm.py:982 THSM.dispatch  80000  0.177377  4.866232  0.000061
+..ython/hsm/hsm.py:1196 HSM.dispatch  80000  0.558855  4.688855  0.000059
+..thon/hsm/hsm.py:1101 HSM.__enabled  80000  0.890158  3.640481  0.000046
+..python/hsm/hsm.py:1041 HSM.__enter  80000  1.038869  2.840760  0.000036
+..3/asyncio/tasks.py:402 create_task  80000  0.288087  2.672448  0.000033
+.._UnixSelectorEventLoop.create_task  80000  0.680459  2.311680  0.000029
+..7 _UnixSelectorEventLoop.call_soon  160..  0.590909  2.282360  0.000014
+..ython/hsm/hsm.py:965 Mutex.release  80000  0.287346  1.746964  0.000022
+..sm/python/hsm/hsm.py:180 <genexpr>  800..  1.276131  1.670098  0.000002
+.. _UnixSelectorEventLoop._call_soon  160..  0.737260  1.543711  0.000010
+..ectors.py:435 EpollSelector.select  160..  0.757388  1.244890  0.000008
+..b/python3.13/fnmatch.py:19 fnmatch  80000  0.372934  1.171497  0.000015
+..m/python/hsm/hsm.py:1005 Queue.pop  160..  0.683410  1.094044  0.000007
+..thon/hsm/hsm.py:1149 HSM.__execute  160..  0.600171  0.740199  0.000005
+..n/hsm/hsm.py:954 Mutex.try_acquire  80000  0.444867  0.710135  0.000009
+..m/python/hsm/hsm.py:998 Queue.push  80000  0.403993  0.672135  0.000008
+..yncio/events.py:36 Handle.__init__  160..  0.450031  0.596971  0.000004
+..py:766 _UnixSelectorEventLoop.time  160..  0.292537  0.437613  0.000003
+<frozen posixpath>:53 normcase        160..  0.288856  0.428624  0.000003
+..thon3.13/fnmatch.py:64 fnmatchcase  80000  0.188218  0.369940  0.000005
+..lib/python3.13/typing.py:2371 cast  400..  0.339873  0.339873  0.000001
+..3.13/_weakrefset.py:85 WeakSet.add  80000  0.232791  0.334627  0.000004
+..lib/python3.13/typing.py:426 inner  240..  0.298260  0.298260  0.000001
+..thon3.13/_weakrefset.py:39 _remove  80000  0.195307  0.297903  0.000004
+..2 _UnixSelectorEventLoop.get_debug  320..  0.294802  0.294802  0.000001
+..xSelectorEventLoop._process_events  160..  0.275990  0.275990  0.000002
+../asyncio/locks.py:127 Lock.release  80000  0.172013  0.243843  0.000003
+..nixSelectorEventLoop._check_closed  240..  0.223492  0.223492  0.000001
+..examples/go_bench.py:20 noBehavior  160..  0.140027  0.140027  0.000001
+..3/asyncio/locks.py:90 Lock.acquire  80000  0.082848  0.082848  0.000001
+..m/python/hsm/hsm.py:969 Mutex.wait  80000  0.075281  0.075281  0.000001
+..o/locks.py:144 Lock._wake_up_first  80000  0.071830  0.071830  0.000001
