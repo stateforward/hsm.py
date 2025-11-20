@@ -26,6 +26,7 @@ from .hsm import (
     Context,
 )
 from . import kind
+from .version import __version__
 
 __all__ = [
     "define",
@@ -54,4 +55,5 @@ __all__ = [
     "stop",
     "match",
     "Context",
+    "__version__",
 ]

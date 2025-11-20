@@ -1,17 +1,47 @@
 [project]
-name = "python"
-version = "0.1.0"
-description = "Add your description here"
+name = "stateforward.hsm"
+version = "0.1.1"
+description = "Hierarchical State Machine implementation for Python with asyncio support"
 readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.13"
-dependencies = [
-    "pytest>=8.3.5",
-    "pytest-asyncio>=0.26.0",
-    "scalene>=1.5.51",
-    "yappi>=1.6.10",
+authors = [
+    {name = "Stateforward Team"},
 ]
+keywords = ["state-machine", "hsm", "finite-state-machine", "hierarchical", "asyncio", "async"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/stateforward/hsm"
+Repository = "https://github.com/stateforward/hsm-python"
+Documentation = "https://github.com/stateforward/hsm-python"
+Issues = "https://github.com/stateforward/hsm-python/issues"
 
 [tool.pytest.ini_options]
 pythonpath = [
     "."
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hsm"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26.0",
+    "scalene>=1.5.51",
+    "yappi>=1.6.10",
 ]

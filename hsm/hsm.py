@@ -15,6 +15,7 @@ import time
 
 TElement = typing.TypeVar("TElement", bound="Element")
 TInstance = typing.TypeVar("TInstance", bound="Instance")
+TData = typing.TypeVar("TData", default=None)
 
 def traceback() -> tuple[str, int]:
     frame = sys._getframe(3)  # type: ignore
@@ -369,9 +370,9 @@ class Choice(Pseudostate):
 
 
 @dataclass
-class Event:
+class Event(typing.Generic[TData]):
     name: str = field(default_factory=str)
-    data: typing.Any = field(default=None)
+    data: typing.Optional[TData] = field(default=None)
     kind: Kinds = field(default=Kinds.Event)
     qualified_name: str = field(default_factory=str)
 
