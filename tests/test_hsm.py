@@ -6,6 +6,7 @@ import asyncio
 def test_hsm():
     sm = hsm.define(
         "root",
+        hsm.initial(hsm.target("s1")),
         hsm.state("s1"),
         hsm.state("s2"),
     )

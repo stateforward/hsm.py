@@ -1,21 +1,41 @@
-from .kind import kind, is_kind
-import enum
-import typing
-from dataclasses import dataclass, field
-import os
-from enum import IntEnum
 import asyncio
-import sys
 import collections
-from datetime import timedelta
-
-# fnmatch removed - wildcard support not needed
+import copy
+import fnmatch
+import inspect
+import os
+import sys
 import threading
-import time
+import typing
+import weakref
+from dataclasses import dataclass, field
+from datetime import timedelta
+from enum import IntEnum
+
+from .kind import is_kind, kind
 
 TElement = typing.TypeVar("TElement", bound="Element")
 TInstance = typing.TypeVar("TInstance", bound="Instance")
 TData = typing.TypeVar("TData", default=None)
+
+OperationCallback = typing.Callable[
+    ["Context", TInstance, "Event"],
+    typing.Awaitable[None] | None,
+]
+Expression = typing.Callable[
+    ["Context", TInstance, "Event"],
+    typing.Awaitable[bool] | bool,
+]
+Duration = typing.Callable[
+    ["Context", TInstance, "Event"],
+    typing.Awaitable[timedelta] | timedelta,
+]
+WhenExpression = typing.Callable[
+    ["Context", TInstance, "Event"],
+    typing.Any,
+]
+OperationImplementation = typing.Callable[..., typing.Any]
+
 
 def traceback() -> tuple[str, int]:
     frame = sys._getframe(3)  # type: ignore
@@ -26,124 +46,188 @@ def join(path: str, *paths: str) -> str:
     return os.path.normpath(os.path.join(path, *paths))
 
 
-def match(string: str, pattern: str) -> bool:
-    """Exact string matching - wildcards not supported"""
-    return string == pattern
+def _future_done() -> asyncio.Future[None]:
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    future.set_result(None)
+    return future
+
+
+async def _maybe_await(value: typing.Any) -> typing.Any:
+    if inspect.isawaitable(value):
+        return await typing.cast(typing.Awaitable[typing.Any], value)
+    return value
+
+
+async def _normalize_waitable(value: typing.Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, asyncio.Event):
+        await value.wait()
+        return
+    if inspect.isawaitable(value):
+        await typing.cast(typing.Awaitable[typing.Any], value)
+        return
+    wait = getattr(value, "wait", None)
+    if callable(wait):
+        result = wait()
+        if inspect.isawaitable(result):
+            await typing.cast(typing.Awaitable[typing.Any], result)
+            return
+    raise TypeError(f"unsupported When() result {type(value)!r}")
+
+
+def _next_id() -> str:
+    _next_id.counter += 1
+    return f"hsm-{_next_id.counter}"
+
+
+_next_id.counter = 0  # type: ignore[attr-defined]
+
+
+def Match(value: str, *patterns: str) -> bool:
+    if not patterns:
+        return False
+    return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns)
+
+
+def match(value: str, pattern: str) -> bool:
+    return Match(value, pattern)
 
 
 class ValidationError(RuntimeError):
     pass
 
 
-Operation = typing.Callable[["Context", TInstance, "Event"], typing.Awaitable[None]]
-Expression = typing.Callable[["Context", TInstance, "Event"], typing.Awaitable[bool]]
-Duration = typing.Callable[["Context", TInstance, "Event"], typing.Awaitable[timedelta]]
-
-
-class Counter:
-    def __init__(self, value: int = 0):
-        self.value = value
-
-    def next(self) -> int:
-        value = self.value
-        self.value += 1
-        return value
-
-
-id = Counter()
-
-
 class Context:
-    """Context for cancellation and lifecycle management, matching JavaScript/Go API"""
-
     def __init__(self):
         self._done = False
         self._listeners: list[typing.Callable[[], None]] = []
         self._done_future: asyncio.Future[None] | None = None
+        self._machines: weakref.WeakSet["HSM[typing.Any]"] = weakref.WeakSet()
 
     @property
     def done(self) -> bool:
-        """Check if the context is cancelled"""
         return self._done
 
     def is_done(self) -> bool:
-        """Check if the context is cancelled (method form)"""
         return self._done
 
     def cancel(self) -> None:
-        """Cancel the context and notify listeners"""
         if self._done:
             return
         self._done = True
-        # Notify all listeners
-        for listener in self._listeners:
+        for listener in list(self._listeners):
             try:
                 listener()
             except Exception:
-                pass  # Ignore listener errors
+                pass
         self._listeners.clear()
-        # Set the done future if it exists
-        if self._done_future and not self._done_future.done():
+        if self._done_future is not None and not self._done_future.done():
             self._done_future.set_result(None)
 
     def add_listener(self, event: str, callback: typing.Callable[[], None]) -> None:
-        """Add a done event listener (only 'done' event supported)"""
-        if event == "done":
-            if self._done:
-                # Already done, call immediately
-                try:
-                    callback()
-                except Exception:
-                    pass
-            else:
-                self._listeners.append(callback)
+        if event != "done":
+            return
+        if self._done:
+            try:
+                callback()
+            except Exception:
+                pass
+            return
+        self._listeners.append(callback)
 
     def remove_listener(self, event: str, callback: typing.Callable[[], None]) -> None:
-        """Remove a done event listener"""
         if event == "done" and callback in self._listeners:
             self._listeners.remove(callback)
 
     async def wait_done(self) -> None:
-        """Wait for the context to be cancelled (async)"""
         if self._done:
             return
         if self._done_future is None:
-            self._done_future = asyncio.Future()
+            self._done_future = asyncio.get_running_loop().create_future()
         await self._done_future
+
+    def register(self, machine: "HSM[typing.Any]") -> None:
+        self._machines.add(machine)
+
+    def unregister(self, machine: "HSM[typing.Any]") -> None:
+        try:
+            self._machines.remove(machine)
+        except KeyError:
+            pass
+
+    def machines(self) -> list["HSM[typing.Any]"]:
+        return list(self._machines)
 
 
 class Kinds(IntEnum):
-    Null = kind(id.next())
-    Element = kind(id.next())
-    Partial = kind(id.next())
-    Namespace = kind(id.next())
-    NamedElement = kind(id.next())
-    Vertex = kind(id.next())
-    State = kind(id.next(), Vertex, NamedElement)
-    FinalState = kind(id.next(), State)
-    Transition = kind(id.next(), NamedElement)
-    Pseudostate = kind(id.next(), Vertex)
-    Initial = kind(id.next(), Pseudostate)
-    Choice = kind(id.next(), Pseudostate)
-    External = kind(id.next())
-    Self = kind(id.next())
-    Internal = kind(id.next())
-    Local = kind(id.next())
-    Behavior = kind(id.next())
-    StateMachine = kind(id.next())
-    Concurrent = kind(id.next())
-    Sequential = kind(id.next())
-    Constraint = kind(id.next())
-    Event = kind(id.next())
-    CompletionEvent = kind(id.next(), Event)
-    ErrorEvent = kind(id.next(), CompletionEvent)
-    TimeEvent = kind(id.next(), Event)
+    Null = kind(1)
+    Element = kind(2)
+    Partial = kind(3)
+    Namespace = kind(4, Element)
+    NamedElement = kind(5, Element)
+    Vertex = kind(6, Element)
+    State = kind(7, Vertex, NamedElement, Namespace)
+    FinalState = kind(8, State)
+    Transition = kind(9, NamedElement)
+    Pseudostate = kind(10, Vertex)
+    Initial = kind(11, Pseudostate)
+    Choice = kind(12, Pseudostate)
+    ShallowHistory = kind(13, Pseudostate)
+    DeepHistory = kind(14, Pseudostate)
+    External = kind(15, Transition)
+    Self = kind(16, Transition)
+    Internal = kind(17, Transition)
+    Local = kind(18, Transition)
+    Behavior = kind(19, NamedElement)
+    StateMachine = kind(20, Behavior, Namespace)
+    Concurrent = kind(21, Behavior)
+    Sequential = kind(22, Behavior)
+    Constraint = kind(23, NamedElement)
+    Event = kind(24, Element)
+    CompletionEvent = kind(25, Event)
+    ErrorEvent = kind(26, CompletionEvent)
+    TimeEvent = kind(27, Event)
+    ChangeEvent = kind(28, Event)
+    CallEvent = kind(29, Event)
+    Attribute = kind(30, NamedElement)
+    Operation = kind(31, NamedElement)
+
+
+NullKind = Kinds.Null
+ElementKind = Kinds.Element
+NamespaceKind = Kinds.Namespace
+VertexKind = Kinds.Vertex
+ConstraintKind = Kinds.Constraint
+BehaviorKind = Kinds.Behavior
+ConcurrentKind = Kinds.Concurrent
+StateMachineKind = Kinds.StateMachine
+StateKind = Kinds.State
+TransitionKind = Kinds.Transition
+InternalKind = Kinds.Internal
+ExternalKind = Kinds.External
+LocalKind = Kinds.Local
+SelfKind = Kinds.Self
+EventKind = Kinds.Event
+TimeEventKind = Kinds.TimeEvent
+CompletionEventKind = Kinds.CompletionEvent
+ChangeEventKind = Kinds.ChangeEvent
+CallEventKind = Kinds.CallEvent
+ErrorEventKind = Kinds.ErrorEvent
+PseudostateKind = Kinds.Pseudostate
+InitialKind = Kinds.Initial
+FinalStateKind = Kinds.FinalState
+ChoiceKind = Kinds.Choice
+ShallowHistoryKind = Kinds.ShallowHistory
+DeepHistoryKind = Kinds.DeepHistory
+AttributeKind = Kinds.Attribute
+OperationKind = Kinds.Operation
 
 
 @dataclass
 class Element:
-    kind: Kinds = Kinds.Element
-    id: typing.Optional[str] = None
+    kind: int = Kinds.Element
+    id: str | None = None
     owned_elements: list["NamedElement"] = field(default_factory=list)
 
     def owner(self) -> str:
@@ -152,8 +236,22 @@ class Element:
 
 @dataclass
 class Namespace(Element):
-    kind: Kinds = Kinds.Namespace
+    kind: int = Kinds.Namespace
     members: dict[str, typing.Union["Element", "Event"]] = field(default_factory=dict)
+
+
+@dataclass
+class NamedElement(Element):
+    kind: int = Kinds.NamedElement
+    qualified_name: str = field(default_factory=str)
+
+    def owner(self) -> str:
+        if self.qualified_name in ("", "/"):
+            return ""
+        return os.path.dirname(self.qualified_name)
+
+    def name(self) -> str:
+        return os.path.basename(self.qualified_name)
 
 
 def find(
@@ -161,22 +259,8 @@ def find(
 ) -> typing.Optional[TElement]:
     for element in reversed(stack):
         if isinstance(element, kinds):
-            return element
+            return typing.cast(TElement, element)
     return None
-
-
-@dataclass
-class NamedElement(Element):
-    kind: Kinds = Kinds.NamedElement
-    qualified_name: str = field(default_factory=str)
-
-    def owner(self) -> str:
-        if self.qualified_name == "/":
-            return super().owner()
-        return os.path.dirname(self.qualified_name)
-
-    def name(self) -> str:
-        return os.path.basename(self.qualified_name)
 
 
 def apply(
@@ -185,48 +269,48 @@ def apply(
     stack: list["NamedElement"],
     elements: list["NamedElement"],
 ) -> "NamedElement":
-    stack = [*stack, element]
-    for element in elements:
-        if isinstance(element, PartialElement):
-            element.apply(model, stack)
+    scoped_stack = [*stack, element]
+    for partial in elements:
+        if isinstance(partial, PartialElement):
+            partial.apply(model, scoped_stack)
     return element
 
 
 @dataclass
 class PartialElement(NamedElement):
-    kind: Kinds = Kinds.Partial
+    kind: int = Kinds.Partial
     traceback: tuple[str, int] = field(default_factory=traceback)
 
     def apply(
         self, model: "Model", stack: list["NamedElement"]
     ) -> typing.Optional["NamedElement"]:
-        pass
+        return None
 
 
 async def noop_operation(ctx: Context, instance: Element, event: "Event") -> None:
-    pass
+    return None
 
 
 @dataclass
 class Behavior(typing.Generic[TInstance], NamedElement, Namespace):
-    kind: Kinds = Kinds.Behavior
-    operation: Operation[TInstance] = field(default=noop_operation)
+    kind: int = Kinds.Behavior
+    operation: OperationCallback[TInstance] = field(default=noop_operation)
 
 
 @dataclass
 class StateMachine(Behavior[TInstance]):
-    kind: Kinds = Kinds.StateMachine
+    kind: int = Kinds.StateMachine
 
 
 @dataclass
 class Vertex(NamedElement):
-    kind: Kinds = Kinds.Vertex
+    kind: int = Kinds.Vertex
     transitions: list[str] = field(default_factory=list)
 
 
 @dataclass
 class State(Vertex, Namespace):
-    kind: Kinds = Kinds.State
+    kind: int = Kinds.State
     initial: str = field(default_factory=str)
     entry: list[str] = field(default_factory=list)
     exit: list[str] = field(default_factory=list)
@@ -235,11 +319,28 @@ class State(Vertex, Namespace):
 
 
 @dataclass
+class AttributeDef(NamedElement):
+    kind: int = Kinds.Attribute
+    declared_name: str = ""
+    default: typing.Any = None
+    implicit: bool = False
+
+
+@dataclass
+class OperationDef(NamedElement):
+    kind: int = Kinds.Operation
+    declared_name: str = ""
+    callback: OperationImplementation | None = None
+
+
+@dataclass
 class Model(State):
-    transition_map: dict[str, dict[str, list["Transition"]]] = field(
-        default_factory=dict
-    )
+    events: dict[str, "Event"] = field(default_factory=dict)
+    attributes: dict[str, AttributeDef] = field(default_factory=dict)
+    operations: dict[str, OperationDef] = field(default_factory=dict)
+    transition_map: dict[str, dict[str, list["Transition"]]] = field(default_factory=dict)
     deferred_map: dict[str, dict[str, bool]] = field(default_factory=dict)
+    pending_oncall: set[str] = field(default_factory=set)
 
     def add(self, partial: PartialElement) -> None:
         self.owned_elements.append(partial)
@@ -250,142 +351,126 @@ class Model(State):
         element = self.members.get(name)
         if element is None:
             return None
-        bases = tuple(getattr(kind, "__origin__", kind) for kind in kinds)
-        if not isinstance(element, bases):
+        bases = tuple(getattr(kind_value, "__origin__", kind_value) for kind_value in kinds)
+        if bases and not isinstance(element, bases):
             return None
         return typing.cast(TElement, element)
 
     def set(self, qualified_name: str, element: typing.Union[Element, "Event"]) -> None:
         self.members[qualified_name] = element
-
-
-# Wildcard support removed - no longer needed
-def transition_has_wildcard_event(transition: "Transition") -> bool:
-    return False
-
-
-@dataclass
-class SortTransitions(PartialElement):
-    vertex: "Vertex" = field(default_factory=Vertex)
-
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        self.vertex.transitions.sort(
-            key=lambda t: (transition := model.get(t, Transition)) is not None
-            and transition_has_wildcard_event(transition)
-        )
-
-
-@dataclass
-class PartialState(PartialElement):
-    def apply(self, model: "Model", stack: list[NamedElement]) -> "State":
-        namespace = find(stack, State)
-        if namespace is None:
-            raise RuntimeError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Namespace not found"
-            )
-        state = State(
-            qualified_name=join(namespace.qualified_name, self.qualified_name)
-        )
-        model.set(state.qualified_name, state)
-        apply(state, model, stack, self.owned_elements)
-        model.add(
-            SortTransitions(vertex=state, traceback=self.traceback),
-        )
-        return state
-
-
-@dataclass
-class FinalState(State):
-    kind: Kinds = Kinds.FinalState
-
-
-class PseudostateKind(enum.Enum):
-    Initial = Kinds.Initial
-    Choice = Kinds.Choice
-
-
-@dataclass
-class Pseudostate(Vertex):
-    kind: Kinds = Kinds.Pseudostate
-
-
-@dataclass
-class Initial(Pseudostate):
-    kind: Kinds = Kinds.Initial
-
-
-@dataclass
-class PartialInitial(PartialElement):
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> "Initial":
-        if (state := find(stack, State)) is None:
-            raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: State {self.qualified_name} not found"
-            )
-        initial = Initial(
-            qualified_name=join(state.qualified_name, self.qualified_name)
-        )
-        model.set(initial.qualified_name, initial)
-        if state.initial != "":
-            raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: State {state.qualified_name} already has an initial state {state.initial}"
-            )
-        state.initial = initial.qualified_name
-        initial_transition = transition(
-            source(initial.qualified_name), on(initial_event), *self.owned_elements
-        ).apply(model, [*stack, initial])
-        if initial_transition.guard is not None:
-            raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Initial transition {initial_transition.qualified_name} cannot have a guard"
-            )
-        if initial_transition.events[0] != initial_event.name:
-            raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Initial transition {initial_transition.qualified_name} must have a trigger {initial_event.name}"
-            )
-        if not is_ancestor(state.qualified_name, initial_transition.target):
-            raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Initial transition {initial_transition.qualified_name} must target a nested state not {initial_transition.target}"
-            )
-        if len(initial.transitions) > 1:
-            raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Initial {initial.qualified_name} cannot have multiple transitions {initial.transitions}"
-            )
-        return initial
-
-
-def initial(
-    name_or_element: typing.Union[str, NamedElement], *elements: NamedElement
-) -> PartialInitial:
-    name = ".initial"
-    owned_elements: list[NamedElement] = list(elements)
-    if isinstance(name_or_element, str):
-        name = name_or_element
-    else:
-        owned_elements.insert(0, name_or_element)
-    return PartialInitial(qualified_name=name, owned_elements=owned_elements)
-
-
-@dataclass
-class Choice(Pseudostate):
-    kind: Kinds = Kinds.Choice
+        if isinstance(element, Event):
+            self.events[qualified_name] = element
+        elif isinstance(element, AttributeDef):
+            self.attributes[element.declared_name or element.name()] = element
+        elif isinstance(element, OperationDef):
+            self.operations[element.declared_name or element.name()] = element
 
 
 @dataclass
 class Event(typing.Generic[TData]):
     name: str = field(default_factory=str)
     data: typing.Optional[TData] = field(default=None)
-    kind: Kinds = field(default=Kinds.Event)
+    kind: int = Kinds.Event
     qualified_name: str = field(default_factory=str)
+    schema: typing.Any = None
 
-    def __post_init__(self):
-        if self.qualified_name == "":
+    def __post_init__(self) -> None:
+        if not self.qualified_name:
             self.qualified_name = self.name
 
+    @property
+    def Name(self) -> str:
+        return self.name
 
-class CompletionEvent(Event):
-    kind: Kinds = Kinds.CompletionEvent
+    @property
+    def Data(self) -> typing.Optional[TData]:
+        return self.data
+
+    @property
+    def Kind(self) -> int:
+        return self.kind
+
+    @property
+    def QualifiedName(self) -> str:
+        return self.qualified_name
+
+    @property
+    def Schema(self) -> typing.Any:
+        return self.schema
 
 
-initial_event = Event(name="hsm_initial")
+class CompletionEvent(Event[typing.Any]):
+    def __init__(self, name: str = "", data: typing.Any = None):
+        super().__init__(name=name, data=data, kind=Kinds.CompletionEvent)
+
+
+@dataclass
+class CallData:
+    name: str
+    args: tuple[typing.Any, ...]
+
+
+@dataclass
+class AttributeChange:
+    name: str
+    value: typing.Any
+    old_value: typing.Any
+
+
+@dataclass
+class EventSnapshot:
+    Name: str
+    Kind: int
+    Target: str
+    Guard: bool
+    Schema: typing.Any
+
+
+@dataclass
+class Snapshot:
+    ID: str = ""
+    QualifiedName: str = ""
+    State: str = ""
+    Attributes: dict[str, typing.Any] | None = None
+    QueueLen: int = 0
+    Events: list[EventSnapshot] = field(default_factory=list)
+
+
+InitialEvent = Event(name="hsm_initial", kind=Kinds.Event)
+ErrorEvent = Event(name="hsm_error", kind=Kinds.ErrorEvent)
+AnyEvent = Event(name="*", kind=Kinds.Event)
+FinalEvent = Event(name="hsm_final", kind=Kinds.CompletionEvent)
+InfiniteDuration = timedelta.max
+
+
+@dataclass
+class Pseudostate(Vertex):
+    kind: int = Kinds.Pseudostate
+
+
+@dataclass
+class Initial(Pseudostate):
+    kind: int = Kinds.Initial
+
+
+@dataclass
+class Choice(Pseudostate):
+    kind: int = Kinds.Choice
+
+
+@dataclass
+class ShallowHistoryVertex(Pseudostate):
+    kind: int = Kinds.ShallowHistory
+
+
+@dataclass
+class DeepHistoryVertex(Pseudostate):
+    kind: int = Kinds.DeepHistory
+
+
+@dataclass
+class FinalState(State):
+    kind: int = Kinds.FinalState
 
 
 @dataclass
@@ -396,214 +481,323 @@ class TransitionPaths:
 
 @dataclass
 class Transition(NamedElement):
-    kind: Kinds = Kinds.Transition
+    kind: int = Kinds.Transition
     source: str = field(default_factory=str)
     target: str = field(default_factory=str)
-    guard: typing.Optional[str] = field(default=None)
+    guard: str | None = None
     effect: list[str] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
     paths: dict[str, TransitionPaths] = field(default_factory=dict)
 
 
-def least_common_ancestor(source: str, target: str) -> str:
-    if source == target:
-        return os.path.dirname(source)
-    if source == "":
-        return target
-    if target == "":
-        return source
-    if os.path.dirname(source) == os.path.dirname(target):
-        return os.path.dirname(source)
-    if is_ancestor(source, target):
-        return source
-    if is_ancestor(target, source):
-        return target
-    return least_common_ancestor(os.path.dirname(source), os.path.dirname(target))
+BehaviorNode = Behavior
+VertexNode = Vertex
+StateNode = State
+InitialNode = Initial
+ChoiceNode = Choice
+PseudostateNode = Pseudostate
+ShallowHistoryNode = ShallowHistoryVertex
+DeepHistoryNode = DeepHistoryVertex
+FinalStateNode = FinalState
+TransitionNode = Transition
 
 
-def is_ancestor(source: str, target: str) -> bool:
-    """Check if target is a descendant of source (i.e., source is an ancestor of target)"""
-    source_norm = os.path.normpath(source)
-    target_norm = os.path.normpath(target)
-    if source_norm == target_norm or source_norm == "." or target_norm == ".":
-        return False
-    if source_norm == "/":
-        return True
-    parent = os.path.dirname(target_norm)
-    while parent != "/":
-        if parent == source_norm:
-            return True
-        parent = os.path.dirname(parent)
-    return False
+def transition_has_wildcard_event(transition: Transition) -> bool:
+    return any(event_name == AnyEvent.qualified_name for event_name in transition.events)
+
+
+@dataclass
+class SortTransitions(PartialElement):
+    vertex: VertexNode = field(default_factory=VertexNode)
+
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        self.vertex.transitions.sort(
+            key=lambda name: (
+                transition := model.get(name, TransitionNode)
+            ) is not None and not transition_has_wildcard_event(transition)
+        )
+
+
+@dataclass
+class PartialState(PartialElement):
+    def apply(self, model: Model, stack: list[NamedElement]) -> StateNode:
+        namespace = find(stack, StateNode)
+        if namespace is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: state must be called within Define() or State()"
+            )
+        state = StateNode(qualified_name=join(namespace.qualified_name, self.qualified_name))
+        model.set(state.qualified_name, state)
+        apply(state, model, stack, self.owned_elements)
+        model.add(SortTransitions(vertex=state, traceback=self.traceback))
+        return state
+
+
+@dataclass
+class PartialInitial(PartialElement):
+    def apply(self, model: Model, stack: list[NamedElement]) -> InitialNode:
+        state = find(stack, StateNode)
+        if state is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: initial must be called within a State"
+            )
+        initial = InitialNode(qualified_name=join(state.qualified_name, self.qualified_name))
+        model.set(initial.qualified_name, initial)
+        if state.initial:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: State {state.qualified_name} already has an initial state {state.initial}"
+            )
+        state.initial = initial.qualified_name
+        initial_transition = TransitionNode(
+            source=initial.qualified_name,
+            qualified_name=join(initial.qualified_name, "initial"),
+        )
+        model.set(initial_transition.qualified_name, initial_transition)
+        scoped_stack = [*stack, initial, initial_transition]
+        initial_transition.events.append(InitialEvent.qualified_name)
+        model.set(InitialEvent.qualified_name, InitialEvent)
+        for partial in self.owned_elements:
+            if isinstance(partial, PartialElement):
+                partial.apply(model, scoped_stack)
+        if initial_transition.guard is not None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: Initial transition {initial_transition.qualified_name} cannot have a guard"
+            )
+        if not initial_transition.target:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: initial state is required for state machine"
+            )
+        if not is_ancestor(state.qualified_name, initial_transition.target) and state.qualified_name != os.path.dirname(initial_transition.target):
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: Initial transition {initial_transition.qualified_name} must target a nested state not {initial_transition.target}"
+            )
+        initial.transitions.append(initial_transition.qualified_name)
+        model.add(ResolvePaths(transition=initial_transition, traceback=self.traceback))
+        return initial
+
+
+@dataclass
+class PartialHistory(PartialElement):
+    history_type: typing.Type[PseudostateNode] = ShallowHistoryNode
+
+    def apply(self, model: Model, stack: list[NamedElement]) -> PseudostateNode:
+        owner_state = find(stack, StateNode)
+        if owner_state is None or owner_state is model:
+            name = self.history_type.__name__.replace("Vertex", "")
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: you must call {name}() within a nested State"
+            )
+        history = self.history_type(
+            qualified_name=join(owner_state.qualified_name, self.qualified_name)
+        )
+        model.set(history.qualified_name, history)
+        if self.owned_elements:
+            default_transition = TransitionNode(
+                source=history.qualified_name,
+                qualified_name=join(history.qualified_name, "default"),
+            )
+            model.set(default_transition.qualified_name, default_transition)
+            apply(default_transition, model, [*stack, history], self.owned_elements)
+            history.transitions.append(default_transition.qualified_name)
+            model.add(ResolvePaths(transition=default_transition, traceback=self.traceback))
+        return history
 
 
 @dataclass
 class ResolvePaths(PartialElement):
-    transition: "Transition" = field(default_factory=Transition)
+    transition: TransitionNode = field(default_factory=TransitionNode)
 
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        if self.transition.kind == Kinds.Internal:
+            for name in model.members:
+                if name.startswith(self.transition.source):
+                    self.transition.paths[name] = TransitionPaths(enter=[], exit=[])
+            return
         enter: list[str] = []
         entering = self.transition.target
-        lca = least_common_ancestor(self.transition.source, self.transition.target)
-        while entering != lca and entering != "/" and entering != "":
+        lca = LCA(self.transition.source, self.transition.target)
+        while entering not in ("", "/", lca):
             enter.insert(0, entering)
             entering = os.path.dirname(entering)
-        if is_kind(self.transition.kind, Kinds.Self):
+        if self.transition.kind == Kinds.Self:
             enter.append(self.transition.source)
-        source_element = model.get(self.transition.source, Vertex)
-        if isinstance(source_element, Initial):
-            self.transition.paths[os.path.dirname(self.transition.source)] = (
-                TransitionPaths(enter=enter, exit=[])
-            )
+        source_element = model.get(self.transition.source, VertexNode)
+        if isinstance(source_element, InitialNode):
+            self.transition.paths[os.path.dirname(self.transition.source)] = TransitionPaths(enter=enter, exit=[])
             return
-        if self.transition.source == "/" and self.transition.target != "":
+        if self.transition.source == "/" and self.transition.target:
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: Top level transitions must have a source and target, or no source and target"
             )
-        if (
-            is_kind(self.transition.kind, Kinds.Internal)
-            and len(self.transition.effect) == 0
-        ):
+        if self.transition.kind == Kinds.Internal and not self.transition.effect:
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: Internal transitions require an effect"
             )
         for qualified_name, element in model.members.items():
-            if qualified_name.startswith(self.transition.source) and isinstance(
-                element, (StateMachine, Vertex)
-            ):
-                exit: list[str] = []
-                if self.transition.kind != Kinds.Internal:
-                    exiting = element.qualified_name
-                    while exiting != lca and exiting != "":
-                        exit.append(exiting)
-                        if exiting == "/":
-                            break
-                        exiting = os.path.dirname(exiting)
-                self.transition.paths[element.qualified_name] = TransitionPaths(
-                    enter=enter, exit=exit
-                )
+            if not isinstance(element, (StateMachine, VertexNode)):
+                continue
+            if not qualified_name.startswith(self.transition.source):
+                continue
+            exit_path: list[str] = []
+            if self.transition.kind != Kinds.Internal:
+                exiting = qualified_name
+                while exiting not in ("", lca):
+                    exit_path.append(exiting)
+                    exiting = os.path.dirname(exiting)
+            self.transition.paths[qualified_name] = TransitionPaths(enter=enter, exit=exit_path)
+
+
+def LCA(a: str, b: str) -> str:
+    if a == b:
+        return os.path.dirname(a)
+    if not a:
+        return b
+    if not b:
+        return a
+    if os.path.dirname(a) == os.path.dirname(b):
+        return os.path.dirname(a)
+    if IsAncestor(a, b):
+        return a
+    if IsAncestor(b, a):
+        return b
+    return LCA(os.path.dirname(a), os.path.dirname(b))
+
+
+def least_common_ancestor(source: str, target: str) -> str:
+    return LCA(source, target)
+
+
+def IsAncestor(current: str, target: str) -> bool:
+    current_norm = os.path.normpath(current)
+    target_norm = os.path.normpath(target)
+    if current_norm in ("", ".", target_norm):
+        return False
+    if current_norm == "/":
+        return True
+    parent = os.path.dirname(target_norm)
+    while parent not in ("", ".", "/"):
+        if parent == current_norm:
+            return True
+        parent = os.path.dirname(parent)
+    return parent == current_norm
+
+
+def is_ancestor(source: str, target: str) -> bool:
+    return IsAncestor(source, target)
+
+
+def is_path_in_path(child: str, parent: str) -> bool:
+    parent_abs = os.path.abspath(parent)
+    child_abs = os.path.abspath(child)
+    return os.path.commonpath([parent_abs]) == os.path.commonpath([parent_abs, child_abs])
 
 
 @dataclass
-class PartialTransition(PartialElement):
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> Transition:
-        vertex = find(stack, Vertex)
-        if vertex is None:
-            raise SyntaxError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Vertex not found"
-            )
-        name = self.qualified_name
-        if name == "":
-            name = f"transition_{len(model.members)}"
-        transition = Transition(
-            qualified_name=join(vertex.qualified_name, name), source="."
-        )
-        model.set(transition.qualified_name, transition)
-        apply(transition, model, stack, self.owned_elements)
-        if transition.source == "." or transition.source == "":
-            transition.source = vertex.qualified_name
-        source_element = model.get(transition.source, Vertex)
-        if source_element is None:
-            raise ValidationError(
-                f'{self.traceback[0]}:{self.traceback[1]}: Source "{transition.source}" not found for transition "{transition.qualified_name}"'
-            )
-        source_element.transitions.append(transition.qualified_name)
-        if len(transition.events) == 0 and not isinstance(source_element, Pseudostate):
-            raise ValidationError(
-                f'{self.traceback[0]}:{self.traceback[1]}: Transition "{transition.qualified_name}" has no events'
-            )
-        if transition.target == transition.source:
-            transition.kind = Kinds.Self
-        elif transition.target == "":
-            transition.kind = Kinds.Internal
-        elif is_ancestor(transition.source, transition.target):
-            transition.kind = Kinds.Local
-        else:
-            transition.kind = Kinds.External
-        # resolve the paths after the model is built
-        model.add(ResolvePaths(transition=transition))
-        return transition
-
-
 class ValidateVertex(PartialElement):
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        if model.get(self.qualified_name, Vertex) is None:
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        if model.get(self.qualified_name, VertexNode) is None:
             raise ValidationError(
                 f'{self.traceback[0]}:{self.traceback[1]}: Vertex "{self.qualified_name}" not found'
             )
 
 
+@dataclass
+class PartialTransition(PartialElement):
+    def apply(self, model: Model, stack: list[NamedElement]) -> TransitionNode:
+        vertex = find(stack, VertexNode)
+        if vertex is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: transition must be called within a State() or Define()"
+            )
+        name = self.qualified_name or f"transition_{len(model.members)}"
+        transition = TransitionNode(qualified_name=join(vertex.qualified_name, name), source=".")
+        model.set(transition.qualified_name, transition)
+        apply(transition, model, stack, self.owned_elements)
+        if transition.source in ("", "."):
+            transition.source = vertex.qualified_name
+        source_element = model.get(transition.source, VertexNode)
+        if source_element is None:
+            raise ValidationError(
+                f'{self.traceback[0]}:{self.traceback[1]}: Source "{transition.source}" not found for transition "{transition.qualified_name}"'
+            )
+        source_element.transitions.append(transition.qualified_name)
+        if not transition.events and not isinstance(source_element, PseudostateNode):
+            raise ValidationError(
+                f'{self.traceback[0]}:{self.traceback[1]}: Transition "{transition.qualified_name}" has no events'
+            )
+        if transition.target == transition.source:
+            transition.kind = Kinds.Self
+        elif not transition.target:
+            transition.kind = Kinds.Internal
+        elif IsAncestor(transition.source, transition.target):
+            transition.kind = Kinds.Local
+        else:
+            transition.kind = Kinds.External
+        model.add(ResolvePaths(transition=transition, traceback=self.traceback))
+        return transition
+
+
+@dataclass
 class PartialSource(PartialElement):
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> Transition:
-        transition = find(stack, Transition)
+    def apply(self, model: Model, stack: list[NamedElement]) -> TransitionNode:
+        transition = find(stack, TransitionNode)
         if transition is None:
             raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Transition not found"
+                f"{self.traceback[0]}:{self.traceback[1]}: hsm.Source() must be called within a hsm.Transition()"
             )
-        if transition.source != "." and transition.source != "":
+        if transition.source not in ("", "."):
             raise ValidationError(
                 f'{self.traceback[0]}:{self.traceback[1]}: Transition "{transition.qualified_name}" already has a source "{transition.source}"'
             )
-        if len(self.owned_elements) > 0:
+        if self.owned_elements:
             source = self.owned_elements[0]
             if isinstance(source, PartialElement):
-                if (source := source.apply(model, stack)) is None:
+                resolved = source.apply(model, stack)
+                if resolved is None:
                     raise ValidationError(
-                        f'{self.traceback[0]}:{self.traceback[1]}: Source "{self.qualified_name}" not found for transition "{transition.qualified_name}"'
+                        f'{self.traceback[0]}:{self.traceback[1]}: missing source "{self.qualified_name}"'
                     )
+                source = resolved
             self.qualified_name = source.qualified_name
         elif not os.path.isabs(self.qualified_name):
-            if state := find(stack, State):
-                # Only join if the qualified_name is truly relative (doesn't already contain the state name)
-                if not self.qualified_name.startswith(state.qualified_name):
-                    self.qualified_name = join(
-                        state.qualified_name, self.qualified_name
-                    )
-            # validate the source after the model is built
-            model.add(
-                ValidateVertex(
-                    qualified_name=self.qualified_name, traceback=self.traceback
-                ),
-            )
+            state = find(stack, StateNode)
+            if state is not None and not self.qualified_name.startswith(state.qualified_name):
+                self.qualified_name = join(state.qualified_name, self.qualified_name)
+            model.add(ValidateVertex(qualified_name=self.qualified_name, traceback=self.traceback))
         elif not is_path_in_path(self.qualified_name, model.qualified_name):
             self.qualified_name = join(model.qualified_name, self.qualified_name[1:])
         transition.source = self.qualified_name
         return transition
 
 
+@dataclass
 class PartialTarget(PartialElement):
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> Transition:
-        transition = find(stack, Transition)
+    def apply(self, model: Model, stack: list[NamedElement]) -> TransitionNode:
+        transition = find(stack, TransitionNode)
         if transition is None:
             raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Transition not found"
+                f"{self.traceback[0]}:{self.traceback[1]}: Target() must be called within Transition()"
             )
-        if transition.target != "":
+        if transition.target:
             raise ValidationError(
                 f'{self.traceback[0]}:{self.traceback[1]}: Transition "{transition.qualified_name}" already has a target "{transition.target}"'
             )
-        if len(self.owned_elements) > 0:
+        if self.owned_elements:
             target = self.owned_elements[0]
             if isinstance(target, PartialElement):
-                if (target := target.apply(model, stack)) is None:
+                resolved = target.apply(model, stack)
+                if resolved is None:
                     raise ValidationError(
-                        f'{self.traceback[0]}:{self.traceback[1]}: Target "{self.qualified_name}" not found for transition "{transition.qualified_name}"'
+                        f'{self.traceback[0]}:{self.traceback[1]}: missing target "{self.qualified_name}"'
                     )
+                target = resolved
             self.qualified_name = target.qualified_name
         elif not os.path.isabs(self.qualified_name):
-            if state := find(stack, State):
-                # Only join if the qualified_name is truly relative (doesn't already contain the state name)
-                if not self.qualified_name.startswith(state.qualified_name):
-                    self.qualified_name = join(
-                        state.qualified_name, self.qualified_name
-                    )
-            # validate the target after the model is built
-            model.add(
-                ValidateVertex(
-                    qualified_name=self.qualified_name, traceback=self.traceback
-                ),
-            )
-        elif not is_ancestor(self.qualified_name, model.qualified_name):
+            state = find(stack, StateNode)
+            if state is not None and not self.qualified_name.startswith(state.qualified_name):
+                self.qualified_name = join(state.qualified_name, self.qualified_name)
+            model.add(ValidateVertex(qualified_name=self.qualified_name, traceback=self.traceback))
+        elif not is_path_in_path(self.qualified_name, model.qualified_name):
             self.qualified_name = join(model.qualified_name, self.qualified_name[1:])
         transition.target = self.qualified_name
         return transition
@@ -611,30 +805,30 @@ class PartialTarget(PartialElement):
 
 @dataclass
 class PartialBehaviors(typing.Generic[TInstance], PartialElement):
-    operations: list[Operation[TInstance]] = field(default_factory=list)
+    operations: list[OperationCallback[TInstance]] = field(default_factory=list)
     type: typing.Type[NamedElement] = field(default=NamedElement)
-    concurrent: bool = field(default=False)
+    concurrent: bool = False
 
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> NamedElement:
+    def apply(self, model: Model, stack: list[NamedElement]) -> NamedElement:
         element = find(stack, self.type)
         if element is None:
             raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: {self.type.__name__} not found"
+                f"{self.traceback[0]}:{self.traceback[1]}: {self.qualified_name} must be called within a {self.type.__name__}"
             )
         behaviors = getattr(element, self.qualified_name, None)
         if behaviors is None:
             raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: {self.type.__name__} {element.qualified_name} has no {self.qualified_name}"
+                f"{self.traceback[0]}:{self.traceback[1]}: {element.qualified_name} has no {self.qualified_name}"
             )
-        for operation in self.operations:
-            behavior = Behavior(
+        for callback in self.operations:
+            behavior = BehaviorNode(
                 qualified_name=join(
                     element.qualified_name,
                     self.qualified_name,
-                    operation.__name__,
+                    getattr(callback, "__name__", "anonymous"),
                     str(len(behaviors)),
                 ),
-                operation=operation,
+                operation=callback,
                 kind=Kinds.Concurrent if self.concurrent else Kinds.Sequential,
             )
             behaviors.append(behavior.qualified_name)
@@ -648,21 +842,24 @@ async def noop_expression(ctx: Context, instance: "Instance", event: Event) -> b
 
 @dataclass
 class Guard(typing.Generic[TInstance], NamedElement):
-    kind: Kinds = Kinds.Constraint
+    kind: int = Kinds.Constraint
     expression: Expression[TInstance] = field(default=noop_expression)
+
+
+GuardNode = Guard
 
 
 @dataclass
 class PartialGuard(typing.Generic[TInstance], PartialElement):
     expression: Expression[TInstance] = field(default=noop_expression)
 
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        transition = find(stack, Transition)
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        transition = find(stack, TransitionNode)
         if transition is None:
             raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Transition not found"
+                f"{self.traceback[0]}:{self.traceback[1]}: guard must be called within a Transition"
             )
-        guard = Guard(
+        guard = GuardNode(
             qualified_name=join(transition.qualified_name, self.qualified_name),
             expression=self.expression,
         )
@@ -670,353 +867,97 @@ class PartialGuard(typing.Generic[TInstance], PartialElement):
         transition.guard = guard.qualified_name
 
 
-def define(name: str, *elements: NamedElement) -> Model:
-    # Match JavaScript behavior: use absolute paths with / prefix
-    qualified_name = join("/", name)
-    model = Model(qualified_name=qualified_name)
-    model.members[qualified_name] = model
-    stack: list[NamedElement] = []
-    apply(model, model, stack, list(elements))
-    while len(model.owned_elements) > 0:
-        partial = model.owned_elements.pop()
-        if isinstance(partial, PartialElement):
-            partial.apply(model, stack)
-
-    # Build the optimized transition and deferred lookup tables
-    build_transition_table(model)
-    build_deferred_table(model)
-
-    return model
-
-
-def state(name: str, *elements: NamedElement) -> PartialState:
-    return PartialState(qualified_name=name, owned_elements=list(elements))
-
-
-def entry(*operations: Operation[TInstance]) -> PartialBehaviors[TInstance]:
-    return PartialBehaviors[TInstance](
-        operations=list(operations), type=State, qualified_name="entry"
-    )
-
-
-def exit(*operations: Operation[TInstance]) -> PartialBehaviors[TInstance]:
-    return PartialBehaviors[TInstance](
-        operations=list(operations), type=State, qualified_name="exit"
-    )
-
-
-def activity(*operations: Operation[TInstance]) -> PartialBehaviors[TInstance]:
-    return PartialBehaviors[TInstance](
-        operations=list(operations),
-        type=State,
-        concurrent=True,
-        qualified_name="activity",
-    )
-
-
-def transition(
-    name_or_element: typing.Union[str, PartialElement], *elements: NamedElement
-) -> PartialTransition:
-    name = ""
-    owned_elements: list[NamedElement] = list(elements)
-    if isinstance(name_or_element, str):
-        name = name_or_element
-    else:
-        owned_elements.insert(0, name_or_element)
-    return PartialTransition(qualified_name=name, owned_elements=owned_elements)
-
-
-def is_path_in_path(child: str, parent: str) -> bool:
-    parent = os.path.abspath(parent)
-    child = os.path.abspath(child)
-    return os.path.commonpath([parent]) == os.path.commonpath([parent, child])
-
-
-def source(name_or_element: typing.Union[str, NamedElement]) -> PartialSource:
-    name = ""
-    owned_elements: list[NamedElement] = []
-    if isinstance(name_or_element, str):
-        name = name_or_element
-    else:
-        owned_elements.append(name_or_element)
-    return PartialSource(qualified_name=name, owned_elements=owned_elements)
-
-
-async def noop_duration(ctx: Context, instance: "Instance", event: Event) -> timedelta:
-    return timedelta(seconds=0)
-
-
-@dataclass
-class AfterBehavior(typing.Generic[TInstance], PartialElement):
-    event: Event = field(default_factory=Event)
-    duration: Duration[TInstance] = field(default=noop_duration)
-    transition: Transition = field(default_factory=Transition)
-
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        source = model.get(self.transition.source, State)
-        if source is None:
-            raise ValidationError(
-                f'{self.traceback[0]}:{self.traceback[1]}: Source "{self.transition.source}" not found for transition "{self.transition.qualified_name}"'
-            )
-        duration = self.duration
-
-        async def operation(ctx: Context, instance: TInstance, event: Event) -> None:
-            try:
-                delta = await duration(ctx, instance, event)
-                if delta.total_seconds() > 0:
-                    await asyncio.sleep(delta.total_seconds())
-                    if not ctx.is_done():
-                        instance.dispatch(self.event)
-            except asyncio.CancelledError:
-                pass
-
-        activity = Behavior(
-            qualified_name=join(
-                source.qualified_name, self.event.name, str(len(model.members))
-            ),
-            kind=Kinds.Concurrent,
-            operation=operation,
-        )
-        source.activity.append(activity.qualified_name)
-        model.members[activity.qualified_name] = activity
-
-
-@dataclass
-class PartialAfter(typing.Generic[TInstance], PartialElement):
-    duration: Duration[TInstance] = field(default=noop_duration)
-
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        transition = find(stack, Transition)
-        if transition is None:
-            raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Transition not found"
-            )
-        qualified_name = join(
-            transition.qualified_name, self.duration.__name__, str(len(model.members))
-        )
-        event = Event(
-            name=qualified_name, qualified_name=qualified_name, kind=Kinds.TimeEvent
-        )
-        transition.events.append(event.qualified_name)
-        model.set(event.qualified_name, event)
-        model.add(
-            AfterBehavior(event=event, transition=transition, duration=self.duration),
-        )
-
-
-def after(duration: Duration[TInstance]) -> PartialAfter[TInstance]:
-    return PartialAfter[TInstance](duration=duration)
-
-
-@dataclass
-class EveryBehavior(typing.Generic[TInstance], PartialElement):
-    event: Event = field(default_factory=Event)
-    duration: Duration[TInstance] = field(default=noop_duration)
-    transition: Transition = field(default_factory=Transition)
-
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        source = model.get(self.transition.source, State)
-        if source is None:
-            raise ValidationError(
-                f'{self.traceback[0]}:{self.traceback[1]}: Source "{self.transition.source}" not found for transition "{self.transition.qualified_name}"'
-            )
-        duration = self.duration
-
-        async def operation(ctx: Context, instance: TInstance, event: Event) -> None:
-            interval = await duration(ctx, instance, event)
-            while not ctx.is_done():
-                try:
-                    await asyncio.sleep(interval.total_seconds())
-                    if not ctx.is_done():
-                        instance.dispatch(self.event)
-                except asyncio.CancelledError:
-                    break
-
-        activity = Behavior(
-            qualified_name=join(
-                source.qualified_name, self.event.name, str(len(model.members))
-            ),
-            kind=Kinds.Concurrent,
-            operation=operation,
-        )
-        source.activity.append(activity.qualified_name)
-        model.members[activity.qualified_name] = activity
-
-
-@dataclass
-class PartialEvery(typing.Generic[TInstance], PartialElement):
-    duration: Duration[TInstance] = field(default=noop_duration)
-
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        transition = find(stack, Transition)
-        if transition is None:
-            raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Transition not found"
-            )
-        qualified_name = join(
-            transition.qualified_name,
-            self.duration.__name__,
-            str(len(model.members)),
-        )
-        event = Event(
-            name=qualified_name,
-            qualified_name=qualified_name,
-            kind=Kinds.TimeEvent,
-        )
-        transition.events.append(event.qualified_name)
-        model.members[event.qualified_name] = event
-        model.add(
-            EveryBehavior(event=event, transition=transition, duration=self.duration),
-        )
-
-
-def every(duration: Duration[TInstance]) -> PartialEvery[TInstance]:
-    return PartialEvery[TInstance](duration=duration)
-
-
-def target(name_or_element: typing.Union[str, NamedElement]) -> PartialTarget:
-    name = ""
-    owned_elements: list[NamedElement] = []
-    if isinstance(name_or_element, str):
-        name = name_or_element
-    else:
-        owned_elements.insert(0, name_or_element)
-    return PartialTarget(qualified_name=name, owned_elements=owned_elements)
-
-
-def effect(*operations: Operation[TInstance]) -> PartialBehaviors[TInstance]:
-    return PartialBehaviors[TInstance](
-        operations=list(operations), type=Transition, qualified_name="effect"
-    )
-
-
-def guard(expression: Expression[TInstance]) -> PartialGuard[TInstance]:
-    return PartialGuard[TInstance](
-        qualified_name=expression.__name__, expression=expression
-    )
-
-
 @dataclass
 class PartialTrigger(PartialElement):
     events: list[Event] = field(default_factory=list)
 
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> Transition:
-        transition = find(stack, Transition)
+    def apply(self, model: Model, stack: list[NamedElement]) -> TransitionNode:
+        transition = find(stack, TransitionNode)
         if transition is None:
             raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: Transition not found"
+                f"{self.traceback[0]}:{self.traceback[1]}: trigger must be called within a Transition"
             )
-        transition.events.extend([event.qualified_name for event in self.events])
+        for event in self.events:
+            model.set(event.qualified_name, event)
+            transition.events.append(event.qualified_name)
         return transition
-
-
-def on(*events: typing.Union[str, Event]) -> PartialTrigger:
-    return PartialTrigger(
-        events=[
-            Event(name=event) if isinstance(event, str) else event for event in events
-        ]
-    )
 
 
 @dataclass
 class PartialDefer(PartialElement):
     events: list[Event] = field(default_factory=list)
 
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        state = find(stack, State)
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        state = find(stack, StateNode)
         if state is None:
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: defer must be called within a state"
             )
-        state.deferred.extend([event.qualified_name for event in self.events])
-
-
-def defer(*events: Event) -> PartialDefer:
-    return PartialDefer(events=list(events))
+        for event in self.events:
+            model.set(event.qualified_name, event)
+            state.deferred.append(event.qualified_name)
 
 
 @dataclass
 class PartialChoice(PartialElement):
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> Choice:
-        state_or_transition = find(stack, State, Transition)
+    def apply(self, model: Model, stack: list[NamedElement]) -> ChoiceNode:
+        state_or_transition = find(stack, StateNode, TransitionNode)
         if state_or_transition is None:
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: choice must be called within a state or transition"
             )
-        if isinstance(state_or_transition, Transition):
-            source = state_or_transition.source
-            if source == "." or source == "":
-                maybe_source = find(stack, Vertex)
-                if maybe_source is None:
+        if isinstance(state_or_transition, TransitionNode):
+            source_name = state_or_transition.source
+            if source_name in ("", "."):
+                source_vertex = find(stack, VertexNode)
+                if source_vertex is None:
                     raise ValidationError(
-                        f"{self.traceback[0]}:{self.traceback[1]}: choice must be called within a state or transition"
+                        f"{self.traceback[0]}:{self.traceback[1]}: choice must be called within a state"
                     )
-                source = maybe_source.qualified_name
-            maybe_state = model.get(source, State, Pseudostate)
-            if maybe_state is None:
-                raise ValidationError(
-                    f'{self.traceback[0]}:{self.traceback[1]}: source "{source}" not found for transition "{state_or_transition.qualified_name}"'
-                )
-            elif isinstance(maybe_state, Pseudostate):
-                state_or_transition = find(stack, State)
+                source_name = source_vertex.qualified_name
+            if isinstance(model.get(source_name, PseudostateNode), PseudostateNode):
+                state_or_transition = find(stack, StateNode)
                 if state_or_transition is None:
                     raise ValidationError(
                         f"{self.traceback[0]}:{self.traceback[1]}: choice must be called within a state"
                     )
-        if self.qualified_name == "":
-            self.qualified_name = f"choice_{len(model.members)}"
-        choice = Choice(
-            qualified_name=join(state_or_transition.qualified_name, self.qualified_name)
-        )
-        model.members[choice.qualified_name] = choice
+        qualified_name = join(state_or_transition.qualified_name, self.qualified_name or f"choice_{len(model.members)}")
+        choice = ChoiceNode(qualified_name=qualified_name)
+        model.set(choice.qualified_name, choice)
         apply(choice, model, stack, self.owned_elements)
-        if len(choice.transitions) == 0:
+        if not choice.transitions:
             raise ValidationError(
-                f'{self.traceback[0]}:{self.traceback[1]}: choice "{choice.qualified_name}" has no transitions'
+                f"{self.traceback[0]}:{self.traceback[1]}: choice \"{choice.qualified_name}\" has no transitions"
             )
-        if default_transition := model.get(
-            choice.transitions[len(choice.transitions) - 1], Transition
-        ):
-            if default_transition.guard is not None:
-                raise ValidationError(
-                    f'{self.traceback[0]}:{self.traceback[1]}: the last transition of choice state "{choice.qualified_name}" cannot have a guard'
-                )
+        default_transition = model.get(choice.transitions[-1], TransitionNode)
+        if default_transition is not None and default_transition.guard is not None:
+            raise ValidationError(
+                f'{self.traceback[0]}:{self.traceback[1]}: the last transition of choice state "{choice.qualified_name}" cannot have a guard'
+            )
         return choice
 
 
-def choice(
-    element_or_name: typing.Union[str, PartialTransition],
-    *transitions: PartialTransition,
-) -> PartialChoice:
-    name = ""
-    owned_elements: list[NamedElement] = list(transitions)
-    if isinstance(element_or_name, str):
-        name = element_or_name
-    else:
-        owned_elements.insert(0, element_or_name)
-    return PartialChoice(qualified_name=name, owned_elements=owned_elements)
-
-
+@dataclass
 class ValidateFinalState(PartialElement):
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        final_state = model.get(self.qualified_name, FinalState)
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        final_state = model.get(self.qualified_name, FinalStateNode)
         if final_state is None:
             raise ValidationError(
                 f'{self.traceback[0]}:{self.traceback[1]}: Final state "{self.qualified_name}" not found'
             )
-        if len(final_state.transitions) > 0:
+        if final_state.transitions:
             raise ValidationError(
                 f'{self.traceback[0]}:{self.traceback[1]}: Final state "{self.qualified_name}" cannot have transitions'
             )
-        if len(final_state.entry) > 0:
+        if final_state.entry:
             raise ValidationError(
                 f'{self.traceback[0]}:{self.traceback[1]}: Final state "{self.qualified_name}" cannot have an entry action'
             )
-        if len(final_state.exit) > 0:
+        if final_state.exit:
             raise ValidationError(
                 f'{self.traceback[0]}:{self.traceback[1]}: Final state "{self.qualified_name}" cannot have an exit action'
             )
-        if len(final_state.activity) > 0:
+        if final_state.activity:
             raise ValidationError(
                 f'{self.traceback[0]}:{self.traceback[1]}: Final state "{self.qualified_name}" cannot have an activity'
             )
@@ -1024,62 +965,351 @@ class ValidateFinalState(PartialElement):
 
 @dataclass
 class PartialFinal(PartialElement):
-    target: str = field(default_factory=str)
-
-    def apply(self, model: "Model", stack: list["NamedElement"]) -> None:
-        namespace = find(stack, State, StateMachine[typing.Any])
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        namespace = find(stack, StateNode)
         if namespace is None:
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: Final must be called within a namespace"
             )
-        final_state = FinalState(
+        final_state = FinalStateNode(
             qualified_name=join(namespace.qualified_name, self.qualified_name)
         )
-        model.members[final_state.qualified_name] = final_state
+        model.set(final_state.qualified_name, final_state)
+        model.add(ValidateFinalState(qualified_name=final_state.qualified_name))
+
+
+@dataclass
+class PartialAttribute(PartialElement):
+    default: typing.Any = None
+    implicit: bool = False
+
+    def apply(self, model: Model, stack: list[NamedElement]) -> AttributeDef:
+        if self.qualified_name == "":
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: attribute name cannot be empty"
+            )
+        if self.qualified_name in model.attributes and not self.implicit:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: duplicate attribute {self.qualified_name}"
+            )
+        existing = model.attributes.get(self.qualified_name)
+        if existing is not None:
+            return existing
+        attribute = AttributeDef(
+            qualified_name=join(model.qualified_name, f".attribute.{self.qualified_name}"),
+            declared_name=self.qualified_name,
+            default=self.default,
+            implicit=self.implicit,
+        )
+        model.set(attribute.qualified_name, attribute)
+        return attribute
+
+
+@dataclass
+class PartialOperationDeclaration(PartialElement):
+    callback: OperationImplementation | None = None
+
+    def apply(self, model: Model, stack: list[NamedElement]) -> OperationDef:
+        if self.qualified_name == "":
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: operation name cannot be empty"
+            )
+        if self.qualified_name in model.operations:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: duplicate operation {self.qualified_name}"
+            )
+        namespace = find(stack, StateNode)
+        if namespace is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: operation must be called within Define() or State()"
+            )
+        operation = OperationDef(
+            qualified_name=join(namespace.qualified_name, f".operation.{self.qualified_name}"),
+            declared_name=self.qualified_name,
+            callback=self.callback,
+        )
+        model.set(operation.qualified_name, operation)
+        return operation
+
+
+def _onset_event_name(name: str) -> str:
+    return f"@set:{name}"
+
+
+def _oncall_event_name(name: str) -> str:
+    return f"@call:{name}"
+
+
+@dataclass
+class PartialOnSet(PartialElement):
+    def apply(self, model: Model, stack: list[NamedElement]) -> TransitionNode:
+        transition = find(stack, TransitionNode)
+        if transition is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: OnSet() must be called within a Transition"
+            )
+        if self.qualified_name == "":
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: OnSet() requires a non-empty attribute name"
+            )
+        PartialAttribute(qualified_name=self.qualified_name, implicit=True).apply(model, stack)
+        event = Event(
+            name=_onset_event_name(self.qualified_name),
+            qualified_name=_onset_event_name(self.qualified_name),
+            kind=Kinds.ChangeEvent,
+            schema=AttributeChange,
+        )
+        model.set(event.qualified_name, event)
+        transition.events.append(event.qualified_name)
+        return transition
+
+
+@dataclass
+class PartialOnCall(PartialElement):
+    def apply(self, model: Model, stack: list[NamedElement]) -> TransitionNode:
+        transition = find(stack, TransitionNode)
+        if transition is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: OnCall() must be called within a Transition"
+            )
+        if self.qualified_name == "":
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: OnCall() requires a non-empty operation name"
+            )
+        model.pending_oncall.add(self.qualified_name)
+        event = Event(
+            name=_oncall_event_name(self.qualified_name),
+            qualified_name=_oncall_event_name(self.qualified_name),
+            kind=Kinds.CallEvent,
+            schema=CallData,
+        )
+        model.set(event.qualified_name, event)
+        transition.events.append(event.qualified_name)
+        return transition
+
+
+async def noop_duration(ctx: Context, instance: "Instance", event: Event) -> timedelta:
+    return timedelta(seconds=0)
+
+
+@dataclass
+class TimedBehavior(typing.Generic[TInstance], PartialElement):
+    event: Event = field(default_factory=Event)
+    duration: Duration[TInstance] = field(default=noop_duration)
+    transition: TransitionNode = field(default_factory=TransitionNode)
+    repeating: bool = False
+
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        source = model.get(self.transition.source, StateNode)
+        if source is None:
+            raise ValidationError(
+                f'{self.traceback[0]}:{self.traceback[1]}: Source "{self.transition.source}" not found for transition "{self.transition.qualified_name}"'
+            )
+
+        async def operation(ctx: Context, instance: TInstance, event: Event) -> None:
+            while not ctx.is_done():
+                delta = await _maybe_await(self.duration(ctx, instance, event))
+                if not isinstance(delta, timedelta):
+                    raise TypeError("After()/Every() duration must return timedelta")
+                if delta.total_seconds() <= 0:
+                    if self.repeating:
+                        return
+                    return
+                try:
+                    await asyncio.sleep(delta.total_seconds())
+                except asyncio.CancelledError:
+                    return
+                if ctx.is_done():
+                    return
+                instance.dispatch(self.event)
+                if not self.repeating:
+                    return
+
+        behavior = BehaviorNode(
+            qualified_name=join(source.qualified_name, self.event.name, str(len(model.members))),
+            kind=Kinds.Concurrent,
+            operation=operation,
+        )
+        source.activity.append(behavior.qualified_name)
+        model.set(behavior.qualified_name, behavior)
+
+
+@dataclass
+class PartialAfter(typing.Generic[TInstance], PartialElement):
+    duration: Duration[TInstance] = field(default=noop_duration)
+    repeating: bool = False
+
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        transition = find(stack, TransitionNode)
+        if transition is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: after must be called within a Transition"
+            )
+        qualified_name = join(
+            transition.qualified_name,
+            getattr(self.duration, "__name__", "duration"),
+            str(len(model.members)),
+        )
+        event = Event(name=qualified_name, qualified_name=qualified_name, kind=Kinds.TimeEvent)
+        model.set(event.qualified_name, event)
+        transition.events.append(event.qualified_name)
         model.add(
-            ValidateFinalState(qualified_name=final_state.qualified_name),
+            TimedBehavior(
+                event=event,
+                transition=transition,
+                duration=self.duration,
+                repeating=self.repeating,
+                traceback=self.traceback,
+            )
         )
 
 
-def final(name_or_element: typing.Union[str, NamedElement]) -> PartialFinal:
-    name = ""
-    owned_elements: list[NamedElement] = []
-    if isinstance(name_or_element, str):
-        name = name_or_element
-    else:
-        owned_elements.append(name_or_element)
-    return PartialFinal(qualified_name=name, owned_elements=owned_elements)
+@dataclass
+class PartialWhen(typing.Generic[TInstance], PartialElement):
+    expression: WhenExpression[TInstance] = field(default=lambda *_: None)
+
+    def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        transition = find(stack, TransitionNode)
+        if transition is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: when must be called within a Transition"
+            )
+        source = model.get(transition.source or "", StateNode)
+        if source is None:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: when can only be used on transitions where the source is a State"
+            )
+        qualified_name = join(
+            transition.qualified_name,
+            getattr(self.expression, "__name__", "when"),
+            str(len(model.members)),
+        )
+        event = Event(name=qualified_name, qualified_name=qualified_name, kind=Kinds.ChangeEvent)
+        model.set(event.qualified_name, event)
+        transition.events.append(event.qualified_name)
+
+        async def operation(ctx: Context, instance: TInstance, current_event: Event) -> None:
+            try:
+                result = await _maybe_await(self.expression(ctx, instance, current_event))
+                await _normalize_waitable(result)
+                if not ctx.is_done():
+                    instance.dispatch(event)
+            except asyncio.CancelledError:
+                return
+
+        behavior = BehaviorNode(
+            qualified_name=join(source.qualified_name, event.name, str(len(model.members))),
+            kind=Kinds.Concurrent,
+            operation=operation,
+        )
+        source.activity.append(behavior.qualified_name)
+        model.set(behavior.qualified_name, behavior)
 
 
-def done_future() -> asyncio.Future[None]:
-    future = asyncio.Future[None]()
-    future.set_result(None)
-    return future
+class _OperationAPI:
+    def __getitem__(self, item: typing.Any) -> typing.Any:
+        return OperationCallback[item]  # type: ignore[index]
+
+    def __call__(
+        self,
+        name: str,
+        callback: OperationImplementation | None = None,
+    ) -> PartialOperationDeclaration:
+        return PartialOperationDeclaration(qualified_name=name, callback=callback)
+
+
+Operation = _OperationAPI()
+
+
+class _AfterWaiters:
+    def __init__(self) -> None:
+        self.dispatch: list[tuple[str, asyncio.Future[None]]] = []
+        self.process: list[tuple[str | None, asyncio.Future[None]]] = []
+        self.entry: list[tuple[str, asyncio.Future[None]]] = []
+        self.exit: list[tuple[str, asyncio.Future[None]]] = []
+        self.executed: list[tuple[str, asyncio.Future[None]]] = []
+
+    def _notify(
+        self,
+        waiters: list[tuple[typing.Any, asyncio.Future[None]]],
+        predicate: typing.Callable[[typing.Any], bool],
+    ) -> None:
+        remaining: list[tuple[typing.Any, asyncio.Future[None]]] = []
+        for expected, future in waiters:
+            if future.done():
+                continue
+            if predicate(expected):
+                future.set_result(None)
+            else:
+                remaining.append((expected, future))
+        waiters[:] = remaining
+
+
+def _default_attribute_values(model: Model) -> dict[str, typing.Any]:
+    values: dict[str, typing.Any] = {}
+    for name, attribute in model.attributes.items():
+        values[name] = copy.deepcopy(attribute.default)
+    return values
+
+
+def _segments_between(owner: str, target: str) -> list[str]:
+    if owner == target:
+        return []
+    current = target
+    segments: list[str] = []
+    while current not in ("", owner):
+        segments.insert(0, current)
+        current = os.path.dirname(current)
+    return segments
 
 
 class Mutex:
-    __lock: threading.Lock
-
-    def __init__(self):
-        self.__lock = threading.Lock()
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
 
     def try_acquire(self) -> bool:
-        if self.__lock.locked():
+        if self._lock.locked():
             return False
-        self.__lock.acquire()
+        self._lock.acquire()
         return True
 
     def acquire(self) -> None:
-        self.__lock.acquire()
+        self._lock.acquire()
 
     def release(self) -> None:
-        self.__lock.release()
+        self._lock.release()
 
-    def __enter__(self) -> None:
-        self.acquire()
 
-    def __exit__(self, *_: typing.Any) -> None:
-        self.release()
+class Queue:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._completion_events: collections.deque[Event] = collections.deque()
+        self._regular_events: collections.deque[Event] = collections.deque()
+
+    def push(self, event: Event) -> None:
+        with self._lock:
+            if is_kind(event.kind, Kinds.CompletionEvent):
+                self._completion_events.appendleft(event)
+            else:
+                self._regular_events.append(event)
+
+    async def pop(self) -> Event | None:
+        with self._lock:
+            if self._completion_events:
+                return self._completion_events.popleft()
+            if self._regular_events:
+                return self._regular_events.popleft()
+            return None
+
+    def len(self) -> int:
+        with self._lock:
+            return len(self._completion_events) + len(self._regular_events)
+
+
+@dataclass
+class ActiveBehavior:
+    context: Context
+    task: asyncio.Task[None]
 
 
 class Instance(Element):
@@ -1087,7 +1317,7 @@ class Instance(Element):
 
     def dispatch(self, event: Event) -> typing.Awaitable[None]:
         if self.__hsm is None:
-            return done_future()
+            return _future_done()
         return self.__hsm.dispatch(event)
 
     def state(self) -> str:
@@ -1095,453 +1325,1014 @@ class Instance(Element):
             return ""
         return self.__hsm.state()
 
-    async def stop(self) -> None:
-        """Stop the state machine gracefully"""
-        if self.__hsm is not None:
-            stop_method = getattr(self.__hsm, "_HSM__stop", None)
-            if stop_method is not None:
-                await stop_method()
-
-
-class Queue:
-    """Event queue implementation matching JavaScript behavior:
-    - Completion events: LIFO (stack) - newer events processed first
-    - Regular events: FIFO (queue) - older events processed first
-    - Completion events always have priority over regular events
-    """
-
-    def __init__(self):
-        self.lock = threading.Lock()
-        # Separate collections for different event types
-        self.completion_events = collections.deque[
-            Event
-        ]()  # LIFO stack for completion events
-        self.regular_events = collections.deque[
-            Event
-        ]()  # FIFO queue for regular events
-
-    def push(self, event: Event) -> None:
-        with self.lock:
-            if isinstance(event, CompletionEvent):
-                # Completion events: LIFO (newest first)
-                self.completion_events.appendleft(event)
-            else:
-                # Regular events: FIFO (oldest first)
-                self.regular_events.append(event)
-
-    async def pop(self) -> typing.Optional[Event]:
-        with self.lock:
-            # Always process completion events first (they have priority)
-            if len(self.completion_events) > 0:
-                return self.completion_events.popleft()  # LIFO for completion events
-            elif len(self.regular_events) > 0:
-                return self.regular_events.popleft()  # FIFO for regular events
+    def context(self) -> Context | None:
+        if self.__hsm is None:
             return None
+        return self.__hsm.context()
 
+    async def stop(self) -> None:
+        if self.__hsm is not None:
+            await self.__hsm.stop()
 
-@dataclass
-class Activity:
-    context: Context
-    task: asyncio.Task[None]
+    async def restart(self) -> None:
+        if self.__hsm is not None:
+            await self.__hsm.restart()
+
+    Dispatch = dispatch
+    State = state
+    Context = context
+    Stop = stop
+    Restart = restart
 
 
 class HSM(Behavior[TInstance]):
-    __instance: TInstance
-    __state: Vertex
-    __processing: Mutex
-    __queue: Queue
-    __active: dict[str, Activity]
-    __lock: asyncio.Lock
-    __context: Context
-    __awaitable: typing.Awaitable[None]
-
-    def state(self) -> str:
-        return self.__state.qualified_name
+    __hash__ = object.__hash__
 
     def __init__(
-        self, instance: TInstance, model: Model, ctx: typing.Optional[Context] = None
+        self, instance: TInstance, model: Model, ctx: Context | None = None
     ):
         super().__init__(kind=Kinds.StateMachine, qualified_name=model.qualified_name)
         self.model = model
-        self.__instance = instance
-        self.__processing = Mutex()
-        self.__queue = Queue()
-        self.__active = {}
-        self.__lock = asyncio.Lock()
-        self.__context = ctx or Context()  # Main context for the HSM
-        self.__awaitable = done_future()
+        self._instance = instance
+        self._root_context = ctx or Context()
+        self._runtime_context = Context()
+        self._processing = Mutex()
+        self._queue = Queue()
+        self._active: dict[str, ActiveBehavior] = {}
+        self._after = _AfterWaiters()
+        self._state: VertexNode = model
+        self._awaitable: typing.Awaitable[None] = _future_done()
+        self._attributes = _default_attribute_values(model)
+        self._history_shallow: dict[str, str] = {}
+        self._history_deep: dict[str, str] = {}
+        self._id = _next_id()
+        self._started = False
+        self._root_context.register(self)
+        setattr(self._instance, "_Instance__hsm", self)
 
         async def operation(ctx: Context, inst: TInstance, event: Event) -> None:
-            self.__state = await self.__enter(self.model, event, True)
-            await self.__process()
+            self._state = await self._enter(self.model, event, True)
+            await self._process()
 
-        setattr(self.__instance, "_Instance__hsm", self)
         self.operation = operation
 
-    async def __start(self) -> None:  # type: ignore
-        self.__processing.acquire()
-        await self.__execute(self, initial_event)
+    def state(self) -> str:
+        return self._state.qualified_name
 
-    async def __enter(
-        self, vertex: Vertex, event: Event, default_entry: bool
-    ) -> Vertex:
-        if isinstance(vertex, State):
-            for entry in [
-                entry
-                for entry in [
-                    self.model.get(entry, Behavior[TInstance]) for entry in vertex.entry
-                ]
-                if entry is not None
-            ]:  # type: ignore
-                await self.__execute(entry, event)
-            for activity in [
-                activity
-                for activity in [
-                    self.model.get(activity, Behavior[TInstance])
-                    for activity in vertex.activity
-                ]
-                if activity is not None
-            ]:
-                await self.__execute(activity, event)
+    def context(self) -> Context:
+        return self._root_context
+
+    def id(self) -> str:
+        return self._id
+
+    def qualified_name(self) -> str:
+        return self.model.qualified_name
+
+    async def _start(self) -> None:
+        self._processing.acquire()
+        await self._execute(self, InitialEvent)
+        self._started = True
+
+    def _remember_history(self, leaf_name: str) -> None:
+        current = leaf_name
+        while current not in ("", "/", self.model.qualified_name):
+            parent = os.path.dirname(current)
+            if parent in ("", ".", "/") or parent == current:
+                break
+            self._history_shallow[parent] = current
+            current = parent
+        current = leaf_name
+        while current not in ("", ".", "/"):
+            parent = os.path.dirname(current)
+            if parent in ("", ".", "/") or parent == current:
+                break
+            self._history_deep[parent] = leaf_name
+            if parent == self.model.qualified_name:
+                break
+            current = parent
+
+    async def _follow_from_owner(self, owner_name: str, target_name: str, event: Event) -> VertexNode:
+        current: VertexNode = self.model.get(owner_name, VertexNode) or self.model
+        segments = _segments_between(owner_name, target_name)
+        if not segments:
+            target = self.model.get(target_name, VertexNode)
+            if target is None:
+                return current
+            return await self._enter(target, event, True)
+        for index, qualified_name in enumerate(segments):
+            vertex = self.model.get(qualified_name, VertexNode)
+            if vertex is None:
+                continue
+            current = await self._enter(vertex, event, index == len(segments) - 1)
+        return current
+
+    async def _enter(self, vertex: VertexNode, event: Event, default_entry: bool) -> VertexNode:
+        if isinstance(vertex, (ShallowHistoryNode, DeepHistoryNode)):
+            owner_name = vertex.owner()
+            remembered = (
+                self._history_shallow.get(owner_name)
+                if isinstance(vertex, ShallowHistoryNode)
+                else self._history_deep.get(owner_name)
+            )
+            if remembered:
+                return await self._follow_from_owner(owner_name, remembered, event)
+            if vertex.transitions:
+                transition = self.model.get(vertex.transitions[0], TransitionNode)
+                if transition is not None:
+                    return await self._transition(vertex, transition, event)
+            owner_vertex = self.model.get(owner_name, VertexNode)
+            return owner_vertex if owner_vertex is not None else self._state
+        if isinstance(vertex, ChoiceNode):
+            for transition_name in vertex.transitions:
+                transition = self.model.get(transition_name, TransitionNode)
+                if transition is None:
+                    continue
+                guard = self.model.get(transition.guard or "", GuardNode[TInstance])
+                if guard is not None and not await self._evaluate(guard, event):
+                    continue
+                return await self._transition(vertex, transition, event)
+            return self._state
+        if isinstance(vertex, StateNode):
+            for behavior_name in vertex.entry:
+                behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
+                if behavior is not None:
+                    await self._execute(behavior, event)
+            self._after._notify(self._after.entry, lambda expected: expected == vertex.qualified_name)
+            for behavior_name in vertex.activity:
+                behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
+                if behavior is not None:
+                    await self._execute(behavior, event)
             if not default_entry or vertex.initial == "":
                 return vertex
-            if (initial := self.model.get(vertex.initial, Vertex)) is not None:
-                if (
-                    len(initial.transitions) > 0
-                    and (
-                        transition := self.model.get(initial.transitions[0], Transition)
-                    )
-                    is not None
-                ):
-                    return await self.__transition(vertex, transition, event)
-        elif isinstance(vertex, Choice):
-            for qualified_name in vertex.transitions:
-                if transition := self.model.get(qualified_name, Transition):
-                    if constraint := self.model.get(
-                        transition.guard or "", Guard[TInstance]
-                    ):
-                        if not await self.__evaluate(constraint, event):
-                            continue
-                    return await self.__transition(vertex, transition, event)
+            initial = self.model.get(vertex.initial, VertexNode)
+            if isinstance(initial, VertexNode) and initial.transitions:
+                transition = self.model.get(initial.transitions[0], TransitionNode)
+                if transition is not None:
+                    return await self._transition(vertex, transition, event)
         return vertex
 
-    async def __exit(self, vertex: Vertex, event: Event) -> Vertex:
-        if isinstance(vertex, State):
-            for activity in [
-                activity
-                for activity in [
-                    self.model.get(activity, Behavior[TInstance])
-                    for activity in vertex.activity
-                ]
-                if activity is not None
-            ]:
-                await self.__terminate(activity)
-            for exit in [
-                exit
-                for exit in [
-                    self.model.get(exit, Behavior[TInstance]) for exit in vertex.exit
-                ]
-                if exit is not None
-            ]:
-                await self.__execute(exit, event)
+    async def _exit(self, vertex: VertexNode, event: Event) -> VertexNode:
+        if isinstance(vertex, StateNode):
+            for behavior_name in vertex.activity:
+                behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
+                if behavior is not None:
+                    await self._terminate(behavior)
+            for behavior_name in vertex.exit:
+                behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
+                if behavior is not None:
+                    await self._execute(behavior, event)
+            self._after._notify(self._after.exit, lambda expected: expected == vertex.qualified_name)
         return vertex
 
-    async def __enabled(
-        self, source: Vertex, event: Event
-    ) -> typing.Optional[Transition]:
-        # Use O(1) transition_map lookup instead of iterating through all transitions
+    async def _evaluate(self, guard: GuardNode[TInstance], event: Event) -> bool:
+        try:
+            result = await _maybe_await(guard.expression(self._runtime_context, self._instance, event))
+            return bool(result)
+        except Exception:
+            return False
+
+    async def _execute(self, behavior: BehaviorNode[TInstance], event: Event) -> None:
+        try:
+            if behavior.kind == Kinds.Concurrent:
+                activity_ctx = Context()
+
+                async def run_activity() -> None:
+                    try:
+                        await _maybe_await(behavior.operation(activity_ctx, self._instance, event))
+                        self._after._notify(
+                            self._after.executed,
+                            lambda expected: expected == behavior.owner(),
+                        )
+                    except asyncio.CancelledError:
+                        activity_ctx.cancel()
+                    except Exception as error:
+                        self.dispatch(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
+
+                task = asyncio.create_task(run_activity(), name=behavior.qualified_name)
+                self._active[behavior.qualified_name] = ActiveBehavior(context=activity_ctx, task=task)
+                return
+            await _maybe_await(behavior.operation(self._runtime_context, self._instance, event))
+        except Exception as error:
+            self.dispatch(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
+
+    async def _terminate(self, behavior: BehaviorNode[TInstance]) -> None:
+        active = self._active.pop(behavior.qualified_name, None)
+        if active is None:
+            return
+        active.task.cancel()
+        try:
+            await active.task
+        except asyncio.CancelledError:
+            pass
+
+    async def _enabled(self, source: StateNode, event: Event) -> TransitionNode | None:
         source_transitions = self.model.transition_map.get(source.qualified_name, {})
-        transitions = source_transitions.get(event.qualified_name, [])
-
-        for transition in transitions:
-            if (
-                maybe_guard := self.model.get(transition.guard or "", Guard[TInstance])
-            ) is not None:
-                # Guard exists - only return transition if guard passes
-                if await self.__evaluate(maybe_guard, event):
-                    return transition
-                # Guard failed - continue to next transition
-                continue
-            else:
-                # No guard - transition is always enabled
+        ordered = [*source_transitions.get(event.qualified_name, []), *source_transitions.get(AnyEvent.qualified_name, [])]
+        for transition in ordered:
+            maybe_guard = self.model.get(transition.guard or "", GuardNode[TInstance])
+            if maybe_guard is None:
+                return transition
+            if await self._evaluate(maybe_guard, event):
                 return transition
         return None
 
-    async def __process(self) -> None:
-        event = await self.__queue.pop()
+    async def _process(self) -> None:
+        event = await self._queue.pop()
         deferred: list[Event] = []
         while event is not None:
-            qualified_name = self.__state.qualified_name
-            while qualified_name != "":
-                source = self.model.get(qualified_name, State)
+            current_leaf = self._state
+            qualified_name = current_leaf.qualified_name
+            handled = False
+            while qualified_name:
+                source = self.model.get(qualified_name, StateNode)
                 if source is None:
                     break
-                if transition := await self.__enabled(source, event):
-                    state = await self.__transition(source, transition, event)
-                    await self.__lock.acquire()
-                    self.__state = state
-                    self.__lock.release()
+                transition = await self._enabled(source, event)
+                if transition is not None:
+                    self._state = await self._transition(current_leaf, transition, event)
+                    handled = True
                     break
-                # Use O(1) deferred_map lookup instead of iterating through deferred list
-                source_deferred = self.model.deferred_map.get(qualified_name, {})
-                if source_deferred.get(event.qualified_name, False):
+                if self.model.deferred_map.get(qualified_name, {}).get(event.qualified_name, False):
                     deferred.append(event)
+                    handled = True
                     break
                 qualified_name = source.owner()
-
-            event = await self.__queue.pop()
-        # Re-queue deferred events by pushing them back
+            self._after._notify(
+                self._after.process,
+                lambda expected: expected is None or expected == event.qualified_name,
+            )
+            event = await self._queue.pop()
         for deferred_event in deferred:
-            self.__queue.push(deferred_event)
-        self.__processing.release()
+            self._queue.push(deferred_event)
+        self._processing.release()
 
-    async def __execute(self, behavior: Behavior[TInstance], event: Event) -> None:
-        try:
-            if behavior.kind == Kinds.Concurrent:
-                # Create a new context for this activity
-                activity_ctx = Context()
-
-                # Create wrapped operation that handles context cancellation
-                async def wrapped_operation():
-                    try:
-                        await behavior.operation(activity_ctx, self.__instance, event)
-                    except asyncio.CancelledError:
-                        # Cancel the context when task is cancelled
-                        activity_ctx.cancel()
-                    except Exception as e:
-                        # Dispatch error event when activity throws exception
-                        error_event = Event(
-                            name="hsm_error", kind=Kinds.ErrorEvent, data=e
-                        )
-                        self.dispatch(error_event)
-
-                task = asyncio.create_task(
-                    wrapped_operation(),
-                    name=behavior.qualified_name,
-                )
-                self.__active[behavior.qualified_name] = Activity(
-                    context=activity_ctx, task=task
-                )
-            else:
-                # Use main context for non-concurrent behaviors
-                await behavior.operation(self.__context, self.__instance, event)
-        except Exception as e:
-            # For synchronous behaviors, dispatch error event immediately
-            error_event = Event(name="hsm_error", kind=Kinds.ErrorEvent, data=e)
-            self.dispatch(error_event)
-
-    async def __evaluate(self, guard: Guard[TInstance], event: Event) -> bool:
-        try:
-            return await guard.expression(self.__context, self.__instance, event)
-        except Exception as e:
-            # Log the error and treat as guard failure
-            print(f"Error evaluating guard {guard.qualified_name}: {e}")
-            # In a production system, this would use proper logging
-            return False
-
-    async def __terminate(self, behavior: Behavior[TInstance]) -> None:
-        active = self.__active.pop(behavior.qualified_name, None)
-        if active is not None:
-            # Cancel the task
-            active.task.cancel()
-            try:
-                await active.task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                # Dispatch error event when activity throws exception
-                error_event = Event(name="hsm_error", kind=Kinds.ErrorEvent, data=e)
-                self.dispatch(error_event)
-
-    async def __transition(
-        self, current: Vertex, transition: Transition, event: Event
-    ) -> Vertex:
-        if (path := transition.paths.get(current.qualified_name)) is None:
-            return current
+    async def _transition(self, current_leaf: VertexNode, transition: TransitionNode, event: Event) -> VertexNode:
+        path = transition.paths.get(current_leaf.qualified_name)
+        if path is None:
+            return current_leaf
+        if transition.kind != Kinds.Internal:
+            self._remember_history(current_leaf.qualified_name)
         for exiting in path.exit:
-            maybe_exiting = self.model.get(exiting, Vertex)
-            if maybe_exiting is None:
-                continue
-            await self.__exit(maybe_exiting, event)
-        for effect in transition.effect:
-            maybe_effect = self.model.get(effect, Behavior[TInstance])
-            if maybe_effect is None:
-                continue
-            await self.__execute(maybe_effect, event)
+            vertex = self.model.get(exiting, VertexNode)
+            if vertex is not None:
+                await self._exit(vertex, event)
+        for effect_name in transition.effect:
+            effect = self.model.get(effect_name, BehaviorNode[TInstance])
+            if effect is not None:
+                await self._execute(effect, event)
         if transition.kind == Kinds.Internal:
-            return current
+            return current_leaf
+        current: VertexNode = current_leaf
         for entering in path.enter:
-            maybe_entering = self.model.get(entering, Vertex)
-            if maybe_entering is None:
+            vertex = self.model.get(entering, VertexNode)
+            if vertex is None:
                 continue
-            default_entry = entering == transition.target
-            current = await self.__enter(maybe_entering, event, default_entry)
-            if default_entry:
+            current = await self._enter(vertex, event, entering == transition.target)
+            if entering == transition.target:
                 return current
-        maybe_target = self.model.get(transition.target, Vertex)
-        if maybe_target is None:
-            return current
-        return maybe_target
+        target = self.model.get(transition.target, VertexNode)
+        return current if target is None else target
 
     def dispatch(self, event: Event) -> typing.Awaitable[None]:
-        self.__queue.push(event)
-        if self.__processing.try_acquire():
-            self.__awaitable = asyncio.create_task(self.__process())
-            return self.__awaitable
-        return self.__awaitable
+        self._queue.push(event)
+        self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
+        if self._processing.try_acquire():
+            self._awaitable = asyncio.create_task(self._process())
+            return self._awaitable
+        return self._awaitable
 
-    async def __stop(self) -> None:  # type: ignore
-        """Stop the state machine gracefully"""
-        # Set processing to prevent new events from being processed
-        self.__processing.acquire()
-
-        # Create a final event for exit actions
-        final_event = Event(name="hsm_final", kind=Kinds.CompletionEvent)
-
-        # Exit all states from current state up to root
-        while self.__state and self.__state.qualified_name != self.model.qualified_name:
-            await self.__exit(self.__state, final_event)
-
-            # Move up to parent state
-            parent_path = os.path.dirname(self.__state.qualified_name)
-            parent_state = self.model.get(parent_path, Vertex)
-            if parent_state is None:
+    async def stop(self) -> None:
+        self._processing.acquire()
+        final_event = Event(name=FinalEvent.name, kind=Kinds.CompletionEvent)
+        while self._state.qualified_name != self.model.qualified_name:
+            await self._exit(self._state, final_event)
+            parent = self.model.get(os.path.dirname(self._state.qualified_name), VertexNode)
+            if parent is None:
                 break
-            self.__state = parent_state
-
-        # Cancel all active tasks
-        for active in list(self.__active.values()):
+            self._state = parent
+        for active in list(self._active.values()):
             active.task.cancel()
             try:
                 await active.task
             except asyncio.CancelledError:
                 pass
-        self.__active.clear()
+        self._active.clear()
+        self._runtime_context.cancel()
+        self._state = self.model
+        self._started = False
+        self._processing.release()
 
-        # Cancel the main context
-        self.__context.cancel()
+    async def restart(self) -> None:
+        await self.stop()
+        self._runtime_context = Context()
+        self._queue = Queue()
+        self._attributes = _default_attribute_values(self.model)
+        self._history_shallow.clear()
+        self._history_deep.clear()
+        await self._start()
 
-        self.__processing.release()
+    def get(self, name: str) -> tuple[typing.Any, bool]:
+        if name in self._attributes:
+            return self._attributes[name], True
+        return None, False
+
+    async def set(self, name: str, value: typing.Any) -> None:
+        old_value = self._attributes.get(name)
+        existed = name in self._attributes
+        self._attributes[name] = value
+        if existed and old_value == value:
+            return
+        if name not in self.model.attributes:
+            self.model.attributes[name] = AttributeDef(
+                qualified_name=join(self.model.qualified_name, f".attribute.{name}"),
+                default=None,
+                implicit=True,
+            )
+        event = Event(
+            name=_onset_event_name(name),
+            qualified_name=_onset_event_name(name),
+            kind=Kinds.ChangeEvent,
+            data=AttributeChange(name=name, value=value, old_value=old_value),
+            schema=AttributeChange,
+        )
+        self.model.set(event.qualified_name, event)
+        await self.dispatch(event)
+
+    async def call(self, name: str, *args: typing.Any) -> typing.Any:
+        if not name:
+            raise ValidationError("operation name cannot be empty")
+        operation = self.model.operations.get(name)
+        if operation is None:
+            raise ValidationError(f'missing operation "{name}" for OnCall()')
+        callback = operation.callback
+        if callback is None:
+            callback = getattr(self._instance, name, None)
+        if callback is None:
+            raise ValidationError(f'missing operation "{name}" for OnCall()')
+        result = callback
+        if inspect.ismethod(callback) or inspect.isfunction(callback):
+            signature = inspect.signature(callback)
+            parameters = list(signature.parameters.values())
+            if len(parameters) >= 2 and parameters[0].name == "ctx":
+                result = callback(self._runtime_context, self._instance, *args)
+            else:
+                result = callback(*args)
+        event = Event(
+            name=_oncall_event_name(name),
+            qualified_name=_oncall_event_name(name),
+            kind=Kinds.CallEvent,
+            data=CallData(name=name, args=args),
+            schema=CallData,
+        )
+        self.model.set(event.qualified_name, event)
+        value = await _maybe_await(result)
+        await self.dispatch(event)
+        return value
+
+    def take_snapshot(self) -> Snapshot:
+        events: list[EventSnapshot] = []
+        current_name = self._state.qualified_name
+        for event_name, transitions in self.model.transition_map.get(current_name, {}).items():
+            event = self.model.events.get(event_name)
+            if event is None:
+                continue
+            for transition in transitions:
+                events.append(
+                    EventSnapshot(
+                        Name=event_name,
+                        Kind=event.kind,
+                        Target=transition.target,
+                        Guard=transition.guard is not None,
+                        Schema=event.schema,
+                    )
+                )
+        return Snapshot(
+            ID=self._id,
+            QualifiedName=self.model.qualified_name,
+            State=self._state.qualified_name,
+            Attributes=copy.deepcopy(self._attributes),
+            QueueLen=self._queue.len(),
+            Events=events,
+        )
+
+    State = state
+    Context = context
+    Stop = stop
+    Restart = restart
+    Get = get
+    Set = set
+    Call = call
+    TakeSnapshot = take_snapshot
 
 
-async def start(
-    ctx: typing.Optional[Context],
-    instance: TInstance,
-    model: Model,
-) -> HSM[TInstance]:
+class Group:
+    def __init__(self, *instances: typing.Union[Instance, "Group", None]):
+        self.instances: list[Instance] = []
+        for instance in instances:
+            if instance is None:
+                continue
+            if isinstance(instance, Group):
+                self.instances.extend(instance.instances)
+            else:
+                self.instances.append(instance)
+        self.id = _next_id()
+
+    def state(self) -> str:
+        if not self.instances:
+            return ""
+        return self.instances[0].state()
+
+    def context(self) -> Context | None:
+        if not self.instances:
+            return None
+        return self.instances[0].context()
+
+    async def dispatch(self, event: Event) -> None:
+        await asyncio.gather(*(instance.dispatch(event) for instance in self.instances if instance is not None))
+
+    async def stop(self) -> None:
+        await asyncio.gather(*(instance.stop() for instance in self.instances if instance is not None))
+
+    async def restart(self) -> None:
+        await asyncio.gather(*(instance.restart() for instance in self.instances if instance is not None))
+
+    def get(self, name: str) -> tuple[typing.Any, bool]:
+        if not self.instances:
+            return None, False
+        return Get(self.context(), self.instances[0], name)
+
+    async def set(self, ctx: Context | None, name: str, value: typing.Any) -> None:
+        await asyncio.gather(*(Set(ctx, instance, name, value) for instance in self.instances if instance is not None))
+
+    async def call(self, ctx: Context | None, name: str, *args: typing.Any) -> typing.Any:
+        if not self.instances:
+            raise ValidationError("missing hsm")
+        return await Call(ctx, self.instances[0], name, *args)
+
+    def take_snapshot(self) -> Snapshot:
+        return Snapshot(ID=self.id, QualifiedName="", State="", Attributes=None, QueueLen=0, Events=[])
+
+
+def NewGroup(*instances: typing.Union[Instance, Group, None]) -> Group:
+    return Group(*instances)
+
+
+def _new_future() -> asyncio.Future[None]:
+    return asyncio.get_running_loop().create_future()
+
+
+def _after_future(waiters: list[tuple[typing.Any, asyncio.Future[None]]], expected: typing.Any) -> asyncio.Future[None]:
+    future = _new_future()
+    waiters.append((expected, future))
+    return future
+
+
+def AfterDispatch(ctx: Context | None, hsm: typing.Union[HSM[TInstance], Instance], event: Event) -> asyncio.Future[None]:
+    machine = _resolve_machine(hsm)
+    return _after_future(machine._after.dispatch, event.qualified_name)
+
+
+def AfterProcess(
+    ctx: Context | None,
+    hsm: typing.Union[HSM[TInstance], Instance],
+    maybe_event: Event | None = None,
+) -> asyncio.Future[None]:
+    machine = _resolve_machine(hsm)
+    return _after_future(machine._after.process, None if maybe_event is None else maybe_event.qualified_name)
+
+
+def AfterEntry(ctx: Context | None, hsm: typing.Union[HSM[TInstance], Instance], state: str) -> asyncio.Future[None]:
+    machine = _resolve_machine(hsm)
+    return _after_future(machine._after.entry, state)
+
+
+def AfterExit(ctx: Context | None, hsm: typing.Union[HSM[TInstance], Instance], state: str) -> asyncio.Future[None]:
+    machine = _resolve_machine(hsm)
+    return _after_future(machine._after.exit, state)
+
+
+def AfterExecuted(ctx: Context | None, hsm: typing.Union[HSM[TInstance], Instance], state: str) -> asyncio.Future[None]:
+    machine = _resolve_machine(hsm)
+    return _after_future(machine._after.executed, state)
+
+
+def _resolve_machine(sm: typing.Union[HSM[TInstance], Instance]) -> HSM[TInstance]:
+    if isinstance(sm, HSM):
+        return sm
+    hsm = getattr(sm, "_Instance__hsm", None)
+    if hsm is None:
+        raise ValidationError("missing hsm")
+    return hsm
+
+
+def _event_from_name(event_or_name: str | Event, kind_value: int = Kinds.Event) -> Event:
+    if isinstance(event_or_name, Event):
+        return event_or_name
+    if event_or_name == AnyEvent.name:
+        return AnyEvent
+    return Event(name=event_or_name, kind=kind_value)
+
+
+def _finalize_model(model: Model) -> None:
+    if not model.initial:
+        raise ValidationError("initial state is required for state machine")
+    if model.entry:
+        raise ValidationError("entry actions are not allowed on top level state machine")
+    if model.exit:
+        raise ValidationError("exit actions are not allowed on top level state machine")
+    for name in model.pending_oncall:
+        if name not in model.operations:
+            raise ValidationError(f'missing operation "{name}" for OnCall()')
+    _build_transition_table(model)
+    _build_deferred_table(model)
+
+
+def _build_transition_table(model: Model) -> None:
+    model.transition_map.clear()
+    for state_name, element in model.members.items():
+        if not isinstance(element, StateNode):
+            continue
+        model.transition_map[state_name] = {}
+        transitions_by_event: dict[str, list[tuple[TransitionNode, int, int]]] = {}
+        current_path = state_name
+        depth = 0
+        while current_path:
+            current_state = model.members.get(current_path)
+            if isinstance(current_state, StateNode):
+                for index, transition_name in enumerate(current_state.transitions):
+                    transition = model.get(transition_name, TransitionNode)
+                    if transition is None or not transition.events:
+                        continue
+                    for event_name in transition.events:
+                        transitions_by_event.setdefault(event_name, []).append((transition, depth, index))
+            if current_path in ("", "/", model.qualified_name):
+                if current_path == model.qualified_name:
+                    current_path = os.path.dirname(current_path)
+                else:
+                    break
+            current_path = os.path.dirname(current_path)
+            depth += 1
+        for event_name, transitions in transitions_by_event.items():
+            transitions.sort(key=lambda item: (item[1], item[2]))
+            model.transition_map[state_name][event_name] = [item[0] for item in transitions]
+
+
+def _build_deferred_table(model: Model) -> None:
+    model.deferred_map.clear()
+    for state_name, element in model.members.items():
+        if not isinstance(element, StateNode):
+            continue
+        model.deferred_map[state_name] = {}
+        current_path = state_name
+        while current_path:
+            current_state = model.members.get(current_path)
+            if isinstance(current_state, StateNode):
+                for deferred_event in current_state.deferred:
+                    transitions = model.transition_map[state_name].get(deferred_event, [])
+                    if transitions and any(transition.source == state_name for transition in transitions):
+                        continue
+                    model.deferred_map[state_name][deferred_event] = True
+            if current_path in ("", "/", model.qualified_name):
+                if current_path == model.qualified_name:
+                    current_path = os.path.dirname(current_path)
+                else:
+                    break
+            current_path = os.path.dirname(current_path)
+
+
+def Define(name: str, *elements: NamedElement) -> Model:
+    qualified_name = join("/", name)
+    model = Model(qualified_name=qualified_name)
+    model.set(qualified_name, model)
+    apply(model, model, [], list(elements))
+    while model.owned_elements:
+        partial = model.owned_elements.pop()
+        partial.apply(model, [])
+    _finalize_model(model)
+    return model
+
+
+def State(name: str, *elements: NamedElement) -> PartialState:
+    return PartialState(qualified_name=name, owned_elements=list(elements))
+
+
+def Initial(name_or_element: str | NamedElement, *elements: NamedElement) -> PartialInitial:
+    name = ".initial"
+    owned_elements = list(elements)
+    if isinstance(name_or_element, str):
+        name = name_or_element
+    else:
+        owned_elements.insert(0, name_or_element)
+    return PartialInitial(qualified_name=name, owned_elements=owned_elements)
+
+
+def Transition(name_or_element: str | PartialElement, *elements: NamedElement) -> PartialTransition:
+    name = ""
+    owned_elements = list(elements)
+    if isinstance(name_or_element, str):
+        name = name_or_element
+    else:
+        owned_elements.insert(0, name_or_element)
+    return PartialTransition(qualified_name=name, owned_elements=owned_elements)
+
+
+def Source(name_or_element: str | NamedElement) -> PartialSource:
+    if isinstance(name_or_element, str):
+        return PartialSource(qualified_name=name_or_element)
+    return PartialSource(owned_elements=[name_or_element])
+
+
+def Target(name_or_element: str | NamedElement) -> PartialTarget:
+    if isinstance(name_or_element, str):
+        return PartialTarget(qualified_name=name_or_element)
+    return PartialTarget(owned_elements=[name_or_element])
+
+
+def Entry(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TInstance]:
+    return PartialBehaviors(operations=list(operations), type=StateNode, qualified_name="entry")
+
+
+def Exit(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TInstance]:
+    return PartialBehaviors(operations=list(operations), type=StateNode, qualified_name="exit")
+
+
+def Activity(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TInstance]:
+    return PartialBehaviors(
+        operations=list(operations),
+        type=StateNode,
+        concurrent=True,
+        qualified_name="activity",
+    )
+
+
+def Effect(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TInstance]:
+    return PartialBehaviors(operations=list(operations), type=TransitionNode, qualified_name="effect")
+
+
+def Guard(expression: Expression[TInstance]) -> PartialGuard[TInstance]:
+    return PartialGuard(qualified_name=getattr(expression, "__name__", "guard"), expression=expression)
+
+
+def On(*events: str | Event) -> PartialTrigger:
+    return PartialTrigger(events=[_event_from_name(event) for event in events])
+
+
+def OnSet(name: str) -> PartialOnSet:
+    return PartialOnSet(qualified_name=name)
+
+
+def OnCall(name: str) -> PartialOnCall:
+    return PartialOnCall(qualified_name=name)
+
+
+def After(duration: Duration[TInstance]) -> PartialAfter[TInstance]:
+    return PartialAfter(duration=duration, repeating=False)
+
+
+def Every(duration: Duration[TInstance]) -> PartialAfter[TInstance]:
+    return PartialAfter(duration=duration, repeating=True)
+
+
+def When(expression: WhenExpression[TInstance]) -> PartialWhen[TInstance]:
+    return PartialWhen(expression=expression)
+
+
+def Defer(*events: Event) -> PartialDefer:
+    return PartialDefer(events=list(events))
+
+
+def Choice(
+    element_or_name: str | PartialTransition,
+    *transitions: PartialTransition,
+) -> PartialChoice:
+    name = ""
+    owned_elements = list(transitions)
+    if isinstance(element_or_name, str):
+        name = element_or_name
+    else:
+        owned_elements.insert(0, element_or_name)
+    return PartialChoice(qualified_name=name, owned_elements=owned_elements)
+
+
+def ShallowHistory(
+    element_or_name: str | PartialTransition,
+    *partials: NamedElement,
+) -> PartialHistory:
+    name = ""
+    owned_elements = list(partials)
+    if isinstance(element_or_name, str):
+        name = element_or_name
+    else:
+        owned_elements.insert(0, element_or_name)
+    return PartialHistory(
+        qualified_name=name,
+        owned_elements=owned_elements,
+        history_type=ShallowHistoryVertex,
+    )
+
+
+def DeepHistory(
+    element_or_name: str | PartialTransition,
+    *partials: NamedElement,
+) -> PartialHistory:
+    name = ""
+    owned_elements = list(partials)
+    if isinstance(element_or_name, str):
+        name = element_or_name
+    else:
+        owned_elements.insert(0, element_or_name)
+    return PartialHistory(
+        qualified_name=name,
+        owned_elements=owned_elements,
+        history_type=DeepHistoryVertex,
+    )
+
+
+def Final(name_or_element: str | NamedElement) -> PartialFinal:
+    if isinstance(name_or_element, str):
+        return PartialFinal(qualified_name=name_or_element)
+    return PartialFinal(owned_elements=[name_or_element])
+
+
+def Attribute(name: str, maybe_default: typing.Any = None) -> PartialAttribute:
+    return PartialAttribute(qualified_name=name, default=maybe_default)
+
+
+async def Start(ctx: Context | None, instance: TInstance, model: Model) -> HSM[TInstance]:
     sm = HSM(instance=instance, model=model, ctx=ctx)
-    start = getattr(sm, "_HSM__start", None)
-    if start is None:
-        raise AttributeError("HSM has no __start method")
-    await start()
+    await sm._start()
     return sm
 
 
-def build_transition_table(model: Model) -> None:
-    """Build a transition lookup table for O(1) event dispatch"""
-    from .kind import is_kind
-
-    # For each state in the model
-    for state_name, state in model.members.items():
-        if not is_kind(state.kind, Kinds.State):
-            continue
-
-        # Initialize tables for this state
-        model.transition_map[state_name] = {}
-
-        # Collect all transitions accessible from this state by walking up hierarchy
-        transitions_by_event: dict[str, list[tuple[Transition, int]]] = {}
-        current_path = state_name
-        depth = 0
-
-        while current_path:
-            current_state = model.members.get(current_path)
-            if current_state and is_kind(current_state.kind, Kinds.State):
-                state_obj = typing.cast(State, current_state)
-                # Process transitions at this level
-                for transition_name in state_obj.transitions:
-                    transition = model.get(transition_name, Transition)
-
-                    if transition and transition.events:
-                        # Process each event this transition handles
-                        for event_name in transition.events:
-                            # Skip wildcard events - not supported
-                            if "*" in event_name:
-                                continue
-
-                            # Regular event - add to lookup table
-                            if event_name not in transitions_by_event:
-                                transitions_by_event[event_name] = []
-                            transitions_by_event[event_name].append((transition, depth))
-
-            # Move up to parent
-            if current_path == "/" or not current_path:
-                break
-            parent_path = os.path.dirname(current_path)
-            if parent_path == current_path:  # Avoid infinite loop
-                break
-            current_path = parent_path
-            depth += 1
-
-        # Sort transitions by priority (lower depth = higher priority)
-        for event_name, transitions in transitions_by_event.items():
-            transitions.sort(key=lambda x: x[1])
-            # Extract just the transition objects
-            model.transition_map[state_name][event_name] = [t[0] for t in transitions]
+async def Started(ctx: Context | None, instance: TInstance, model: Model) -> HSM[TInstance]:
+    return await Start(ctx, instance, model)
 
 
-def build_deferred_table(model: Model) -> None:
-    """Build a deferred event lookup table for O(1) deferred event checking"""
-    from .kind import is_kind
-
-    # For each state in the model
-    for state_name, state in model.members.items():
-        if not is_kind(state.kind, Kinds.State):
-            continue
-
-        model.deferred_map[state_name] = {}
-        current_path = state_name
-
-        while current_path:
-            current_state = model.members.get(current_path)
-            if current_state and is_kind(current_state.kind, Kinds.State):
-                state_obj = typing.cast(State, current_state)
-
-                # Process deferred events at this level
-                if state_obj.deferred:
-                    for deferred_event in state_obj.deferred:
-                        transitions = model.transition_map[state_name].get(
-                            deferred_event, []
-                        )
-                        if transitions and any(
-                            t.source == state_name for t in transitions
-                        ):
-                            continue
-                        # Only support exact event names for O(1) lookup
-                        # Skip wildcard patterns for performance
-                        if "*" not in deferred_event:
-                            model.deferred_map[state_name][deferred_event] = True
-
-            # Move up to parent
-            if current_path == "/" or not current_path:
-                break
-            parent_path = os.path.dirname(current_path)
-            if parent_path == current_path:  # Avoid infinite loop
-                break
-            current_path = parent_path
+async def Stop(sm: typing.Union[HSM[TInstance], Instance, Group]) -> None:
+    if isinstance(sm, Group):
+        await sm.stop()
+        return
+    machine = _resolve_machine(sm)
+    await machine.stop()
 
 
-async def stop(sm: typing.Union[HSM[TInstance], Instance]) -> None:
-    if isinstance(sm, Instance):
-        hsm: HSM[TInstance] = getattr(sm, "_Instance__hsm")
-    else:
-        hsm = sm
-    stop = getattr(hsm, "_HSM__stop", None)
-    if stop is None:
-        raise AttributeError("HSM has no __stop method")
-    await stop()
+async def Restart(sm: typing.Union[HSM[TInstance], Instance, Group]) -> None:
+    if isinstance(sm, Group):
+        await sm.restart()
+        return
+    machine = _resolve_machine(sm)
+    await machine.restart()
+
+
+async def Dispatch(
+    ctx: Context | None,
+    hsm: typing.Union[HSM[TInstance], Instance, Group],
+    event: Event,
+) -> None:
+    if isinstance(hsm, Group):
+        await hsm.dispatch(event)
+        return
+    machine = _resolve_machine(hsm)
+    await machine.dispatch(event)
+
+
+async def DispatchAll(ctx: Context | None, event: Event) -> None:
+    if ctx is None:
+        return
+    machines = [machine for machine in ctx.machines() if machine._started]
+    await asyncio.gather(*(machine.dispatch(event) for machine in machines))
+
+
+async def DispatchTo(ctx: Context | None, event: Event, *maybe_ids: str) -> None:
+    if ctx is None:
+        return
+    selected = [
+        machine
+        for machine in ctx.machines()
+        if machine._started and (not maybe_ids or Match(machine.take_snapshot().ID, *maybe_ids))
+    ]
+    await asyncio.gather(*(machine.dispatch(event) for machine in selected))
+
+
+def Get(
+    ctx: Context | None,
+    hsm: typing.Union[HSM[TInstance], Instance, Group],
+    name: str,
+) -> tuple[typing.Any, bool]:
+    if isinstance(hsm, Group):
+        return hsm.get(name)
+    machine = _resolve_machine(hsm)
+    return machine.get(name)
+
+
+async def Set(
+    ctx: Context | None,
+    hsm: typing.Union[HSM[TInstance], Instance, Group],
+    name: str,
+    value: typing.Any,
+) -> None:
+    if isinstance(hsm, Group):
+        await hsm.set(ctx, name, value)
+        return
+    machine = _resolve_machine(hsm)
+    await machine.set(name, value)
+
+
+async def Call(
+    ctx: Context | None,
+    hsm: typing.Union[HSM[TInstance], Instance, Group],
+    name: str,
+    *args: typing.Any,
+) -> typing.Any:
+    if isinstance(hsm, Group):
+        return await hsm.call(ctx, name, *args)
+    machine = _resolve_machine(hsm)
+    return await machine.call(name, *args)
+
+
+def TakeSnapshot(
+    ctx: Context | None,
+    hsm: typing.Union[HSM[TInstance], Instance, Group],
+) -> Snapshot:
+    if isinstance(hsm, Group):
+        return hsm.take_snapshot()
+    machine = _resolve_machine(hsm)
+    return machine.take_snapshot()
+
+
+define = Define
+state = State
+initial = Initial
+transition = Transition
+source = Source
+target = Target
+entry = Entry
+exit = Exit
+activity = Activity
+effect = Effect
+guard = Guard
+on = On
+after = After
+every = Every
+when = When
+defer = Defer
+choice = Choice
+final = Final
+start = Start
+started = Started
+stop = Stop
+restart = Restart
+dispatch = Dispatch
+dispatch_all = DispatchAll
+dispatch_to = DispatchTo
+get = Get
+set = Set
+call = Call
+take_snapshot = TakeSnapshot
+source = Source
+target = Target
+attribute = Attribute
+onset = OnSet
+on_call = OnCall
+shallow_history = ShallowHistory
+deep_history = DeepHistory
+new_group = NewGroup
+
+
+__all__ = [
+    "Activity",
+    "After",
+    "AfterDispatch",
+    "AfterEntry",
+    "AfterExecuted",
+    "AfterExit",
+    "AfterProcess",
+    "AnyEvent",
+    "Attribute",
+    "AttributeChange",
+    "AttributeKind",
+    "Behavior",
+    "BehaviorKind",
+    "Call",
+    "CallData",
+    "CallEventKind",
+    "Choice",
+    "ChoiceKind",
+    "CompletionEvent",
+    "CompletionEventKind",
+    "ConcurrentKind",
+    "ConstraintKind",
+    "Context",
+    "DeepHistory",
+    "DeepHistoryKind",
+    "Defer",
+    "Define",
+    "Dispatch",
+    "DispatchAll",
+    "DispatchTo",
+    "Effect",
+    "Element",
+    "ElementKind",
+    "Entry",
+    "ErrorEvent",
+    "ErrorEventKind",
+    "Event",
+    "EventKind",
+    "EventSnapshot",
+    "Exit",
+    "Expression",
+    "ExternalKind",
+    "Final",
+    "FinalEvent",
+    "FinalState",
+    "FinalStateKind",
+    "Get",
+    "Guard",
+    "HSM",
+    "Initial",
+    "InitialEvent",
+    "InitialKind",
+    "InfiniteDuration",
+    "Instance",
+    "InternalKind",
+    "IsAncestor",
+    "Kinds",
+    "LCA",
+    "LocalKind",
+    "Match",
+    "Model",
+    "NamespaceKind",
+    "NewGroup",
+    "NullKind",
+    "On",
+    "OnCall",
+    "OnSet",
+    "Operation",
+    "OperationKind",
+    "PseudostateKind",
+    "QualifiedName",
+    "Restart",
+    "SelfKind",
+    "Set",
+    "ShallowHistory",
+    "ShallowHistoryKind",
+    "Snapshot",
+    "Source",
+    "Start",
+    "Started",
+    "State",
+    "StateKind",
+    "StateMachineKind",
+    "Stop",
+    "TakeSnapshot",
+    "Target",
+    "TimeEventKind",
+    "Transition",
+    "TransitionKind",
+    "VertexKind",
+    "When",
+    "activity",
+    "after",
+    "attribute",
+    "call",
+    "choice",
+    "deep_history",
+    "define",
+    "defer",
+    "dispatch",
+    "dispatch_all",
+    "dispatch_to",
+    "effect",
+    "entry",
+    "every",
+    "exit",
+    "final",
+    "get",
+    "guard",
+    "initial",
+    "match",
+    "new_group",
+    "on",
+    "on_call",
+    "onset",
+    "restart",
+    "set",
+    "shallow_history",
+    "source",
+    "start",
+    "state",
+    "stop",
+    "take_snapshot",
+    "target",
+    "transition",
+    "when",
+]
+
+
+def QualifiedName(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
+    return TakeSnapshot(None, hsm).QualifiedName
 
 
 if __name__ == "__main__":
-    sm = define("root", state("s1"), state("s2"))
-    print(sm.members)
+    model = Define("root", State("s1"), State("s2"), Initial(Target("s1")))
+    print(model.members)
