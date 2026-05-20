@@ -67,7 +67,7 @@ The canonical API is PascalCase: `Define`, `State`, `Transition`, `Start`, `Disp
 | Area | API |
 | --- | --- |
 | Model DSL | `Define`, `State`, `Initial`, `Final`, `Choice`, `ShallowHistory`, `DeepHistory` |
-| Transitions | `Transition`, `Source`, `Target`, `On`, `OnSet`, `OnCall`, `After`, `Every`, `When`, `Guard`, `Effect`, `Defer` |
+| Transitions | `Transition`, `Source`, `Target`, `On`, `OnSet`, `OnCall`, `After`, `At`, `Every`, `When`, `Guard`, `Effect`, `Defer` |
 | State behavior | `Entry`, `Exit`, `Activity` |
 | Model metadata | `Attribute`, `Operation` |
 | Runtime lifecycle | `New`, `Start`, `Started`, `Stop`, `Restart` |
@@ -221,7 +221,7 @@ If no callback is supplied to `Operation`, `Call` looks for a method with the sa
 
 ## Timers And Clock
 
-`After(duration_fn)` fires once after a relative duration. `Every(duration_fn)` fires repeatedly while the source state remains active. The duration function receives `(ctx, instance, event)` and returns `datetime.timedelta`.
+`After(duration_fn)` fires once after a relative duration. `At(timepoint_fn)` fires once at an absolute `datetime.datetime`. `Every(duration_fn)` fires repeatedly while the source state remains active. The timing function receives `(ctx, instance, event)`.
 
 ```python
 from datetime import timedelta
@@ -235,6 +235,20 @@ hsm.State(
         hsm.After(one_second),
         hsm.Target("../done"),
     ),
+)
+```
+
+Use `At` for absolute deadlines:
+
+```python
+from datetime import datetime, timedelta
+
+async def two_hours_from_now(ctx, inst, event) -> datetime:
+    return datetime.now() + timedelta(hours=2)
+
+hsm.Transition(
+    hsm.At(two_hours_from_now),
+    hsm.Target("../done"),
 )
 ```
 
@@ -366,7 +380,7 @@ Lowercase aliases are exported for Python ergonomics, for example `define`, `sta
 
 ## Current Python Notes
 
-`After`, `Every`, and `When` are implemented. `At` is part of the cross-language DSL but is not implemented in this Python package yet.
+`After`, `At`, `Every`, and `When` are implemented.
 
 This package requires Python 3.13 or newer.
 

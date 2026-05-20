@@ -11,7 +11,7 @@ import threading
 import typing
 import weakref
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import IntEnum
 
 from .kind import is_kind, kind
@@ -32,6 +32,10 @@ Expression = typing.Callable[
 Duration = typing.Callable[
     ["Context", TInstance, "Event"],
     typing.Awaitable[timedelta] | timedelta,
+]
+Timepoint = typing.Callable[
+    ["Context", TInstance, "Event"],
+    typing.Awaitable[datetime] | datetime,
 ]
 SleepFunction = typing.Callable[[timedelta], typing.Awaitable[None] | None]
 WhenExpression = typing.Callable[
@@ -1171,10 +1175,15 @@ async def noop_duration(ctx: Context, instance: "Instance", event: Event) -> tim
     return timedelta(seconds=0)
 
 
+async def noop_timepoint(ctx: Context, instance: "Instance", event: Event) -> datetime:
+    return datetime.now()
+
+
 @dataclass
 class TimedBehavior(typing.Generic[TInstance], PartialElement):
     event: Event = field(default_factory=Event)
     duration: Duration[TInstance] = field(default=noop_duration)
+    timepoint: Timepoint[TInstance] | None = None
     transition: TransitionNode = field(default_factory=TransitionNode)
     repeating: bool = False
 
@@ -1187,7 +1196,18 @@ class TimedBehavior(typing.Generic[TInstance], PartialElement):
 
         async def operation(ctx: Context, instance: TInstance, event: Event) -> None:
             while not ctx.is_done():
-                delta = await _maybe_await(self.duration(ctx, instance, event))
+                if self.timepoint is None:
+                    delta = await _maybe_await(self.duration(ctx, instance, event))
+                else:
+                    target = await _maybe_await(self.timepoint(ctx, instance, event))
+                    if not isinstance(target, datetime):
+                        raise TypeError("At() timepoint must return datetime")
+                    now = (
+                        datetime.now(target.tzinfo)
+                        if target.tzinfo is not None
+                        else datetime.now()
+                    )
+                    delta = target - now
                 if not isinstance(delta, timedelta):
                     raise TypeError("After()/Every() duration must return timedelta")
                 if delta.total_seconds() <= 0:
@@ -1216,6 +1236,7 @@ class TimedBehavior(typing.Generic[TInstance], PartialElement):
 @dataclass
 class PartialAfter(typing.Generic[TInstance], PartialElement):
     duration: Duration[TInstance] = field(default=noop_duration)
+    timepoint: Timepoint[TInstance] | None = None
     repeating: bool = False
 
     def apply(self, model: Model, stack: list[NamedElement]) -> None:
@@ -1226,7 +1247,7 @@ class PartialAfter(typing.Generic[TInstance], PartialElement):
             )
         qualified_name = join(
             transition.qualified_name,
-            getattr(self.duration, "__name__", "duration"),
+            getattr(self.timepoint or self.duration, "__name__", "duration"),
             str(len(model.members)),
         )
         event = Event(name=qualified_name, qualified_name=qualified_name, kind=Kinds.TimeEvent)
@@ -1237,6 +1258,7 @@ class PartialAfter(typing.Generic[TInstance], PartialElement):
                 event=event,
                 transition=transition,
                 duration=self.duration,
+                timepoint=self.timepoint,
                 repeating=self.repeating,
                 traceback=self.traceback,
             )
@@ -2103,6 +2125,10 @@ def After(duration: Duration[TInstance]) -> PartialAfter[TInstance]:
     return PartialAfter(duration=duration, repeating=False)
 
 
+def At(timepoint: Timepoint[TInstance]) -> PartialAfter[TInstance]:
+    return PartialAfter(timepoint=timepoint, repeating=False)
+
+
 def Every(duration: Duration[TInstance]) -> PartialAfter[TInstance]:
     return PartialAfter(duration=duration, repeating=True)
 
@@ -2315,6 +2341,7 @@ effect = Effect
 guard = Guard
 on = On
 after = After
+at = At
 every = Every
 when = When
 defer = Defer
@@ -2350,6 +2377,7 @@ __all__ = [
     "AfterExecuted",
     "AfterExit",
     "AfterProcess",
+    "At",
     "AnyEvent",
     "Attribute",
     "AttributeChange",
@@ -2443,6 +2471,7 @@ __all__ = [
     "When",
     "activity",
     "after",
+    "at",
     "attribute",
     "call",
     "choice",
