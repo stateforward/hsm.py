@@ -17,6 +17,7 @@ from .kind import is_kind, kind
 TElement = typing.TypeVar("TElement", bound="Element")
 TInstance = typing.TypeVar("TInstance", bound="Instance")
 TData = typing.TypeVar("TData", default=None)
+TNewData = typing.TypeVar("TNewData")
 
 OperationCallback = typing.Callable[
     ["Context", TInstance, "Event"],
@@ -82,6 +83,17 @@ def _next_id() -> str:
 
 
 _next_id.counter = 0  # type: ignore[attr-defined]
+
+
+def _qualify_model_name(model_qualified_name: str, name: str) -> str:
+    if name == "":
+        return ""
+    if os.path.isabs(name):
+        qualified = os.path.normpath(name)
+        if IsAncestor(model_qualified_name, qualified) or qualified == model_qualified_name:
+            return qualified
+        return join(model_qualified_name, qualified.lstrip(os.sep))
+    return join(model_qualified_name, name)
 
 
 def Match(value: str, *patterns: str) -> bool:
@@ -334,6 +346,13 @@ class OperationDef(NamedElement):
 
 
 @dataclass
+class Config:
+    ID: str = ""
+    Name: str = ""
+    Data: typing.Any = None
+
+
+@dataclass
 class Model(State):
     events: dict[str, "Event"] = field(default_factory=dict)
     attributes: dict[str, AttributeDef] = field(default_factory=dict)
@@ -361,7 +380,7 @@ class Model(State):
         if isinstance(element, Event):
             self.events[qualified_name] = element
         elif isinstance(element, AttributeDef):
-            self.attributes[element.declared_name or element.name()] = element
+            self.attributes[element.declared_name or qualified_name] = element
         elif isinstance(element, OperationDef):
             self.operations[element.declared_name or element.name()] = element
 
@@ -371,12 +390,39 @@ class Event(typing.Generic[TData]):
     name: str = field(default_factory=str)
     data: typing.Optional[TData] = field(default=None)
     kind: int = Kinds.Event
+    id: str = field(default_factory=str)
+    source: str = field(default_factory=str)
+    target: str = field(default_factory=str)
     qualified_name: str = field(default_factory=str)
     schema: typing.Any = None
 
     def __post_init__(self) -> None:
         if not self.qualified_name:
             self.qualified_name = self.name
+
+    def WithData(self, data: TNewData) -> "Event[TNewData]":
+        return Event(
+            name=self.name,
+            data=data,
+            kind=self.kind,
+            id=self.id,
+            source=self.source,
+            target=self.target,
+            qualified_name=self.qualified_name,
+            schema=self.schema,
+        )
+
+    def WithDataAndID(self, data: TNewData, id: str) -> "Event[TNewData]":
+        return Event(
+            name=self.name,
+            data=data,
+            kind=self.kind,
+            id=id,
+            source=self.source,
+            target=self.target,
+            qualified_name=self.qualified_name,
+            schema=self.schema,
+        )
 
     @property
     def Name(self) -> str:
@@ -385,6 +431,18 @@ class Event(typing.Generic[TData]):
     @property
     def Data(self) -> typing.Optional[TData]:
         return self.data
+
+    @property
+    def ID(self) -> str:
+        return self.id
+
+    @property
+    def Source(self) -> str:
+        return self.source
+
+    @property
+    def Target(self) -> str:
+        return self.target
 
     @property
     def Kind(self) -> int:
@@ -988,16 +1046,17 @@ class PartialAttribute(PartialElement):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: attribute name cannot be empty"
             )
-        if self.qualified_name in model.attributes and not self.implicit:
+        qualified_name = _qualify_model_name(model.qualified_name, self.qualified_name)
+        if qualified_name in model.attributes and not self.implicit:
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: duplicate attribute {self.qualified_name}"
             )
-        existing = model.attributes.get(self.qualified_name)
+        existing = model.attributes.get(qualified_name)
         if existing is not None:
             return existing
         attribute = AttributeDef(
-            qualified_name=join(model.qualified_name, f".attribute.{self.qualified_name}"),
-            declared_name=self.qualified_name,
+            qualified_name=qualified_name,
+            declared_name=qualified_name,
             default=self.default,
             implicit=self.implicit,
         )
@@ -1032,10 +1091,6 @@ class PartialOperationDeclaration(PartialElement):
         return operation
 
 
-def _onset_event_name(name: str) -> str:
-    return f"@set:{name}"
-
-
 def _oncall_event_name(name: str) -> str:
     return f"@call:{name}"
 
@@ -1052,11 +1107,12 @@ class PartialOnSet(PartialElement):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: OnSet() requires a non-empty attribute name"
             )
-        PartialAttribute(qualified_name=self.qualified_name, implicit=True).apply(model, stack)
+        attribute = PartialAttribute(qualified_name=self.qualified_name, implicit=True).apply(model, stack)
         event = Event(
-            name=_onset_event_name(self.qualified_name),
-            qualified_name=_onset_event_name(self.qualified_name),
+            name=attribute.declared_name,
+            qualified_name=attribute.declared_name,
             kind=Kinds.ChangeEvent,
+            source=attribute.declared_name,
             schema=AttributeChange,
         )
         model.set(event.qualified_name, event)
@@ -1334,9 +1390,9 @@ class Instance(Element):
         if self.__hsm is not None:
             await self.__hsm.stop()
 
-    async def restart(self) -> None:
+    async def restart(self, data: typing.Any = None) -> None:
         if self.__hsm is not None:
-            await self.__hsm.restart()
+            await self.__hsm.restart(data)
 
     Dispatch = dispatch
     State = state
@@ -1349,9 +1405,17 @@ class HSM(Behavior[TInstance]):
     __hash__ = object.__hash__
 
     def __init__(
-        self, instance: TInstance, model: Model, ctx: Context | None = None
+        self,
+        instance: TInstance,
+        model: Model,
+        ctx: Context | None = None,
+        config: Config | None = None,
     ):
-        super().__init__(kind=Kinds.StateMachine, qualified_name=model.qualified_name)
+        config = config or Config()
+        super().__init__(
+            kind=Kinds.StateMachine,
+            qualified_name=config.Name or model.qualified_name,
+        )
         self.model = model
         self._instance = instance
         self._root_context = ctx or Context()
@@ -1365,7 +1429,8 @@ class HSM(Behavior[TInstance]):
         self._attributes = _default_attribute_values(model)
         self._history_shallow: dict[str, str] = {}
         self._history_deep: dict[str, str] = {}
-        self._id = _next_id()
+        self._id = config.ID or _next_id()
+        self._qualified_name = config.Name or model.qualified_name
         self._started = False
         self._root_context.register(self)
         setattr(self._instance, "_Instance__hsm", self)
@@ -1386,11 +1451,12 @@ class HSM(Behavior[TInstance]):
         return self._id
 
     def qualified_name(self) -> str:
-        return self.model.qualified_name
+        return self._qualified_name
 
-    async def _start(self) -> None:
+    async def _start(self, data: typing.Any = None) -> None:
         self._processing.acquire()
-        await self._execute(self, InitialEvent)
+        initial_event = InitialEvent.WithData(data) if data is not None else InitialEvent
+        await self._execute(self, initial_event)
         self._started = True
 
     def _remember_history(self, leaf_name: str) -> None:
@@ -1622,37 +1688,41 @@ class HSM(Behavior[TInstance]):
         self._started = False
         self._processing.release()
 
-    async def restart(self) -> None:
+    async def restart(self, data: typing.Any = None) -> None:
         await self.stop()
         self._runtime_context = Context()
         self._queue = Queue()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
         self._history_deep.clear()
-        await self._start()
+        await self._start(data)
 
     def get(self, name: str) -> tuple[typing.Any, bool]:
-        if name in self._attributes:
-            return self._attributes[name], True
+        qualified_name = _qualify_model_name(self.model.qualified_name, name)
+        if qualified_name in self._attributes:
+            return self._attributes[qualified_name], True
         return None, False
 
     async def set(self, name: str, value: typing.Any) -> None:
-        old_value = self._attributes.get(name)
-        existed = name in self._attributes
-        self._attributes[name] = value
+        qualified_name = _qualify_model_name(self.model.qualified_name, name)
+        old_value = self._attributes.get(qualified_name)
+        existed = qualified_name in self._attributes
+        self._attributes[qualified_name] = value
         if existed and old_value == value:
             return
-        if name not in self.model.attributes:
-            self.model.attributes[name] = AttributeDef(
-                qualified_name=join(self.model.qualified_name, f".attribute.{name}"),
+        if qualified_name not in self.model.attributes:
+            self.model.attributes[qualified_name] = AttributeDef(
+                qualified_name=qualified_name,
+                declared_name=qualified_name,
                 default=None,
                 implicit=True,
             )
         event = Event(
-            name=_onset_event_name(name),
-            qualified_name=_onset_event_name(name),
+            name=qualified_name,
+            qualified_name=qualified_name,
             kind=Kinds.ChangeEvent,
-            data=AttributeChange(name=name, value=value, old_value=old_value),
+            source=qualified_name,
+            data=AttributeChange(name=qualified_name, value=value, old_value=old_value),
             schema=AttributeChange,
         )
         self.model.set(event.qualified_name, event)
@@ -1708,7 +1778,7 @@ class HSM(Behavior[TInstance]):
                 )
         return Snapshot(
             ID=self._id,
-            QualifiedName=self.model.qualified_name,
+            QualifiedName=self._qualified_name,
             State=self._state.qualified_name,
             Attributes=copy.deepcopy(self._attributes),
             QueueLen=self._queue.len(),
@@ -1737,6 +1807,9 @@ class Group:
                 self.instances.append(instance)
         self.id = _next_id()
 
+    def Instances(self) -> list[Instance]:
+        return list(self.instances)
+
     def state(self) -> str:
         if not self.instances:
             return ""
@@ -1753,8 +1826,8 @@ class Group:
     async def stop(self) -> None:
         await asyncio.gather(*(instance.stop() for instance in self.instances if instance is not None))
 
-    async def restart(self) -> None:
-        await asyncio.gather(*(instance.restart() for instance in self.instances if instance is not None))
+    async def restart(self, data: typing.Any = None) -> None:
+        await asyncio.gather(*(instance.restart(data) for instance in self.instances if instance is not None))
 
     def get(self, name: str) -> tuple[typing.Any, bool]:
         if not self.instances:
@@ -2058,14 +2131,39 @@ def Attribute(name: str, maybe_default: typing.Any = None) -> PartialAttribute:
     return PartialAttribute(qualified_name=name, default=maybe_default)
 
 
-async def Start(ctx: Context | None, instance: TInstance, model: Model) -> HSM[TInstance]:
-    sm = HSM(instance=instance, model=model, ctx=ctx)
-    await sm._start()
+def New(instance: TInstance, model: Model, maybe_config: Config | None = None) -> HSM[TInstance]:
+    return HSM(instance=instance, model=model, config=maybe_config)
+
+
+async def Start(
+    ctx: Context | None,
+    instance: TInstance | HSM[TInstance],
+    model: Model | typing.Any | None = None,
+    data: typing.Any = None,
+) -> HSM[TInstance]:
+    if isinstance(instance, HSM):
+        sm = instance
+        start_data = model
+        sm._root_context = ctx or Context()
+        sm._root_context.register(sm)
+    else:
+        if not isinstance(model, Model):
+            raise ValidationError("Start() requires a model when starting an instance")
+        sm = HSM(instance=instance, model=model, ctx=ctx)
+        start_data = data
+    await sm._start(start_data)
     return sm
 
 
-async def Started(ctx: Context | None, instance: TInstance, model: Model) -> HSM[TInstance]:
-    return await Start(ctx, instance, model)
+async def Started(
+    ctx: Context | None,
+    instance: TInstance,
+    model: Model,
+    maybe_config: Config | None = None,
+) -> HSM[TInstance]:
+    sm = New(instance, model, maybe_config)
+    data = maybe_config.Data if maybe_config is not None else None
+    return await Start(ctx, sm, data)
 
 
 async def Stop(sm: typing.Union[HSM[TInstance], Instance, Group]) -> None:
@@ -2076,12 +2174,15 @@ async def Stop(sm: typing.Union[HSM[TInstance], Instance, Group]) -> None:
     await machine.stop()
 
 
-async def Restart(sm: typing.Union[HSM[TInstance], Instance, Group]) -> None:
+async def Restart(
+    sm: typing.Union[HSM[TInstance], Instance, Group],
+    data: typing.Any = None,
+) -> None:
     if isinstance(sm, Group):
-        await sm.restart()
+        await sm.restart(data)
         return
     machine = _resolve_machine(sm)
-    await machine.restart()
+    await machine.restart(data)
 
 
 async def Dispatch(
@@ -2178,6 +2279,7 @@ when = When
 defer = Defer
 choice = Choice
 final = Final
+new = New
 start = Start
 started = Started
 stop = Stop
@@ -2216,10 +2318,12 @@ __all__ = [
     "Call",
     "CallData",
     "CallEventKind",
+    "ChangeEventKind",
     "Choice",
     "ChoiceKind",
     "CompletionEvent",
     "CompletionEventKind",
+    "Config",
     "ConcurrentKind",
     "ConstraintKind",
     "Context",
@@ -2249,6 +2353,7 @@ __all__ = [
     "Get",
     "Guard",
     "HSM",
+    "ID",
     "Initial",
     "InitialEvent",
     "InitialKind",
@@ -2261,7 +2366,9 @@ __all__ = [
     "LocalKind",
     "Match",
     "Model",
+    "Name",
     "NamespaceKind",
+    "New",
     "NewGroup",
     "NullKind",
     "On",
@@ -2311,6 +2418,7 @@ __all__ = [
     "guard",
     "initial",
     "match",
+    "new",
     "new_group",
     "on",
     "on_call",
@@ -2329,8 +2437,16 @@ __all__ = [
 ]
 
 
+def ID(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
+    return TakeSnapshot(None, hsm).ID
+
+
 def QualifiedName(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
     return TakeSnapshot(None, hsm).QualifiedName
+
+
+def Name(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
+    return os.path.basename(QualifiedName(hsm))
 
 
 if __name__ == "__main__":

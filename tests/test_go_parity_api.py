@@ -40,6 +40,9 @@ async def test_pascal_case_aliases_and_snapshot():
     assert snapshot.QualifiedName == "/AliasMachine"
     assert snapshot.State == "/AliasMachine/idle"
     assert snapshot.QueueLen == 0
+    assert hsm.ID(instance) == snapshot.ID
+    assert hsm.QualifiedName(instance) == "/AliasMachine"
+    assert hsm.Name(instance) == "AliasMachine"
     assert any(event.Name == "go" and event.Target == "/AliasMachine/done" for event in snapshot.Events)
 
     await hsm.Stop(instance)
@@ -69,7 +72,13 @@ async def test_attribute_onset_get_set_and_snapshot():
     initial_value, ok = hsm.Get(ctx, instance, "count")
     assert ok is True
     assert initial_value == 1
-    assert hsm.TakeSnapshot(ctx, instance).Attributes["count"] == 1
+    initial_snapshot = hsm.TakeSnapshot(ctx, instance)
+    assert initial_snapshot.Attributes["/AttributeMachine/count"] == 1
+    assert any(
+        event.Name == "/AttributeMachine/count"
+        and event.Kind == hsm.ChangeEventKind
+        for event in initial_snapshot.Events
+    )
 
     await hsm.Set(ctx, instance, "count", 2)
 
@@ -77,7 +86,46 @@ async def test_attribute_onset_get_set_and_snapshot():
     assert ok is True
     assert updated_value == 2
     assert instance.state() == "/AttributeMachine/changed"
-    assert hsm.TakeSnapshot(ctx, instance).Attributes["count"] == 2
+    assert hsm.TakeSnapshot(ctx, instance).Attributes["/AttributeMachine/count"] == 2
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_identity_config_and_event_data_helpers():
+    instance = ParityInstance()
+    seen: list[object] = []
+
+    async def idle_entry(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+        seen.append(event.Data)
+
+    model = hsm.Define(
+        "ConfiguredMachine",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Entry(idle_entry)),
+    )
+
+    ctx = hsm.Context()
+    sm = await hsm.Started(
+        ctx,
+        instance,
+        model,
+        hsm.Config(ID="alpha", Name="/ConfiguredAlias", Data="boot"),
+    )
+
+    event = hsm.Event(name="go").WithDataAndID({"value": 1}, "event-1")
+
+    assert hsm.ID(sm) == "alpha"
+    assert hsm.ID(instance) == "alpha"
+    assert hsm.QualifiedName(instance) == "/ConfiguredAlias"
+    assert hsm.Name(instance) == "ConfiguredAlias"
+    assert hsm.TakeSnapshot(ctx, instance).State == "/ConfiguredMachine/idle"
+    assert seen == ["boot"]
+    assert event.Data == {"value": 1}
+    assert event.ID == "event-1"
+
+    await hsm.Restart(instance, "again")
+    assert seen == ["boot", "again"]
 
     await hsm.Stop(instance)
 
