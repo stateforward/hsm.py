@@ -1,6 +1,6 @@
 [project]
 name = "stateforward.hsm"
-version = "0.3.0"
+version = "0.3.1"
 description = "Hierarchical State Machine implementation for Python with asyncio support"
 readme = "README.md"
 license = {text = "MIT"}
