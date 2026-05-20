@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import IntEnum
 
-from .kind import is_kind, kind
+from .kind import IsKind, MakeKind, is_kind, make_kind
 
 TElement = typing.TypeVar("TElement", bound="Element")
 TInstance = typing.TypeVar("TInstance", bound="Instance")
@@ -184,37 +184,37 @@ class Context:
 
 
 class Kinds(IntEnum):
-    Null = kind(1)
-    Element = kind(2)
-    Partial = kind(3)
-    Namespace = kind(4, Element)
-    NamedElement = kind(5, Element)
-    Vertex = kind(6, Element)
-    State = kind(7, Vertex, NamedElement, Namespace)
-    FinalState = kind(8, State)
-    Transition = kind(9, NamedElement)
-    Pseudostate = kind(10, Vertex)
-    Initial = kind(11, Pseudostate)
-    Choice = kind(12, Pseudostate)
-    ShallowHistory = kind(13, Pseudostate)
-    DeepHistory = kind(14, Pseudostate)
-    External = kind(15, Transition)
-    Self = kind(16, Transition)
-    Internal = kind(17, Transition)
-    Local = kind(18, Transition)
-    Behavior = kind(19, NamedElement)
-    StateMachine = kind(20, Behavior, Namespace)
-    Concurrent = kind(21, Behavior)
-    Sequential = kind(22, Behavior)
-    Constraint = kind(23, NamedElement)
-    Event = kind(24, Element)
-    CompletionEvent = kind(25, Event)
-    ErrorEvent = kind(26, CompletionEvent)
-    TimeEvent = kind(27, Event)
-    ChangeEvent = kind(28, Event)
-    CallEvent = kind(29, Event)
-    Attribute = kind(30, NamedElement)
-    Operation = kind(31, NamedElement)
+    Null = MakeKind()
+    Element = MakeKind()
+    Partial = MakeKind(Element)
+    Namespace = MakeKind(Element)
+    NamedElement = MakeKind(Element)
+    Vertex = MakeKind(Element)
+    State = MakeKind(Vertex, NamedElement, Namespace)
+    FinalState = MakeKind(State)
+    Transition = MakeKind(NamedElement)
+    Pseudostate = MakeKind(Vertex)
+    Initial = MakeKind(Pseudostate)
+    Choice = MakeKind(Pseudostate)
+    ShallowHistory = MakeKind(Pseudostate)
+    DeepHistory = MakeKind(Pseudostate)
+    External = MakeKind(Transition)
+    Self = MakeKind(Transition)
+    Internal = MakeKind(Transition)
+    Local = MakeKind(Transition)
+    Behavior = MakeKind(NamedElement)
+    StateMachine = MakeKind(Behavior, Namespace)
+    Concurrent = MakeKind(Behavior)
+    Sequential = MakeKind(Behavior)
+    Constraint = MakeKind(NamedElement)
+    Event = MakeKind(Element)
+    CompletionEvent = MakeKind(Event)
+    ErrorEvent = MakeKind(CompletionEvent)
+    TimeEvent = MakeKind(Event)
+    ChangeEvent = MakeKind(Event)
+    CallEvent = MakeKind(Event)
+    Attribute = MakeKind(NamedElement)
+    Operation = MakeKind(NamedElement)
 
 
 NullKind = Kinds.Null
@@ -2432,10 +2432,12 @@ __all__ = [
     "Instance",
     "InternalKind",
     "IsAncestor",
+    "IsKind",
     "Kinds",
     "LCA",
     "LocalKind",
     "Match",
+    "MakeKind",
     "Model",
     "Name",
     "NamespaceKind",
@@ -2489,7 +2491,9 @@ __all__ = [
     "get",
     "guard",
     "initial",
+    "is_kind",
     "match",
+    "make_kind",
     "new",
     "new_group",
     "on",

@@ -378,6 +378,25 @@ class Kinds(IntEnum):
     TimeEvent = ...
 ```
 
+Custom kinds use the same automatic allocation style as the Go and TypeScript
+implementations:
+
+```python
+BaseKind = hsm.MakeKind()
+ChildKind = hsm.MakeKind(BaseKind)
+
+assert hsm.IsKind(ChildKind, BaseKind)
+```
+
+Python also exposes snake_case aliases:
+
+```python
+base_kind = hsm.make_kind()
+child_kind = hsm.make_kind(base_kind)
+
+assert hsm.is_kind(child_kind, base_kind)
+```
+
 ## Context and Cancellation
 
 ### Context Class

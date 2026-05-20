@@ -76,7 +76,7 @@ The canonical API is PascalCase: `Define`, `State`, `Transition`, `Start`, `Disp
 | Runtime identity | `Config`, `ID`, `Name`, `QualifiedName` |
 | Timers | `Clock`, `DefaultClock`, `Config(Clock=...)` |
 | Observability | `TakeSnapshot`, `AfterDispatch`, `AfterProcess`, `AfterEntry`, `AfterExit`, `AfterExecuted` |
-| Utilities | `Match`, `LCA`, `IsAncestor`, kind constants |
+| Utilities | `Match`, `LCA`, `IsAncestor`, `MakeKind`, `IsKind`, kind constants |
 
 ## Model DSL
 

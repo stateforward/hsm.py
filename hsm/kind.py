@@ -3,36 +3,92 @@ id_length = 8
 depth_max = length // id_length
 id_mask = (1 << id_length) - 1
 
-
-def subkinds(kind: int) -> list[int]:
-    subkinds: list[int] = []
-    for i in range(depth_max):
-        subkinds.append(kind | (1 << (i * id_length)))
-    return subkinds
+_counter = 0
 
 
-def is_kind(kind: int, *subkinds: int) -> bool:
-    for subkind in subkinds:
-        base_id = subkind & id_mask
-        if kind == base_id:
-            return True
-        for i in range(depth_max):
-            current_id = (kind >> (i * id_length)) & id_mask
-            if current_id == base_id:
-                return True
-    return False
+def _extract_id(kind_value: int, depth: int) -> int:
+    return (int(kind_value) >> (depth * id_length)) & id_mask
 
 
-def kind(id: int, *subkinds: int) -> int:
-    id = id & id_mask
+def _next_id() -> int:
+    global _counter
+    id_ = _counter & id_mask
+    _counter += 1
+    return id_
+
+
+def List(kind_value: int) -> list[int]:
+    return [_extract_id(kind_value, depth) for depth in range(1, depth_max)]
+
+
+def list_kind(kind_value: int) -> list[int]:
+    return List(kind_value)
+
+
+def Bases(kind_value: int) -> list[int]:
+    return List(kind_value)
+
+
+def bases(kind_value: int) -> list[int]:
+    return List(kind_value)
+
+
+def subkinds(kind_value: int) -> list[int]:
+    return List(kind_value)
+
+
+def MakeKind(*base_kinds: int) -> int:
+    id_ = _next_id()
     ids: set[int] = set()
-    for subkind in subkinds:
-        for i in range(depth_max):
-            base_id = (subkind >> (i * id_length)) & id_mask
+    for base in base_kinds:
+        for depth in range(depth_max):
+            base_id = _extract_id(base, depth)
             if base_id == 0:
                 break
             if base_id in ids:
                 continue
             ids.add(base_id)
-            id |= base_id << (id_length * len(ids))
-    return id
+            id_ |= base_id << (id_length * len(ids))
+    return id_
+
+
+def make_kind(*base_kinds: int) -> int:
+    return MakeKind(*base_kinds)
+
+
+def kind(*base_kinds: int) -> int:
+    return MakeKind(*base_kinds)
+
+
+def IsKind(kind_value: int, *base_kinds: int) -> bool:
+    for base in base_kinds:
+        base_id = int(base) & id_mask
+        if int(kind_value) == base_id:
+            return True
+        for depth in range(depth_max):
+            current_id = _extract_id(kind_value, depth)
+            if current_id == base_id:
+                return True
+    return False
+
+
+def is_kind(kind_value: int, *base_kinds: int) -> bool:
+    return IsKind(kind_value, *base_kinds)
+
+
+__all__ = [
+    "Bases",
+    "IsKind",
+    "List",
+    "MakeKind",
+    "bases",
+    "depth_max",
+    "id_length",
+    "id_mask",
+    "is_kind",
+    "kind",
+    "length",
+    "list_kind",
+    "make_kind",
+    "subkinds",
+]
