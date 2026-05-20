@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 import pytest
 
@@ -126,6 +127,52 @@ async def test_snapshot_identity_config_and_event_data_helpers():
 
     await hsm.Restart(instance, "again")
     assert seen == ["boot", "again"]
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
+async def test_config_clock_drives_after_transition():
+    instance = ParityInstance()
+    sleeps: list[tuple[object, asyncio.Future[None]]] = []
+
+    async def manual_sleep(duration):
+        future = asyncio.get_running_loop().create_future()
+        sleeps.append((duration, future))
+        await future
+
+    async def delay(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event):
+        return timedelta(seconds=5)
+
+    model = hsm.Define(
+        "ClockMachine",
+        hsm.Initial(hsm.Target("waiting")),
+        hsm.State(
+            "waiting",
+            hsm.Transition(
+                hsm.After(delay),
+                hsm.Target("../done"),
+            ),
+        ),
+        hsm.State("done"),
+    )
+
+    ctx = hsm.Context()
+    await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
+
+    for _ in range(10):
+        if sleeps:
+            break
+        await asyncio.sleep(0)
+
+    assert len(sleeps) == 1
+    assert sleeps[0][0].total_seconds() == 5
+    assert instance.state() == "/ClockMachine/waiting"
+
+    entered_done = hsm.AfterEntry(ctx, instance, "/ClockMachine/done")
+    sleeps[0][1].set_result(None)
+    await entered_done
+    assert instance.state() == "/ClockMachine/done"
 
     await hsm.Stop(instance)
 

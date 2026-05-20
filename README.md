@@ -139,6 +139,26 @@ hsm.transition(
 )
 ```
 
+Timer scheduling is controlled by the runtime clock. Use `hsm.Config(Clock=...)`
+when tests or embedded runtimes need deterministic time:
+
+```python
+from datetime import timedelta
+
+pending = []
+
+async def manual_sleep(duration: timedelta):
+    future = asyncio.get_running_loop().create_future()
+    pending.append((duration, future))
+    await future
+
+clock = hsm.Clock(sleep=manual_sleep)
+sm = await hsm.started(ctx, instance, model, hsm.Config(Clock=clock))
+
+# Later in a test, release the timer manually.
+pending[0][1].set_result(None)
+```
+
 ### Error Handling
 
 Exceptions in actions automatically dispatch `hsm_error` events:
@@ -218,6 +238,14 @@ ctx = hsm.Context()
 # Start the machine
 sm = await hsm.start(ctx, instance, MyMachine.model)
 
+# Or configure runtime identity, initial data, and timer scheduling
+sm = await hsm.started(ctx, instance, MyMachine.model, hsm.Config(
+    ID="machine-1",
+    Name="/RuntimeName",
+    Data={"boot": True},
+    Clock=hsm.DefaultClock,
+))
+
 # Check current state
 current_state = sm.state()
 
@@ -263,6 +291,9 @@ await hsm.stop(sm)
 
 * **`hsm.Instance`**: Base class for state machine instances
 * **`hsm.Context`**: Execution context with cancellation support
+* **`hsm.Config`**: Runtime configuration for identity, initial data, and clock injection
+* **`hsm.Clock`**: Runtime scheduling hook used by `after` and `every` timers
+* **`hsm.DefaultClock`**: Default asyncio-backed runtime clock
 * **`hsm.Event(name, data=None)`**: Event object
 
 ## Performance

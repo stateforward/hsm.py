@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import collections
 import copy
@@ -31,6 +33,7 @@ Duration = typing.Callable[
     ["Context", TInstance, "Event"],
     typing.Awaitable[timedelta] | timedelta,
 ]
+SleepFunction = typing.Callable[[timedelta], typing.Awaitable[None] | None]
 WhenExpression = typing.Callable[
     ["Context", TInstance, "Event"],
     typing.Any,
@@ -75,6 +78,10 @@ async def _normalize_waitable(value: typing.Any) -> None:
             await typing.cast(typing.Awaitable[typing.Any], result)
             return
     raise TypeError(f"unsupported When() result {type(value)!r}")
+
+
+async def _asyncio_sleep(duration: timedelta) -> None:
+    await asyncio.sleep(duration.total_seconds())
 
 
 def _next_id() -> str:
@@ -346,10 +353,26 @@ class OperationDef(NamedElement):
 
 
 @dataclass
+class Clock:
+    sleep: SleepFunction | None = None
+
+    def with_defaults(self) -> "Clock":
+        return Clock(sleep=self.sleep or _asyncio_sleep)
+
+    async def Sleep(self, duration: timedelta) -> None:
+        sleep = self.sleep or _asyncio_sleep
+        await _maybe_await(sleep(duration))
+
+
+DefaultClock = Clock()
+
+
+@dataclass
 class Config:
     ID: str = ""
     Name: str = ""
     Data: typing.Any = None
+    Clock: Clock | None = None
 
 
 @dataclass
@@ -1172,7 +1195,7 @@ class TimedBehavior(typing.Generic[TInstance], PartialElement):
                         return
                     return
                 try:
-                    await asyncio.sleep(delta.total_seconds())
+                    await _clock_for_instance(instance).Sleep(delta)
                 except asyncio.CancelledError:
                     return
                 if ctx.is_done():
@@ -1368,6 +1391,13 @@ class ActiveBehavior:
     task: asyncio.Task[None]
 
 
+def _clock_for_instance(instance: typing.Any) -> Clock:
+    machine = getattr(instance, "_Instance__hsm", None)
+    if isinstance(machine, HSM):
+        return machine.clock()
+    return DefaultClock.with_defaults()
+
+
 class Instance(Element):
     __hsm: typing.Optional["HSM[typing.Self]"] = None
 
@@ -1386,6 +1416,11 @@ class Instance(Element):
             return None
         return self.__hsm.context()
 
+    def clock(self) -> Clock:
+        if self.__hsm is None:
+            return DefaultClock.with_defaults()
+        return self.__hsm.clock()
+
     async def stop(self) -> None:
         if self.__hsm is not None:
             await self.__hsm.stop()
@@ -1397,6 +1432,7 @@ class Instance(Element):
     Dispatch = dispatch
     State = state
     Context = context
+    Clock = clock
     Stop = stop
     Restart = restart
 
@@ -1431,6 +1467,7 @@ class HSM(Behavior[TInstance]):
         self._history_deep: dict[str, str] = {}
         self._id = config.ID or _next_id()
         self._qualified_name = config.Name or model.qualified_name
+        self._clock = (config.Clock or DefaultClock).with_defaults()
         self._started = False
         self._root_context.register(self)
         setattr(self._instance, "_Instance__hsm", self)
@@ -1452,6 +1489,9 @@ class HSM(Behavior[TInstance]):
 
     def qualified_name(self) -> str:
         return self._qualified_name
+
+    def clock(self) -> Clock:
+        return self._clock
 
     async def _start(self, data: typing.Any = None) -> None:
         self._processing.acquire()
@@ -1787,6 +1827,7 @@ class HSM(Behavior[TInstance]):
 
     State = state
     Context = context
+    Clock = clock
     Stop = stop
     Restart = restart
     Get = get
@@ -2321,6 +2362,7 @@ __all__ = [
     "ChangeEventKind",
     "Choice",
     "ChoiceKind",
+    "Clock",
     "CompletionEvent",
     "CompletionEventKind",
     "Config",
@@ -2331,6 +2373,7 @@ __all__ = [
     "DeepHistoryKind",
     "Defer",
     "Define",
+    "DefaultClock",
     "Dispatch",
     "DispatchAll",
     "DispatchTo",
