@@ -1043,6 +1043,57 @@ def test_repeated_start_fails_without_leaking_context_registration():
     asyncio.run(_repeated_start_fails_without_leaking_context_registration())
 
 
+async def _stopped_machine_rejects_event_mutating_operations() -> None:
+    class StoppedInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.called = False
+
+        async def work(self):
+            self.called = True
+
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "StoppedRejects",
+        hsm.Attribute("flag", False),
+        hsm.Operation("work"),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
+            hsm.Transition(hsm.OnSet("flag"), hsm.Target("../done")),
+            hsm.Transition(hsm.OnCall("work"), hsm.Target("../done")),
+        ),
+        hsm.State("done"),
+    )
+    instance = StoppedInstance()
+    sm = await hsm.Start(ctx, instance, model)
+    await hsm.Stop(instance)
+
+    assert instance.state() == "/StoppedRejects"
+    assert ctx.machines() == []
+
+    for operation in (
+        hsm.Dispatch(ctx, instance, hsm.Event("go")),
+        hsm.Set(ctx, instance, "flag", True),
+        hsm.Call(ctx, instance, "work"),
+    ):
+        try:
+            await operation
+        except hsm.ValidationError as error:
+            assert "started HSM" in str(error)
+        else:
+            raise AssertionError("operation on stopped HSM should fail")
+
+    assert instance.called is False
+    assert instance.state() == "/StoppedRejects"
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+
+
+def test_stopped_machine_rejects_event_mutating_operations():
+    asyncio.run(_stopped_machine_rejects_event_mutating_operations())
+
+
 async def _restart_preserves_context_registration() -> None:
     class RestartInstance(hsm.Instance):
         pass

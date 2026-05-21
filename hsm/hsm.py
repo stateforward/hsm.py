@@ -1477,6 +1477,9 @@ class Mutex:
         self._locked = True
         return True
 
+    def locked(self) -> bool:
+        return self._locked
+
     async def acquire(self) -> None:
         if not self._locked:
             self._locked = True
@@ -1641,6 +1644,10 @@ class HSM(Behavior[TInstance]):
 
     def clock(self) -> Clock:
         return self._clock
+
+    def _ensure_accepting_events(self) -> None:
+        if not self._started and not self._processing.locked():
+            raise ValidationError("operation requires a started HSM")
 
     async def _start(self, data: typing.Any = None) -> None:
         await self._processing.acquire()
@@ -1905,6 +1912,7 @@ class HSM(Behavior[TInstance]):
         return current if target is None else target
 
     def _dispatch_task(self, event: Event[typing.Any]) -> typing.Awaitable[None]:
+        self._ensure_accepting_events()
         self._queue.push(event)
         self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
         if self._processing.try_acquire():
@@ -1985,6 +1993,7 @@ class HSM(Behavior[TInstance]):
         return None, False
 
     async def set(self, name: str, value: typing.Any) -> None:
+        self._ensure_accepting_events()
         qualified_name = _qualify_model_name(self.model.qualified_name, name)
         old_value = self._attributes.get(qualified_name)
         existed = qualified_name in self._attributes
@@ -2010,6 +2019,7 @@ class HSM(Behavior[TInstance]):
         await self.dispatch(event)
 
     async def call(self, name: str, *args: typing.Any) -> typing.Any:
+        self._ensure_accepting_events()
         if not name:
             raise ValidationError("operation name cannot be empty")
         operation = self.model.operations.get(name)
