@@ -1665,7 +1665,21 @@ class HSM(Behavior[TInstance]):
                 return transition
         return None
 
+    async def _should_retry_deferred(self, event: Event) -> bool:
+        qualified_name = self._state.qualified_name
+        while qualified_name:
+            source = self.model.get(qualified_name, StateNode)
+            if source is None:
+                break
+            if await self._enabled(source, event) is not None:
+                return True
+            if self.model.deferred_map.get(qualified_name, {}).get(event.qualified_name, False):
+                return False
+            qualified_name = source.owner()
+        return True
+
     async def _process(self) -> None:
+        local_events: collections.deque[Event] = collections.deque()
         event = await self._queue.pop()
         deferred: list[Event] = []
         while event is not None:
@@ -1690,7 +1704,22 @@ class HSM(Behavior[TInstance]):
                 self._after.process,
                 lambda expected: expected is None or expected == event.qualified_name,
             )
-            event = await self._queue.pop()
+            if local_events:
+                event = local_events.popleft()
+            else:
+                event = await self._queue.pop()
+            if event is None and deferred:
+                retry: list[Event] = []
+                still_deferred: list[Event] = []
+                for deferred_event in deferred:
+                    if await self._should_retry_deferred(deferred_event):
+                        retry.append(deferred_event)
+                    else:
+                        still_deferred.append(deferred_event)
+                deferred = still_deferred
+                if retry:
+                    local_events.extend(retry[1:])
+                    event = retry[0]
         for deferred_event in deferred:
             self._queue.push(deferred_event)
         self._processing.release()
@@ -2478,6 +2507,7 @@ __all__ = [
     "TimeEventKind",
     "Transition",
     "TransitionKind",
+    "ValidationError",
     "VertexKind",
     "When",
     "activity",

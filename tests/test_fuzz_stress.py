@@ -251,3 +251,134 @@ async def _activity_cancellation_stress(rounds: int) -> None:
 
 def test_activity_cancellation_stress():
     asyncio.run(_activity_cancellation_stress(rounds=100))
+
+
+async def _deferred_event_replay_stress(rounds: int) -> None:
+    instance = FuzzInstance()
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "DeferredStress",
+        hsm.Initial(hsm.Target("holding")),
+        hsm.State(
+            "holding",
+            hsm.Defer(hsm.Event("work")),
+            hsm.Transition(hsm.On("release"), hsm.Target("../processing")),
+        ),
+        hsm.State(
+            "processing",
+            hsm.Transition(hsm.On("work"), hsm.Target("../done")),
+        ),
+        hsm.State("done", hsm.Transition(hsm.On("reset"), hsm.Target("../holding"))),
+    )
+    await hsm.Start(ctx, instance, model)
+
+    for _ in range(rounds):
+        await hsm.Dispatch(ctx, instance, hsm.Event("work"))
+        assert instance.state() == "/DeferredStress/holding"
+        assert hsm.TakeSnapshot(ctx, instance).QueueLen == 1
+
+        await hsm.Dispatch(ctx, instance, hsm.Event("release"))
+
+        assert instance.state() == "/DeferredStress/done"
+        assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+        await hsm.Dispatch(ctx, instance, hsm.Event("reset"))
+        assert instance.state() == "/DeferredStress/holding"
+
+    await hsm.Stop(instance)
+
+
+def test_deferred_events_replay_without_extra_dispatch():
+    asyncio.run(_deferred_event_replay_stress(rounds=100))
+
+
+@st.composite
+def deferred_traces(draw):
+    return tuple(draw(st.lists(st.sampled_from(("work", "release", "reset")), min_size=0, max_size=80)))
+
+
+async def _drive_deferred_trace(trace: tuple[str, ...]) -> None:
+    instance = FuzzInstance()
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "DeferredFuzz",
+        hsm.Initial(hsm.Target("holding")),
+        hsm.State(
+            "holding",
+            hsm.Defer(hsm.Event("work")),
+            hsm.Transition(hsm.On("release"), hsm.Target("../processing")),
+        ),
+        hsm.State(
+            "processing",
+            hsm.Transition(hsm.On("work"), hsm.Target("../done")),
+            hsm.Transition(hsm.On("reset"), hsm.Target("../holding")),
+        ),
+        hsm.State("done", hsm.Transition(hsm.On("reset"), hsm.Target("../holding"))),
+    )
+    await hsm.Start(ctx, instance, model)
+
+    expected = "holding"
+    deferred_work = 0
+    for event_name in trace:
+        await hsm.Dispatch(ctx, instance, hsm.Event(event_name))
+        if expected == "holding":
+            if event_name == "work":
+                deferred_work += 1
+            elif event_name == "release":
+                expected = "done" if deferred_work else "processing"
+                deferred_work = 0
+        elif expected == "processing":
+            if event_name == "work":
+                expected = "done"
+            elif event_name == "reset":
+                expected = "holding"
+        elif expected == "done" and event_name == "reset":
+            expected = "holding"
+
+        snapshot = hsm.TakeSnapshot(ctx, instance)
+        assert snapshot.State == f"/DeferredFuzz/{expected}"
+        assert snapshot.QueueLen == deferred_work
+
+    await hsm.Stop(instance)
+
+
+@given(deferred_traces())
+@settings(max_examples=80, deadline=None, derandomize=True)
+def test_deferred_event_fuzz(trace: tuple[str, ...]):
+    asyncio.run(_drive_deferred_trace(trace))
+
+
+@given(
+    st.lists(
+        st.sampled_from(("missing_initial", "bad_initial_target", "missing_transition_target")),
+        min_size=1,
+        max_size=20,
+    )
+)
+@settings(max_examples=60, deadline=None, derandomize=True)
+def test_invalid_model_definitions_fail_fast(cases: list[str]):
+    for index, case in enumerate(cases):
+        if case == "missing_initial":
+            builder = lambda: hsm.Define(f"Invalid{index}", hsm.State("idle"))
+            message = "initial state is required"
+        elif case == "bad_initial_target":
+            builder = lambda: hsm.Define(
+                f"Invalid{index}",
+                hsm.Initial(hsm.Target("missing")),
+                hsm.State("idle"),
+            )
+            message = "Vertex"
+        else:
+            builder = lambda: hsm.Define(
+                f"Invalid{index}",
+                hsm.Initial(hsm.Target("idle")),
+                hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../missing"))),
+            )
+            message = "Vertex"
+
+        try:
+            builder()
+        except hsm.ValidationError as error:
+            assert message in str(error)
+        else:
+            raise AssertionError(f"{case} unexpectedly built a model")
