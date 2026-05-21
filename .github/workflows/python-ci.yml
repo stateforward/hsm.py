@@ -39,7 +39,7 @@ jobs:
         run: python -m pip install uv
 
       - name: Sync dependencies
-        run: uv sync --dev
+        run: uv sync --group dev
 
       - name: Run tests
         run: uv run pytest -vv --cov=hsm --cov-report=term-missing --cov-fail-under=90
