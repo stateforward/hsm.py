@@ -391,15 +391,17 @@ This package requires Python 3.13 or newer.
 Run the full verification suite before shipping changes:
 
 ```bash
-uv run pytest
+uv run pytest --cov=hsm --cov-report=term-missing --cov-fail-under=90
 uv build
 uvx twine check dist/*
 ```
 
 The suite includes deterministic Hypothesis fuzz tests for generated state
-machines and guarded transition order, plus stress tests for concurrent
-dispatch, broadcast dispatch, and activity cancellation cleanup. CI runs the
-same gates on pushes and pull requests.
+machines, guarded transition order, runtime attribute updates, and invalid timer
+callbacks, plus stress tests for concurrent dispatch, broadcast dispatch,
+runtime `Set`/`Call`, timers, history re-entry, and activity cancellation
+cleanup. CI runs the same tests, package checks, wheel smoke test, typed-marker
+check, and coverage threshold on pushes and pull requests.
 
 Longer deterministic soak tests are available when needed:
 
