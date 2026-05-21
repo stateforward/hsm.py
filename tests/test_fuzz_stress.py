@@ -204,6 +204,115 @@ def test_dispatch_all_and_dispatch_to_stress():
     asyncio.run(_broadcast_stress(machine_count=50, rounds=25))
 
 
+@given(st.lists(st.integers(min_value=-5, max_value=5), min_size=0, max_size=80))
+@settings(max_examples=80, deadline=None, derandomize=True)
+def test_attribute_set_event_fuzz(values: list[int]):
+    asyncio.run(_drive_attribute_set_trace(tuple(values)))
+
+
+async def _drive_attribute_set_trace(values: tuple[int, ...]) -> None:
+    class AttributeInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.changes: list[tuple[int | None, int]] = []
+
+    async def record_change(ctx, inst: AttributeInstance, event: hsm.Event) -> None:
+        change = event.Data
+        inst.changes.append((change.old_value, change.value))
+
+    model = hsm.Define(
+        "SetFuzz",
+        hsm.Attribute("count", 0),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.OnSet("count"),
+                hsm.Effect(record_change),
+            ),
+        ),
+    )
+    instance = AttributeInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    expected_changes: list[tuple[int | None, int]] = []
+    current = 0
+    for value in values:
+        await hsm.Set(ctx, instance, "count", value)
+        if value != current:
+            expected_changes.append((current, value))
+            current = value
+        observed, ok = hsm.Get(ctx, instance, "count")
+        assert ok is True
+        assert observed == value
+        assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    assert instance.changes == expected_changes
+    await hsm.Stop(instance)
+
+
+async def _set_call_concurrency_stress(rounds: int) -> None:
+    class RuntimeInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.changed = 0
+            self.called = 0
+            self.calls: list[int] = []
+
+    async def add(ctx, inst: RuntimeInstance, value: int) -> int:
+        await asyncio.sleep(0)
+        inst.calls.append(value)
+        return value + 1
+
+    async def record_set(ctx, inst: RuntimeInstance, event: hsm.Event) -> None:
+        inst.changed += 1
+
+    async def record_call(ctx, inst: RuntimeInstance, event: hsm.Event) -> None:
+        inst.called += 1
+
+    model = hsm.Define(
+        "SetCallStress",
+        hsm.Attribute("value", 0),
+        hsm.Operation("add", add),
+        hsm.Initial(hsm.Target("ready")),
+        hsm.State(
+            "ready",
+            hsm.Transition(hsm.OnSet("value"), hsm.Effect(record_set)),
+            hsm.Transition(hsm.OnCall("add"), hsm.Effect(record_call)),
+        ),
+    )
+    instance = RuntimeInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    async def set_value(value: int) -> None:
+        await hsm.Set(ctx, instance, "value", value)
+
+    async def call_add(value: int) -> int:
+        return await hsm.Call(ctx, instance, "add", value)
+
+    results = await asyncio.gather(
+        *(set_value(index) for index in range(rounds)),
+        *(call_add(index) for index in range(rounds)),
+    )
+
+    call_results = results[rounds:]
+    assert sorted(call_results) == list(range(1, rounds + 1))
+    assert sorted(instance.calls) == list(range(rounds))
+    assert instance.changed == max(rounds - 1, 0)
+    assert instance.called == rounds
+    assert instance.state() == "/SetCallStress/ready"
+    snapshot = hsm.TakeSnapshot(ctx, instance)
+    assert snapshot.QueueLen == 0
+    assert snapshot.Attributes["/SetCallStress/value"] == rounds - 1
+    await hsm.Stop(instance)
+
+
+def test_concurrent_set_and_call_stress():
+    asyncio.run(_set_call_concurrency_stress(rounds=200))
+
+
 async def _activity_cancellation_stress(rounds: int) -> None:
     class ActivityInstance(hsm.Instance):
         def __init__(self):
