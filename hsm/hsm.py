@@ -1616,6 +1616,7 @@ class HSM(Behavior[TInstance]):
         self._qualified_name = config.Name or model.qualified_name
         self._clock = (config.Clock or DefaultClock).with_defaults()
         self._started = False
+        self._stop_requested = False
         self._root_context.register(self)
         setattr(self._instance, "_Instance__hsm", self)
 
@@ -1856,7 +1857,12 @@ class HSM(Behavior[TInstance]):
         finally:
             for deferred_event in deferred:
                 self._queue.push(deferred_event)
-            self._processing.release()
+            try:
+                if self._stop_requested:
+                    self._stop_requested = False
+                    await self._stop_locked()
+            finally:
+                self._processing.release()
 
     async def _transition(self, current_leaf: VertexNode, transition: TransitionNode, event: Event) -> VertexNode:
         path = transition.paths.get(current_leaf.qualified_name)
@@ -1918,6 +1924,9 @@ class HSM(Behavior[TInstance]):
         self._root_context.unregister(self)
 
     async def stop(self) -> None:
+        if asyncio.current_task() is self._awaitable:
+            self._stop_requested = True
+            return
         await self._processing.acquire()
         try:
             await self._stop_locked()

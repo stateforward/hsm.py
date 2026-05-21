@@ -738,6 +738,53 @@ def test_awaited_nested_dispatch_from_effect_does_not_self_await():
     asyncio.run(_awaited_nested_dispatch_from_effect_does_not_self_await())
 
 
+async def _awaited_stop_from_effect_does_not_self_deadlock() -> None:
+    class SelfStoppingInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.trace: list[str] = []
+
+    async def stop_effect(ctx, inst, event):
+        inst.trace.append("effect.before-stop")
+        await hsm.Stop(inst)
+        inst.trace.append("effect.after-stop")
+
+    async def done_entry(ctx, inst, event):
+        inst.trace.append("done.entry")
+
+    async def done_exit(ctx, inst, event):
+        inst.trace.append("done.exit")
+
+    model = hsm.Define(
+        "SelfStopping",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.On("stop"),
+                hsm.Target("../done"),
+                hsm.Effect(stop_effect),
+            ),
+        ),
+        hsm.State("done", hsm.Entry(done_entry), hsm.Exit(done_exit)),
+    )
+
+    instance = SelfStoppingInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("stop")), timeout=1)
+
+    assert instance.state() == "/SelfStopping"
+    assert ctx.machines() == []
+    assert instance.trace == ["effect.before-stop", "effect.after-stop", "done.entry", "done.exit"]
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+
+def test_awaited_stop_from_effect_does_not_self_deadlock():
+    asyncio.run(_awaited_stop_from_effect_does_not_self_deadlock())
+
+
 async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
     class BlockingInstance(hsm.Instance):
         pass
