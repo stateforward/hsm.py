@@ -1145,6 +1145,70 @@ def test_stopped_machine_rejects_event_mutating_operations():
     asyncio.run(_stopped_machine_rejects_event_mutating_operations())
 
 
+async def _cancelled_start_cleans_up_registration_and_activities() -> None:
+    class CancelledStartInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.activity_cancelled = False
+
+    entered_entry = asyncio.Event()
+    release_entry = asyncio.Event()
+    activity_started = asyncio.Event()
+
+    async def blocking_entry(ctx, inst, event):
+        entered_entry.set()
+        await release_entry.wait()
+
+    async def startup_activity(ctx, inst: CancelledStartInstance, event):
+        activity_started.set()
+        try:
+            await ctx.wait_done()
+        finally:
+            inst.activity_cancelled = True
+
+    model = hsm.Define(
+        "CancelledStart",
+        hsm.Initial(hsm.Target("active/child")),
+        hsm.State(
+            "active",
+            hsm.Activity(startup_activity),
+            hsm.State("child", hsm.Entry(blocking_entry)),
+        ),
+    )
+
+    instance = CancelledStartInstance()
+    ctx = hsm.Context()
+    start_task = asyncio.create_task(hsm.Start(ctx, instance, model))
+    await asyncio.wait_for(activity_started.wait(), timeout=1)
+    await asyncio.wait_for(entered_entry.wait(), timeout=1)
+
+    start_task.cancel()
+    try:
+        await start_task
+    except asyncio.CancelledError:
+        pass
+
+    for _ in range(10):
+        if instance.activity_cancelled:
+            break
+        await asyncio.sleep(0)
+
+    assert instance.activity_cancelled is True
+    assert instance.state() == "/CancelledStart"
+    assert ctx.machines() == []
+
+    try:
+        await hsm.Dispatch(ctx, instance, hsm.Event("go"))
+    except hsm.ValidationError as error:
+        assert "started HSM" in str(error)
+    else:
+        raise AssertionError("cancelled Start() should leave a stopped HSM")
+
+
+def test_cancelled_start_cleans_up_registration_and_activities():
+    asyncio.run(_cancelled_start_cleans_up_registration_and_activities())
+
+
 async def _restart_preserves_context_registration() -> None:
     class RestartInstance(hsm.Instance):
         pass

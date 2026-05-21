@@ -1626,7 +1626,12 @@ class HSM(Behavior[TInstance]):
 
         async def operation(ctx: Context, inst: TInstance, event: Event) -> None:
             self._state = await self._enter(self.model, event, True)
-            await self._process()
+            startup_deferred: list[Event] = []
+            try:
+                await self._drain_queue(startup_deferred)
+            finally:
+                for deferred_event in startup_deferred:
+                    self._queue.push(deferred_event)
 
         self.operation = operation
 
@@ -1654,13 +1659,27 @@ class HSM(Behavior[TInstance]):
         try:
             await self._start_locked(data)
         except BaseException:
-            self._processing.release()
+            self._cleanup_failed_start()
             raise
+        finally:
+            self._processing.release()
 
     async def _start_locked(self, data: typing.Any = None) -> None:
         initial_event = InitialEvent.WithData(data) if data is not None else InitialEvent
         await self._execute(self, initial_event)
         self._started = True
+
+    def _cleanup_failed_start(self) -> None:
+        for active in list(self._active.values()):
+            if active.task is asyncio.current_task():
+                active.context.cancel()
+                continue
+            active.task.cancel()
+        self._active.clear()
+        self._runtime_context.cancel()
+        self._state = self.model
+        self._started = False
+        self._root_context.unregister(self)
 
     def _remember_history(self, leaf_name: str) -> None:
         current = leaf_name

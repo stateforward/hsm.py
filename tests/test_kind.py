@@ -20,6 +20,10 @@ def test_make_kind_builds_hierarchy_without_manual_ids():
 
 
 def test_snake_case_and_kind_aliases_match_pascal_case():
+    assert make_kind is MakeKind
+    assert kind is MakeKind
+    assert is_kind is IsKind
+
     base = MakeKind()
     child = make_kind(base)
     sibling = kind(base)

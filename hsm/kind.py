@@ -21,20 +21,17 @@ def List(kind_value: int) -> list[int]:
     return [_extract_id(kind_value, depth) for depth in range(1, depth_max)]
 
 
-def list_kind(kind_value: int) -> list[int]:
-    return List(kind_value)
+list_kind = List
 
 
 def Bases(kind_value: int) -> list[int]:
     return List(kind_value)
 
 
-def bases(kind_value: int) -> list[int]:
-    return List(kind_value)
+bases = Bases
 
 
-def subkinds(kind_value: int) -> list[int]:
-    return List(kind_value)
+subkinds = Bases
 
 
 def MakeKind(*base_kinds: int) -> int:
@@ -52,12 +49,8 @@ def MakeKind(*base_kinds: int) -> int:
     return id_
 
 
-def make_kind(*base_kinds: int) -> int:
-    return MakeKind(*base_kinds)
-
-
-def kind(*base_kinds: int) -> int:
-    return MakeKind(*base_kinds)
+make_kind = MakeKind
+kind = MakeKind
 
 
 def IsKind(kind_value: int, *base_kinds: int) -> bool:
@@ -72,8 +65,7 @@ def IsKind(kind_value: int, *base_kinds: int) -> bool:
     return False
 
 
-def is_kind(kind_value: int, *base_kinds: int) -> bool:
-    return IsKind(kind_value, *base_kinds)
+is_kind = IsKind
 
 
 __all__ = [

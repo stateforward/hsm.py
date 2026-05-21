@@ -84,6 +84,8 @@ def test_snake_case_dsl_aliases_are_available():
         assert getattr(hsm, alias_name) is canonical
 
     assert "started" in hsm.__all__
+    assert hsm.make_kind is hsm.MakeKind
+    assert hsm.is_kind is hsm.IsKind
     custom = hsm.make_kind(hsm.Kinds.Element)
     assert hsm.is_kind(custom, hsm.Kinds.Element)
     assert hsm.match("machine-1", "machine-*")
@@ -137,6 +139,50 @@ def test_snake_case_dsl_values_are_available():
     for alias_name, canonical in aliases.items():
         assert getattr(hsm, alias_name) is canonical
         assert alias_name in hsm.__all__
+
+
+@pytest.mark.asyncio
+async def test_snake_case_dsl_aliases_build_and_run_model():
+    instance = ParityInstance()
+
+    async def started(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+        inst.log.append("started")
+
+    model = hsm.define(
+        "SnakeDslMachine",
+        hsm.attribute("count", 0),
+        hsm.operation("record"),
+        hsm.initial(hsm.target("idle")),
+        hsm.state(
+            "idle",
+            hsm.entry(started),
+            hsm.transition(
+                hsm.on("go"),
+                hsm.guard(lambda ctx, inst, event: True),
+                hsm.effect(lambda ctx, inst, event: inst.log.append("go")),
+                hsm.target("../done"),
+            ),
+            hsm.transition(
+                hsm.on_set("count"),
+                hsm.target("../done"),
+            ),
+        ),
+        hsm.final("done"),
+    )
+
+    ctx = hsm.context()
+    await hsm.start(ctx, instance, model)
+
+    assert instance.state() == "/SnakeDslMachine/idle"
+    assert hsm.get(ctx, instance, "count") == (0, True)
+
+    await hsm.dispatch(ctx, instance, hsm.event("go"))
+
+    snapshot = hsm.take_snapshot(ctx, instance)
+    assert snapshot.state == "/SnakeDslMachine/done"
+    assert instance.log == ["started", "go"]
+
+    await hsm.stop(instance)
 
 
 @pytest.mark.asyncio
