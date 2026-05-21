@@ -554,6 +554,57 @@ async def _drive_invalid_timer_callback(mode: str, invalid_value: object) -> Non
     await hsm.Stop(instance)
 
 
+async def _failing_error_handler_does_not_recursively_enqueue_error_events() -> None:
+    class RecursiveErrorInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.error_effects = 0
+
+    async def failing_effect(ctx, inst, event):
+        raise RuntimeError("primary failure")
+
+    async def failing_error_effect(ctx, inst: RecursiveErrorInstance, event):
+        inst.error_effects += 1
+        raise RuntimeError("secondary failure")
+
+    model = hsm.Define(
+        "RecursiveError",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.On("go"),
+                hsm.Target("../failed"),
+                hsm.Effect(failing_effect),
+            ),
+        ),
+        hsm.State(
+            "failed",
+            hsm.Transition(
+                hsm.On(hsm.ErrorEvent),
+                hsm.Target("../error"),
+                hsm.Effect(failing_error_effect),
+            ),
+        ),
+        hsm.State("error"),
+    )
+
+    instance = RecursiveErrorInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("go")), timeout=1)
+
+    assert instance.state() == "/RecursiveError/error"
+    assert instance.error_effects == 1
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    await hsm.Stop(instance)
+
+
+def test_failing_error_handler_does_not_recursively_enqueue_error_events():
+    asyncio.run(_failing_error_handler_does_not_recursively_enqueue_error_events())
+
+
 async def _stop_during_inflight_dispatch_does_not_block_loop() -> None:
     class BlockingInstance(hsm.Instance):
         pass

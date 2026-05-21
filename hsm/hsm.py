@@ -1782,6 +1782,8 @@ class HSM(Behavior[TInstance]):
                 return
             await _maybe_await(behavior.operation(self._runtime_context, self._instance, event))
         except Exception as error:
+            if is_kind(event.kind, Kinds.ErrorEvent):
+                return
             self._dispatch_task(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
 
     async def _terminate(self, behavior: BehaviorNode[TInstance]) -> None:
