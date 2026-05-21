@@ -1367,19 +1367,42 @@ def _segments_between(owner: str, target: str) -> list[str]:
 
 class Mutex:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._locked = False
+        self._waiters: collections.deque[asyncio.Future[None]] = collections.deque()
 
     def try_acquire(self) -> bool:
-        if self._lock.locked():
+        if self._locked:
             return False
-        self._lock.acquire()
+        self._locked = True
         return True
 
-    def acquire(self) -> None:
-        self._lock.acquire()
+    async def acquire(self) -> None:
+        if not self._locked:
+            self._locked = True
+            return
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiters.append(future)
+        try:
+            await future
+        except BaseException:
+            if future.done() and not future.cancelled():
+                self.release()
+            else:
+                future.cancel()
+                try:
+                    self._waiters.remove(future)
+                except ValueError:
+                    pass
+            raise
 
     def release(self) -> None:
-        self._lock.release()
+        while self._waiters:
+            future = self._waiters.popleft()
+            if future.cancelled():
+                continue
+            future.set_result(None)
+            return
+        self._locked = False
 
 
 class Queue:
@@ -1517,7 +1540,7 @@ class HSM(Behavior[TInstance]):
         return self._clock
 
     async def _start(self, data: typing.Any = None) -> None:
-        self._processing.acquire()
+        await self._processing.acquire()
         initial_event = InitialEvent.WithData(data) if data is not None else InitialEvent
         await self._execute(self, initial_event)
         self._started = True
@@ -1760,7 +1783,7 @@ class HSM(Behavior[TInstance]):
         return self._awaitable
 
     async def stop(self) -> None:
-        self._processing.acquire()
+        await self._processing.acquire()
         final_event = Event(name=FinalEvent.name, kind=Kinds.CompletionEvent)
         while self._state.qualified_name != self.model.qualified_name:
             await self._exit(self._state, final_event)

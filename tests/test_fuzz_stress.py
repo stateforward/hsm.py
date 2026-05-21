@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from datetime import timedelta
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -382,3 +383,216 @@ def test_invalid_model_definitions_fail_fast(cases: list[str]):
             assert message in str(error)
         else:
             raise AssertionError(f"{case} unexpectedly built a model")
+
+
+async def _stop_during_inflight_dispatch_does_not_block_loop() -> None:
+    class BlockingInstance(hsm.Instance):
+        pass
+
+    entered_effect = asyncio.Event()
+    release_effect = asyncio.Event()
+
+    async def slow_effect(ctx, inst, event):
+        entered_effect.set()
+        await release_effect.wait()
+
+    model = hsm.Define(
+        "InflightStop",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.On("go"),
+                hsm.Target("../done"),
+                hsm.Effect(slow_effect),
+            ),
+        ),
+        hsm.State("done"),
+    )
+    instance = BlockingInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    dispatch_task = asyncio.create_task(hsm.Dispatch(ctx, instance, hsm.Event("go")))
+    await asyncio.wait_for(entered_effect.wait(), timeout=1)
+
+    stop_task = asyncio.create_task(hsm.Stop(instance))
+    await asyncio.sleep(0)
+    assert not stop_task.done()
+
+    release_effect.set()
+    await asyncio.wait_for(asyncio.gather(dispatch_task, stop_task), timeout=1)
+    assert instance.state() == "/InflightStop"
+
+
+def test_stop_during_inflight_dispatch_does_not_block_event_loop():
+    asyncio.run(_stop_during_inflight_dispatch_does_not_block_loop())
+
+
+async def _cancelled_stop_waiter_releases_processing_mutex() -> None:
+    class BlockingInstance(hsm.Instance):
+        pass
+
+    entered_effect = asyncio.Event()
+    release_effect = asyncio.Event()
+
+    async def slow_effect(ctx, inst, event):
+        entered_effect.set()
+        await release_effect.wait()
+
+    model = hsm.Define(
+        "CancelledStop",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect)),
+        ),
+        hsm.State("done"),
+    )
+    instance = BlockingInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    dispatch_task = asyncio.create_task(hsm.Dispatch(ctx, instance, hsm.Event("go")))
+    await asyncio.wait_for(entered_effect.wait(), timeout=1)
+
+    cancelled_stop = asyncio.create_task(hsm.Stop(instance))
+    await asyncio.sleep(0)
+    cancelled_stop.cancel()
+    try:
+        await cancelled_stop
+    except asyncio.CancelledError:
+        pass
+
+    release_effect.set()
+    await asyncio.wait_for(dispatch_task, timeout=1)
+    assert instance.state() == "/CancelledStop/done"
+
+    await asyncio.wait_for(hsm.Stop(instance), timeout=1)
+    assert instance.state() == "/CancelledStop"
+
+
+def test_cancelled_stop_waiter_does_not_poison_processing_mutex():
+    asyncio.run(_cancelled_stop_waiter_releases_processing_mutex())
+
+
+async def _timer_restart_cancellation_stress(rounds: int) -> None:
+    class TimerInstance(hsm.Instance):
+        pass
+
+    sleeps: list[asyncio.Future[None]] = []
+    cancelled = 0
+
+    async def manual_sleep(duration):
+        nonlocal cancelled
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        sleeps.append(future)
+        try:
+            await future
+        except asyncio.CancelledError:
+            cancelled += 1
+            raise
+
+    async def delay(ctx, inst, event):
+        return timedelta(seconds=1)
+
+    model = hsm.Define(
+        "TimerRestart",
+        hsm.Initial(hsm.Target("waiting")),
+        hsm.State(
+            "waiting",
+            hsm.Transition(hsm.After(delay), hsm.Target("../done")),
+        ),
+        hsm.State("done"),
+    )
+    instance = TimerInstance()
+    ctx = hsm.Context()
+    await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
+
+    for _ in range(rounds):
+        for _ in range(10):
+            if sleeps:
+                break
+            await asyncio.sleep(0)
+        old_sleep = sleeps.pop(0)
+
+        await hsm.Restart(instance)
+
+        assert instance.state() == "/TimerRestart/waiting"
+        assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+        assert cancelled >= 1
+        if not old_sleep.done():
+            old_sleep.set_result(None)
+        await asyncio.sleep(0)
+        assert instance.state() == "/TimerRestart/waiting"
+
+    for _ in range(10):
+        if sleeps:
+            break
+        await asyncio.sleep(0)
+    final_sleep = sleeps.pop(0)
+    final_sleep.set_result(None)
+    for _ in range(10):
+        if instance.state() == "/TimerRestart/done":
+            break
+        await asyncio.sleep(0)
+    assert instance.state() == "/TimerRestart/done"
+    await hsm.Stop(instance)
+
+
+def test_timer_restart_cancellation_stress():
+    asyncio.run(_timer_restart_cancellation_stress(rounds=50))
+
+
+async def _history_reentry_stress(rounds: int) -> None:
+    instance = FuzzInstance()
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "HistoryStress",
+        hsm.Initial(hsm.Target("parent")),
+        hsm.State(
+            "parent",
+            hsm.Initial(hsm.Target("a")),
+            hsm.ShallowHistory("shallow", hsm.Transition(hsm.Target("a"))),
+            hsm.DeepHistory("deep", hsm.Transition(hsm.Target("a"))),
+            hsm.State(
+                "a",
+                hsm.Initial(hsm.Target("a1")),
+                hsm.State("a1", hsm.Transition(hsm.On("next"), hsm.Target("../a2"))),
+                hsm.State("a2", hsm.Transition(hsm.On("leave"), hsm.Target("../../../outside"))),
+            ),
+            hsm.State("b"),
+        ),
+        hsm.State(
+            "outside",
+            hsm.Transition(hsm.On("shallow"), hsm.Target("../parent/shallow")),
+            hsm.Transition(hsm.On("deep"), hsm.Target("../parent/deep")),
+            hsm.Transition(hsm.On("reset"), hsm.Target("../parent")),
+        ),
+    )
+    await hsm.Start(ctx, instance, model)
+
+    for _ in range(rounds):
+        assert instance.state() == "/HistoryStress/parent/a/a1"
+        await hsm.Dispatch(ctx, instance, hsm.Event("next"))
+        assert instance.state() == "/HistoryStress/parent/a/a2"
+        await hsm.Dispatch(ctx, instance, hsm.Event("leave"))
+        assert instance.state() == "/HistoryStress/outside"
+
+        await hsm.Dispatch(ctx, instance, hsm.Event("shallow"))
+        assert instance.state() == "/HistoryStress/parent/a/a1"
+        await hsm.Dispatch(ctx, instance, hsm.Event("next"))
+        await hsm.Dispatch(ctx, instance, hsm.Event("leave"))
+
+        await hsm.Dispatch(ctx, instance, hsm.Event("deep"))
+        assert instance.state() == "/HistoryStress/parent/a/a2"
+        await hsm.Dispatch(ctx, instance, hsm.Event("leave"))
+
+        await hsm.Dispatch(ctx, instance, hsm.Event("reset"))
+        assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+
+
+def test_shallow_and_deep_history_reentry_stress():
+    asyncio.run(_history_reentry_stress(rounds=50))
