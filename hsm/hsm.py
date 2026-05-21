@@ -1848,6 +1848,7 @@ class HSM(Behavior[TInstance]):
         self._runtime_context.cancel()
         self._state = self.model
         self._started = False
+        self._root_context.unregister(self)
         self._processing.release()
 
     async def restart(self, data: typing.Any = None) -> None:
@@ -1857,6 +1858,7 @@ class HSM(Behavior[TInstance]):
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
         self._history_deep.clear()
+        self._root_context.register(self)
         await self._start(data)
 
     def get(self, name: str) -> tuple[typing.Any, bool]:

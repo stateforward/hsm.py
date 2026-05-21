@@ -645,6 +645,68 @@ def test_cancelled_stop_waiter_does_not_poison_processing_mutex():
     asyncio.run(_cancelled_stop_waiter_releases_processing_mutex())
 
 
+async def _context_registration_lifecycle_stress(rounds: int) -> None:
+    class LifecycleInstance(hsm.Instance):
+        pass
+
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "RegistrationLifecycle",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
+        hsm.State("done"),
+    )
+
+    for index in range(rounds):
+        instance = LifecycleInstance()
+        await hsm.Start(ctx, instance, model)
+        assert len(ctx.machines()) == 1
+        await hsm.DispatchAll(ctx, hsm.Event("go"))
+        assert instance.state() == "/RegistrationLifecycle/done"
+        await hsm.Stop(instance)
+        assert instance.state() == "/RegistrationLifecycle"
+        assert ctx.machines() == []
+
+        if index % 10 == 0:
+            await hsm.DispatchAll(ctx, hsm.Event("go"))
+            assert ctx.machines() == []
+
+
+def test_context_registration_does_not_leak_on_repeated_start_stop():
+    asyncio.run(_context_registration_lifecycle_stress(rounds=100))
+
+
+async def _restart_preserves_context_registration() -> None:
+    class RestartInstance(hsm.Instance):
+        pass
+
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "RestartRegistration",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
+        hsm.State("done"),
+    )
+    instance = RestartInstance()
+    await hsm.Start(ctx, instance, model)
+    assert len(ctx.machines()) == 1
+
+    await hsm.Restart(instance)
+    assert len(ctx.machines()) == 1
+    assert instance.state() == "/RestartRegistration/idle"
+
+    await hsm.DispatchAll(ctx, hsm.Event("go"))
+    assert instance.state() == "/RestartRegistration/done"
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+    assert ctx.machines() == []
+
+
+def test_restart_preserves_context_registration():
+    asyncio.run(_restart_preserves_context_registration())
+
+
 async def _timer_restart_cancellation_stress(rounds: int) -> None:
     class TimerInstance(hsm.Instance):
         pass
