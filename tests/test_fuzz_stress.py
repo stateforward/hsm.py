@@ -153,6 +153,99 @@ def test_guard_order_fuzz(spec):
     asyncio.run(_drive_guarded_spec(guards, targets))
 
 
+@given(st.lists(st.sampled_from(("to_a", "to_b", "leave", "parent_leave", "return")), min_size=0, max_size=80))
+@settings(max_examples=80, deadline=None, derandomize=True)
+def test_hierarchical_transition_trace_fuzz(trace: list[str]):
+    asyncio.run(_drive_hierarchical_trace(tuple(trace)))
+
+
+async def _drive_hierarchical_trace(trace: tuple[str, ...]) -> None:
+    class HierarchicalInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.log: list[str] = []
+
+    def record(action: str):
+        async def callback(ctx, inst: HierarchicalInstance, event):
+            inst.log.append(action)
+
+        return callback
+
+    model = hsm.Define(
+        "HierarchicalFuzz",
+        hsm.Initial(hsm.Target("parent/a")),
+        hsm.State(
+            "parent",
+            hsm.Entry(record("parent.entry")),
+            hsm.Exit(record("parent.exit")),
+            hsm.Initial(hsm.Target("a")),
+            hsm.Transition(hsm.On("parent_leave"), hsm.Target("../outside")),
+            hsm.State(
+                "a",
+                hsm.Entry(record("a.entry")),
+                hsm.Exit(record("a.exit")),
+                hsm.Transition(hsm.On("to_b"), hsm.Target("../b")),
+                hsm.Transition(hsm.On("leave"), hsm.Target("../../outside")),
+            ),
+            hsm.State(
+                "b",
+                hsm.Entry(record("b.entry")),
+                hsm.Exit(record("b.exit")),
+                hsm.Transition(hsm.On("to_a"), hsm.Target("../a")),
+                hsm.Transition(hsm.On("leave"), hsm.Target("../../outside")),
+            ),
+        ),
+        hsm.State(
+            "outside",
+            hsm.Entry(record("outside.entry")),
+            hsm.Exit(record("outside.exit")),
+            hsm.Transition(hsm.On("return"), hsm.Target("../parent/a")),
+        ),
+    )
+
+    instance = HierarchicalInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    expected_state = "a"
+    expected_log = ["parent.entry", "a.entry"]
+    assert instance.state() == "/HierarchicalFuzz/parent/a"
+    assert instance.log == expected_log
+
+    for event_name in trace:
+        await hsm.Dispatch(ctx, instance, hsm.Event(event_name))
+        if expected_state == "a":
+            if event_name == "to_b":
+                expected_state = "b"
+                expected_log.extend(["a.exit", "b.entry"])
+            elif event_name in ("leave", "parent_leave"):
+                expected_state = "outside"
+                expected_log.extend(["a.exit", "parent.exit", "outside.entry"])
+        elif expected_state == "b":
+            if event_name == "to_a":
+                expected_state = "a"
+                expected_log.extend(["b.exit", "a.entry"])
+            elif event_name in ("leave", "parent_leave"):
+                expected_state = "outside"
+                expected_log.extend(["b.exit", "parent.exit", "outside.entry"])
+        elif expected_state == "outside" and event_name == "return":
+            expected_state = "a"
+            expected_log.extend(["outside.exit", "parent.entry", "a.entry"])
+
+        expected_path = (
+            f"/HierarchicalFuzz/parent/{expected_state}"
+            if expected_state in ("a", "b")
+            else "/HierarchicalFuzz/outside"
+        )
+        snapshot = hsm.TakeSnapshot(ctx, instance)
+        assert snapshot.State == expected_path
+        assert snapshot.QueueLen == 0
+        assert instance.log == expected_log
+
+    await hsm.Stop(instance)
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+
 async def _dispatch_toggle_stress(iterations: int) -> None:
     instance = FuzzInstance()
     ctx = hsm.Context()
