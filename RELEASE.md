@@ -16,7 +16,7 @@ Use this checklist for any PyPI release of `stateforward.hsm`.
 uv sync --group dev
 uv export --quiet --all-groups --no-emit-project --format requirements.txt --output-file audit-requirements.txt
 uv run pip-audit -r audit-requirements.txt --require-hashes --disable-pip --strict --progress-spinner off
-uv run pytest -q --cov=hsm --cov-report=term-missing --cov-fail-under=90
+uv run pytest -q -W error --cov=hsm --cov-report=term-missing --cov-fail-under=90
 uv run pyright
 HSM_SOAK=1 uv run pytest tests/test_soak.py -q
 uv build

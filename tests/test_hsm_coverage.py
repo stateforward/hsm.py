@@ -1,6 +1,7 @@
 import asyncio
+import subprocess
+import sys
 from datetime import timedelta
-import runpy
 
 import pytest
 
@@ -94,8 +95,13 @@ def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
     )
     assert isinstance(core.Final(core.State("done")), core.PartialFinal)
 
-    runpy.run_module("hsm.hsm", run_name="__main__")
-    assert "/root/s1" in capsys.readouterr().out
+    result = subprocess.run(
+        [sys.executable, "-m", "hsm.hsm"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "/root/s1" in result.stdout
 
 
 @pytest.mark.asyncio

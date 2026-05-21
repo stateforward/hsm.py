@@ -45,7 +45,7 @@ that CI enforces:
 uv sync --group dev
 uv export --quiet --all-groups --no-emit-project --format requirements.txt --output-file audit-requirements.txt
 uv run pip-audit -r audit-requirements.txt --require-hashes --disable-pip --strict --progress-spinner off
-uv run pytest -vv --cov=hsm --cov-report=term-missing --cov-fail-under=90
+uv run pytest -vv -W error --cov=hsm --cov-report=term-missing --cov-fail-under=90
 uv run pyright
 uv build
 uvx twine check dist/*

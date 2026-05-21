@@ -47,7 +47,7 @@ jobs:
           uv run pip-audit -r audit-requirements.txt --require-hashes --disable-pip --strict --progress-spinner off
 
       - name: Run tests
-        run: uv run pytest -vv --cov=hsm --cov-report=term-missing --cov-fail-under=90
+        run: uv run pytest -vv -W error --cov=hsm --cov-report=term-missing --cov-fail-under=90
 
       - name: Type check
         run: uv run pyright
