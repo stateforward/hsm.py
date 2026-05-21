@@ -44,6 +44,9 @@ jobs:
       - name: Run tests
         run: uv run pytest -vv --cov=hsm --cov-report=term-missing --cov-fail-under=90
 
+      - name: Type check
+        run: uv run pyright
+
       - name: Build package
         run: uv build
 

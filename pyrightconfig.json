@@ -1,0 +1,8 @@
+{
+  "include": ["hsm"],
+  "pythonVersion": "3.13",
+  "typeCheckingMode": "basic",
+  "reportRedeclaration": false,
+  "reportIncompatibleVariableOverride": false,
+  "reportUnsupportedDunderAll": false
+}

@@ -20,6 +20,7 @@ TElement = typing.TypeVar("TElement", bound="Element")
 TInstance = typing.TypeVar("TInstance", bound="Instance")
 TData = typing.TypeVar("TData", default=None)
 TNewData = typing.TypeVar("TNewData")
+_next_id_counter = 0
 
 OperationCallback = typing.Callable[
     ["Context", TInstance, "Event"],
@@ -89,11 +90,9 @@ async def _asyncio_sleep(duration: timedelta) -> None:
 
 
 def _next_id() -> str:
-    _next_id.counter += 1
-    return f"hsm-{_next_id.counter}"
-
-
-_next_id.counter = 0  # type: ignore[attr-defined]
+    global _next_id_counter
+    _next_id_counter += 1
+    return f"hsm-{_next_id_counter}"
 
 
 def _qualify_model_name(model_qualified_name: str, name: str) -> str:
@@ -299,7 +298,7 @@ class Element:
 @dataclass
 class Namespace(Element):
     kind: int = Kinds.Namespace
-    members: dict[str, typing.Union["Element", "Event"]] = field(default_factory=dict)
+    members: dict[str, typing.Union["Element", "Event[typing.Any]"]] = field(default_factory=dict)
 
 
 @dataclass
@@ -425,12 +424,12 @@ config = Config
 
 @dataclass
 class Model(State):
-    events: dict[str, "Event"] = field(default_factory=dict)
+    events: dict[str, "Event[typing.Any]"] = field(default_factory=dict)
     attributes: dict[str, AttributeDef] = field(default_factory=dict)
     operations: dict[str, OperationDef] = field(default_factory=dict)
-    transition_map: dict[str, dict[str, list["Transition"]]] = field(default_factory=dict)
+    transition_map: dict[str, dict[str, list[typing.Any]]] = field(default_factory=dict)
     deferred_map: dict[str, dict[str, bool]] = field(default_factory=dict)
-    pending_oncall: set[str] = field(default_factory=set)
+    pending_oncall: typing.Set[str] = field(default_factory=set)
 
     def add(self, partial: PartialElement) -> None:
         self.owned_elements.append(partial)
@@ -446,7 +445,7 @@ class Model(State):
             return None
         return typing.cast(TElement, element)
 
-    def set(self, qualified_name: str, element: typing.Union[Element, "Event"]) -> None:
+    def set(self, qualified_name: str, element: typing.Union[Element, "Event[typing.Any]"]) -> None:
         self.members[qualified_name] = element
         if isinstance(element, Event):
             self.events[qualified_name] = element
@@ -683,7 +682,7 @@ FinalStateNode = FinalState
 TransitionNode = Transition
 
 
-def transition_has_wildcard_event(transition: Transition) -> bool:
+def transition_has_wildcard_event(transition: TransitionNode) -> bool:
     return any(event_name == AnyEvent.qualified_name for event_name in transition.events)
 
 
@@ -1277,7 +1276,7 @@ async def noop_timepoint(ctx: Context, instance: "Instance", event: Event) -> da
 
 @dataclass
 class TimedBehavior(typing.Generic[TInstance], PartialElement):
-    event: Event = field(default_factory=Event)
+    event: Event[typing.Any] = field(default_factory=Event)
     duration: Duration[TInstance] = field(default=noop_duration)
     timepoint: Timepoint[TInstance] | None = None
     transition: TransitionNode = field(default_factory=TransitionNode)
@@ -1580,7 +1579,7 @@ class Instance(Element):
 
 
 class HSM(Behavior[TInstance]):
-    __hash__ = object.__hash__
+    __hash__: typing.ClassVar[typing.Any] = object.__hash__
 
     def __init__(
         self,
@@ -1824,9 +1823,10 @@ class HSM(Behavior[TInstance]):
                         handled = True
                         break
                     qualified_name = source.owner()
+                event_qualified_name = event.qualified_name
                 self._after._notify(
                     self._after.process,
-                    lambda expected: expected is None or expected == event.qualified_name,
+                    lambda expected: expected is None or expected == event_qualified_name,
                 )
                 if local_events:
                     event = local_events.popleft()
@@ -1879,14 +1879,14 @@ class HSM(Behavior[TInstance]):
         target = self.model.get(transition.target, VertexNode)
         return current if target is None else target
 
-    def _dispatch_task(self, event: Event) -> typing.Awaitable[None]:
+    def _dispatch_task(self, event: Event[typing.Any]) -> typing.Awaitable[None]:
         self._queue.push(event)
         self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
         if self._processing.try_acquire():
             self._awaitable = asyncio.create_task(self._process())
         return self._awaitable
 
-    def dispatch(self, event: Event) -> typing.Awaitable[None]:
+    def dispatch(self, event: Event[typing.Any]) -> typing.Awaitable[None]:
         return asyncio.shield(self._dispatch_task(event))
 
     async def _stop_locked(self) -> None:
@@ -2213,7 +2213,8 @@ def Define(name: str, *elements: NamedElement) -> Model:
     apply(model, model, [], list(elements))
     while model.owned_elements:
         partial = model.owned_elements.pop()
-        partial.apply(model, [])
+        if isinstance(partial, PartialElement):
+            partial.apply(model, [])
     _finalize_model(model)
     return model
 
@@ -2316,7 +2317,7 @@ def Choice(
     *transitions: PartialTransition,
 ) -> PartialChoice:
     name = ""
-    owned_elements = list(transitions)
+    owned_elements: list[NamedElement] = list(transitions)
     if isinstance(element_or_name, str):
         name = element_or_name
     else:
@@ -2544,7 +2545,7 @@ after_entry = AfterEntry
 after_exit = AfterExit
 after_executed = AfterExecuted
 lca = LCA
-is_ancestor = IsAncestor
+is_ancestor = IsAncestor  # type: ignore[assignment]
 
 
 __all__ = [
