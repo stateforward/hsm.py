@@ -43,6 +43,7 @@ that CI enforces:
 
 ```bash
 uv sync --group dev
+uv run pip-audit --local --strict --progress-spinner off
 uv run pytest -vv --cov=hsm --cov-report=term-missing --cov-fail-under=90
 uv run pyright
 uv build
@@ -55,4 +56,3 @@ resource cleanup, also run:
 ```bash
 HSM_SOAK=1 uv run pytest tests/test_soak.py -q
 ```
-

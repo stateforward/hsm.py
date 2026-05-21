@@ -394,6 +394,7 @@ Run the full verification suite before shipping changes:
 
 ```bash
 uv sync --group dev
+uv run pip-audit --local --strict --progress-spinner off
 uv run pytest --cov=hsm --cov-report=term-missing --cov-fail-under=90
 uv run pyright
 uv build
@@ -404,8 +405,9 @@ The suite includes deterministic Hypothesis fuzz tests for generated state
 machines, guarded transition order, runtime attribute updates, and invalid timer
 callbacks, plus stress tests for concurrent dispatch, broadcast dispatch,
 runtime `Set`/`Call`, timers, history re-entry, and activity cancellation
-cleanup. CI runs the same tests, package checks, wheel smoke test, typed-marker
-check, Pyright type check, and coverage threshold on pushes and pull requests.
+cleanup. CI runs the same tests, dependency vulnerability audit, package
+checks, wheel smoke test, typed-marker check, Pyright type check, and coverage
+threshold on pushes and pull requests.
 
 Longer deterministic soak tests are available when needed:
 

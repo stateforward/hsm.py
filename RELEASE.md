@@ -14,6 +14,7 @@ Use this checklist for any PyPI release of `stateforward.hsm`.
 
 ```bash
 uv sync --group dev
+uv run pip-audit --local --strict --progress-spinner off
 uv run pytest -q --cov=hsm --cov-report=term-missing --cov-fail-under=90
 uv run pyright
 HSM_SOAK=1 uv run pytest tests/test_soak.py -q
@@ -84,4 +85,3 @@ rm -rf "$tmpdir"
 - Push the Python package commit to `stateforward/hsm.py`.
 - Update and push the monorepo submodule pointer.
 - Confirm GitHub Actions Python CI is green across Ubuntu, macOS, and Windows.
-

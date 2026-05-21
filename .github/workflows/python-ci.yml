@@ -41,6 +41,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --group dev
 
+      - name: Audit dependencies
+        run: uv run pip-audit --local --strict --progress-spinner off
+
       - name: Run tests
         run: uv run pytest -vv --cov=hsm --cov-report=term-missing --cov-fail-under=90
 
