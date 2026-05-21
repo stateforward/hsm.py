@@ -23,9 +23,13 @@ def test_snake_case_dsl_aliases_are_available():
         "after_process": hsm.AfterProcess,
         "at": hsm.At,
         "attribute": hsm.Attribute,
+        "clock": hsm.Clock,
         "call": hsm.Call,
         "choice": hsm.Choice,
+        "config": hsm.Config,
+        "context": hsm.Context,
         "deep_history": hsm.DeepHistory,
+        "default_clock": hsm.DefaultClock,
         "define": hsm.Define,
         "defer": hsm.Defer,
         "dispatch": hsm.Dispatch,
@@ -33,6 +37,7 @@ def test_snake_case_dsl_aliases_are_available():
         "dispatch_to": hsm.DispatchTo,
         "effect": hsm.Effect,
         "entry": hsm.Entry,
+        "event": hsm.Event,
         "every": hsm.Every,
         "exit": hsm.Exit,
         "final": hsm.Final,
@@ -72,8 +77,54 @@ def test_snake_case_dsl_aliases_are_available():
     custom = hsm.make_kind(hsm.Kinds.Element)
     assert hsm.is_kind(custom, hsm.Kinds.Element)
     assert hsm.match("machine-1", "machine-*")
+    assert hsm.match("machine-1", "other-*", "machine-*")
     assert hsm.onset is hsm.OnSet
     assert hsm.MakeGroup is hsm.NewGroup
+
+
+def test_snake_case_dsl_values_are_available():
+    aliases = {
+        "any_event": hsm.AnyEvent,
+        "initial_event": hsm.InitialEvent,
+        "error_event": hsm.ErrorEvent,
+        "final_event": hsm.FinalEvent,
+        "kinds": hsm.Kinds,
+        "null_kind": hsm.NullKind,
+        "element_kind": hsm.ElementKind,
+        "partial_kind": hsm.PartialKind,
+        "namespace_kind": hsm.NamespaceKind,
+        "named_element_kind": hsm.NamedElementKind,
+        "vertex_kind": hsm.VertexKind,
+        "constraint_kind": hsm.ConstraintKind,
+        "behavior_kind": hsm.BehaviorKind,
+        "concurrent_kind": hsm.ConcurrentKind,
+        "sequential_kind": hsm.SequentialKind,
+        "state_machine_kind": hsm.StateMachineKind,
+        "state_kind": hsm.StateKind,
+        "transition_kind": hsm.TransitionKind,
+        "internal_kind": hsm.InternalKind,
+        "external_kind": hsm.ExternalKind,
+        "local_kind": hsm.LocalKind,
+        "self_kind": hsm.SelfKind,
+        "event_kind": hsm.EventKind,
+        "time_event_kind": hsm.TimeEventKind,
+        "completion_event_kind": hsm.CompletionEventKind,
+        "change_event_kind": hsm.ChangeEventKind,
+        "call_event_kind": hsm.CallEventKind,
+        "error_event_kind": hsm.ErrorEventKind,
+        "pseudostate_kind": hsm.PseudostateKind,
+        "initial_kind": hsm.InitialKind,
+        "final_state_kind": hsm.FinalStateKind,
+        "choice_kind": hsm.ChoiceKind,
+        "shallow_history_kind": hsm.ShallowHistoryKind,
+        "deep_history_kind": hsm.DeepHistoryKind,
+        "attribute_kind": hsm.AttributeKind,
+        "operation_kind": hsm.OperationKind,
+    }
+
+    for alias_name, canonical in aliases.items():
+        assert getattr(hsm, alias_name) is canonical
+        assert alias_name in hsm.__all__
 
 
 @pytest.mark.asyncio

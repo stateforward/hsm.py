@@ -113,8 +113,8 @@ def Match(value: str, *patterns: str) -> bool:
     return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns)
 
 
-def match(value: str, pattern: str) -> bool:
-    return Match(value, pattern)
+def match(value: str, *patterns: str) -> bool:
+    return Match(value, *patterns)
 
 
 class ValidationError(RuntimeError):
@@ -183,6 +183,9 @@ class Context:
         return list(self._machines)
 
 
+context = Context
+
+
 class Kinds(IntEnum):
     Null = MakeKind()
     Element = MakeKind()
@@ -219,11 +222,14 @@ class Kinds(IntEnum):
 
 NullKind = Kinds.Null
 ElementKind = Kinds.Element
+PartialKind = Kinds.Partial
 NamespaceKind = Kinds.Namespace
+NamedElementKind = Kinds.NamedElement
 VertexKind = Kinds.Vertex
 ConstraintKind = Kinds.Constraint
 BehaviorKind = Kinds.Behavior
 ConcurrentKind = Kinds.Concurrent
+SequentialKind = Kinds.Sequential
 StateMachineKind = Kinds.StateMachine
 StateKind = Kinds.State
 TransitionKind = Kinds.Transition
@@ -245,6 +251,39 @@ ShallowHistoryKind = Kinds.ShallowHistory
 DeepHistoryKind = Kinds.DeepHistory
 AttributeKind = Kinds.Attribute
 OperationKind = Kinds.Operation
+
+kinds = Kinds
+null_kind = NullKind
+element_kind = ElementKind
+partial_kind = PartialKind
+namespace_kind = NamespaceKind
+named_element_kind = NamedElementKind
+vertex_kind = VertexKind
+constraint_kind = ConstraintKind
+behavior_kind = BehaviorKind
+concurrent_kind = ConcurrentKind
+sequential_kind = SequentialKind
+state_machine_kind = StateMachineKind
+state_kind = StateKind
+transition_kind = TransitionKind
+internal_kind = InternalKind
+external_kind = ExternalKind
+local_kind = LocalKind
+self_kind = SelfKind
+event_kind = EventKind
+time_event_kind = TimeEventKind
+completion_event_kind = CompletionEventKind
+change_event_kind = ChangeEventKind
+call_event_kind = CallEventKind
+error_event_kind = ErrorEventKind
+pseudostate_kind = PseudostateKind
+initial_kind = InitialKind
+final_state_kind = FinalStateKind
+choice_kind = ChoiceKind
+shallow_history_kind = ShallowHistoryKind
+deep_history_kind = DeepHistoryKind
+attribute_kind = AttributeKind
+operation_kind = OperationKind
 
 
 @dataclass
@@ -369,6 +408,8 @@ class Clock:
 
 
 DefaultClock = Clock()
+clock = Clock
+default_clock = DefaultClock
 
 
 @dataclass
@@ -377,6 +418,9 @@ class Config:
     Name: str = ""
     Data: typing.Any = None
     Clock: Clock | None = None
+
+
+config = Config
 
 
 @dataclass
@@ -572,6 +616,11 @@ InitialEvent = Event(name="hsm_initial", kind=Kinds.Event)
 ErrorEvent = Event(name="hsm_error", kind=Kinds.ErrorEvent)
 AnyEvent = Event(name="*", kind=Kinds.Event)
 FinalEvent = Event(name="hsm_final", kind=Kinds.CompletionEvent)
+event = Event
+initial_event = InitialEvent
+error_event = ErrorEvent
+any_event = AnyEvent
+final_event = FinalEvent
 InfiniteDuration = timedelta.max
 
 
@@ -2555,6 +2604,7 @@ __all__ = [
     "MakeKind",
     "Model",
     "Name",
+    "NamedElementKind",
     "NamespaceKind",
     "New",
     "NewGroup",
@@ -2564,10 +2614,12 @@ __all__ = [
     "OnSet",
     "Operation",
     "OperationKind",
+    "PartialKind",
     "PseudostateKind",
     "QualifiedName",
     "Restart",
     "SelfKind",
+    "SequentialKind",
     "Set",
     "ShallowHistory",
     "ShallowHistoryKind",
@@ -2596,49 +2648,90 @@ __all__ = [
     "after_process",
     "at",
     "attribute",
+    "attribute_kind",
+    "any_event",
+    "behavior_kind",
     "call",
+    "call_event_kind",
+    "change_event_kind",
     "choice",
+    "choice_kind",
+    "clock",
+    "completion_event_kind",
+    "concurrent_kind",
+    "config",
+    "constraint_kind",
+    "context",
+    "deep_history_kind",
     "deep_history",
+    "default_clock",
     "define",
     "defer",
     "dispatch",
     "dispatch_all",
     "dispatch_to",
     "effect",
+    "element_kind",
     "entry",
+    "error_event",
+    "error_event_kind",
+    "event",
+    "event_kind",
     "every",
     "exit",
+    "external_kind",
     "final",
+    "final_event",
+    "final_state_kind",
     "get",
     "guard",
     "id",
     "initial",
+    "initial_event",
+    "initial_kind",
+    "internal_kind",
     "is_ancestor",
     "is_kind",
+    "kinds",
     "lca",
+    "local_kind",
     "match",
     "make_kind",
     "make_group",
     "name",
+    "named_element_kind",
+    "namespace_kind",
     "new",
     "new_group",
+    "null_kind",
     "on",
     "on_call",
     "on_set",
     "onset",
     "operation",
+    "operation_kind",
+    "partial_kind",
+    "pseudostate_kind",
     "qualified_name",
     "restart",
+    "self_kind",
+    "sequential_kind",
     "set",
     "shallow_history",
+    "shallow_history_kind",
     "source",
     "start",
     "started",
     "state",
+    "state_kind",
+    "state_machine_kind",
     "stop",
     "take_snapshot",
     "target",
+    "time_event_kind",
     "transition",
+    "transition_kind",
+    "vertex_kind",
     "when",
 ]
 
