@@ -287,7 +287,3 @@ async def test_effects_execution_timing():
     assert instance.log == expected_order
 
     await hsm.stop(instance)
-
-
-# Note: Effect error handling test removed due to hanging issue in Python HSM
-# This would be covered once error handling is improved in the implementation

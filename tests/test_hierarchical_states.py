@@ -256,8 +256,73 @@ async def test_transition_between_hierarchical_states():
     await hsm.stop(instance)
 
 
-# Note: Deep nesting test removed due to path resolution issue in the Python HSM implementation
-# This would be covered once the path resolution bugs are fixed
+@pytest.mark.asyncio
+async def test_deep_nested_relative_and_absolute_transitions():
+    """Test path resolution through deeply nested states"""
+    instance = HierarchicalInstance()
+
+    async def record_jump(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+        inst.log_action("deep-jump")
+
+    async def record_reset(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+        inst.log_action("absolute-reset")
+
+    model = hsm.define(
+        "DeepNestedMachine",
+        hsm.initial(hsm.target("l1")),
+        hsm.state(
+            "l1",
+            hsm.initial(hsm.target("l2")),
+            hsm.state(
+                "l2",
+                hsm.initial(hsm.target("l3")),
+                hsm.state(
+                    "l3",
+                    hsm.initial(hsm.target("l4")),
+                    hsm.state(
+                        "l4",
+                        hsm.initial(hsm.target("l5")),
+                        hsm.state(
+                            "l5",
+                            hsm.transition(
+                                hsm.on("jump"),
+                                hsm.target("../../sibling"),
+                                hsm.effect(record_jump),
+                            ),
+                            hsm.transition(
+                                hsm.on("reset"),
+                                hsm.target("/l1/l2/l3/l4/l5"),
+                                hsm.effect(record_reset),
+                            ),
+                        ),
+                    ),
+                    hsm.state(
+                        "sibling",
+                        hsm.transition(
+                            hsm.on("reset"),
+                            hsm.target("/l1/l2/l3/l4/l5"),
+                            hsm.effect(record_reset),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    ctx = hsm.Context()
+    await hsm.start(ctx, instance, model)
+    assert instance.state() == "/DeepNestedMachine/l1/l2/l3/l4/l5"
+
+    await instance.dispatch(hsm.Event(name="jump"))
+    assert instance.state() == "/DeepNestedMachine/l1/l2/l3/sibling"
+    assert instance.log == ["deep-jump"]
+
+    await instance.dispatch(hsm.Event(name="reset"))
+    assert instance.state() == "/DeepNestedMachine/l1/l2/l3/l4/l5"
+    assert instance.log == ["deep-jump", "absolute-reset"]
+    assert hsm.take_snapshot(ctx, instance).queue_len == 0
+
+    await hsm.stop(instance)
 
 
 @pytest.mark.asyncio
