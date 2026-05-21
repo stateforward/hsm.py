@@ -1,6 +1,6 @@
 [project]
 name = "stateforward.hsm"
-version = "0.5.7"
+version = "0.5.8"
 description = "Hierarchical State Machine implementation for Python with asyncio support"
 readme = "README.md"
 license = {text = "MIT"}
@@ -22,9 +22,9 @@ dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/stateforward/hsm"
-Repository = "https://github.com/stateforward/hsm-python"
-Documentation = "https://github.com/stateforward/hsm-python"
-Issues = "https://github.com/stateforward/hsm-python/issues"
+Repository = "https://github.com/stateforward/hsm.py"
+Documentation = "https://github.com/stateforward/hsm.py#readme"
+Issues = "https://github.com/stateforward/hsm.py/issues"
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
