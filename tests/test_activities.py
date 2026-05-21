@@ -214,10 +214,15 @@ async def test_activity_error_handling():
 async def test_activities_in_hierarchical_states():
     """Activities in hierarchical states"""
     instance = ActivityInstance()
+    parent_started = asyncio.Event()
+    child_started = asyncio.Event()
+    parent_aborted = asyncio.Event()
+    child_aborted = asyncio.Event()
 
     async def parent_activity(ctx: Context, inst: ActivityInstance, event: Event):
         inst.log_action("parent-activity-started")
         inst.data["parent_activity_active"] = True
+        parent_started.set()
         try:
             # Keep running until cancelled
             while not ctx.is_done():
@@ -225,11 +230,13 @@ async def test_activities_in_hierarchical_states():
         except asyncio.CancelledError:
             inst.log_action("parent-activity-aborted")
             inst.data["parent_activity_active"] = False
+            parent_aborted.set()
             raise
 
     async def child_activity(ctx: Context, inst: ActivityInstance, event: Event):
         inst.log_action("child-activity-started")
         inst.data["child_activity_active"] = True
+        child_started.set()
         try:
             # Keep running until cancelled
             while not ctx.is_done():
@@ -237,6 +244,7 @@ async def test_activities_in_hierarchical_states():
         except asyncio.CancelledError:
             inst.log_action("child-activity-aborted")
             inst.data["child_activity_active"] = False
+            child_aborted.set()
             raise
 
     model = hsm.define(
@@ -261,8 +269,8 @@ async def test_activities_in_hierarchical_states():
     ctx = Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for activities to start
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(parent_started.wait(), timeout=1)
+    await asyncio.wait_for(child_started.wait(), timeout=1)
 
     # Both activities should start
     assert instance.log == ["parent-activity-started", "child-activity-started"]
@@ -271,7 +279,7 @@ async def test_activities_in_hierarchical_states():
 
     # Exit child state
     await sm.dispatch(Event("up"))
-    await asyncio.sleep(0.01)  # 10ms
+    await asyncio.wait_for(child_aborted.wait(), timeout=1)
 
     # Only child activity should be aborted
     assert "child-activity-aborted" in instance.log
@@ -280,7 +288,7 @@ async def test_activities_in_hierarchical_states():
 
     # Exit parent state
     await sm.dispatch(Event("out"))
-    await asyncio.sleep(0.01)  # 10ms
+    await asyncio.wait_for(parent_aborted.wait(), timeout=1)
 
     # Parent activity should now be aborted
     assert "parent-activity-aborted" in instance.log
@@ -294,11 +302,13 @@ async def test_activity_with_event_data_access():
     """Activity with event data access"""
     instance = ActivityInstance()
     instance.data["trigger"] = "test-value"
+    activity_started = asyncio.Event()
 
     async def event_data_activity(ctx: Context, inst: ActivityInstance, event: Event):
         inst.log_action(f"activity-event-{event.name}")
         inst.data["activity_event"] = event
         inst.data["processed_trigger"] = inst.data["trigger"]
+        activity_started.set()
 
     model = hsm.define(
         "EventDataActivityMachine",
@@ -309,8 +319,7 @@ async def test_activity_with_event_data_access():
     ctx = Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for activity to start
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(activity_started.wait(), timeout=1)
 
     # Activity should receive the initial event
     assert instance.data["activity_event"].name == "hsm_initial"
@@ -369,10 +378,20 @@ async def test_long_running_activity_completion():
 async def test_activity_reentry_behavior():
     """Activity re-entry behavior"""
     instance = ActivityInstance()
+    activity_count_changed = asyncio.Condition()
 
     async def reentry_activity(ctx: Context, inst: ActivityInstance, event: Event):
-        inst.data["activity_count"] = inst.data.get("activity_count", 0) + 1
-        inst.log_action(f"activity-run-{inst.data['activity_count']}")
+        async with activity_count_changed:
+            inst.data["activity_count"] = inst.data.get("activity_count", 0) + 1
+            inst.log_action(f"activity-run-{inst.data['activity_count']}")
+            activity_count_changed.notify_all()
+
+    async def wait_for_activity_count(count: int) -> None:
+        async with activity_count_changed:
+            await asyncio.wait_for(
+                activity_count_changed.wait_for(lambda: instance.data["activity_count"] >= count),
+                timeout=1,
+            )
 
     model = hsm.define(
         "ReentryActivityMachine",
@@ -390,22 +409,21 @@ async def test_activity_reentry_behavior():
     ctx = Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for activity to start
-    await asyncio.sleep(0.01)
+    await wait_for_activity_count(1)
 
     assert instance.data["activity_count"] == 1
     assert instance.log == ["activity-run-1"]
 
     # Self transition should restart activity
     await sm.dispatch(Event("restart"))
-    await asyncio.sleep(0.01)  # 10ms
+    await wait_for_activity_count(2)
 
     assert instance.data["activity_count"] == 2
     assert "activity-run-2" in instance.log
 
     # Another restart
     await sm.dispatch(Event("restart"))
-    await asyncio.sleep(0.01)  # 10ms
+    await wait_for_activity_count(3)
 
     assert instance.data["activity_count"] == 3
     assert "activity-run-3" in instance.log

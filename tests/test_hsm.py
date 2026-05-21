@@ -1,6 +1,5 @@
 import hsm
 import pytest  # Assuming pytest is used for potential async/fixture needs later
-import asyncio
 
 
 def test_hsm():
@@ -286,7 +285,6 @@ async def test_complex_hsm():
 
     print("Dispatching G")
     await sm.dispatch(hsm.Event(name="G"))
-    await asyncio.sleep(0.1)  # Time for processing
     print("State after G:", sm.state())
     print("Trace after G:", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -310,7 +308,6 @@ async def test_complex_hsm():
 
     print("Dispatching I")
     await sm.dispatch(hsm.Event(name="I"))
-    await asyncio.sleep(0.1)
     print("State after I:", sm.state())
     print("Trace after I:", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -324,7 +321,6 @@ async def test_complex_hsm():
 
     print("Dispatching A")
     await sm.dispatch(hsm.Event(name="A"))
-    await asyncio.sleep(0.1)
     print("State after A:", sm.state())
     print("Trace after A:", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -345,7 +341,6 @@ async def test_complex_hsm():
     # First D: Guard foo==1 is true (foo=1). Transition /s/s1/s11 -> /s/s1 happens. foo becomes 0.
     print("Dispatching D (1st)")
     await sm.dispatch(hsm.Event(name="D"))
-    await asyncio.sleep(0.1)
     print("State after D (1st):", sm.state())
     print("Trace after D (1st):", trace)
     assert sm.state() == "/TestHSM/s/s1"  # Target is /s/s1
@@ -360,7 +355,6 @@ async def test_complex_hsm():
     # Second D: Source /s/s1 matches. Guard foo==0 is true. Transition /s/s1 -> /s happens. foo becomes 1.
     print("Dispatching D (2nd)")
     await sm.dispatch(hsm.Event(name="D"))
-    await asyncio.sleep(0.1)
     print("State after D (2nd):", sm.state())
     print("Trace after D (2nd):", trace)
     assert sm.state() == "/TestHSM/s"
@@ -381,7 +375,6 @@ async def test_complex_hsm():
     # It then enters the initial state of /s -> s1 -> s11
     print("Dispatching D (3rd)")
     await sm.dispatch(hsm.Event(name="D"))
-    await asyncio.sleep(0.1)
     print("State after D (3rd):", sm.state())
     print("Trace after D (3rd):", trace)
     # Go trace: ["s.exit", "s.D.transition.effect", "s.entry", "s.initial.effect", "s1.entry", "s11.entry"] (implies external transition?)
@@ -402,7 +395,6 @@ async def test_complex_hsm():
     # Fourth D: Back in /s/s1/s11. foo=1. Guard foo==1 is true. Transition /s/s1/s11 -> /s/s1. foo becomes 0.
     print("Dispatching D (4th)")
     await sm.dispatch(hsm.Event(name="D"))
-    await asyncio.sleep(0.1)
     print("State after D (4th):", sm.state())
     print("Trace after D (4th):", trace)
     assert sm.state() == "/TestHSM/s/s1"
@@ -415,7 +407,6 @@ async def test_complex_hsm():
 
     print("Dispatching C")
     await sm.dispatch(hsm.Event(name="C"))
-    await asyncio.sleep(0.1)
     print("State after C:", sm.state())
     print("Trace after C:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"
@@ -436,7 +427,6 @@ async def test_complex_hsm():
     # First E: From /s -> /s/s1/s11. Exits s211, s21, s2. Effect. Enters s1, s11.
     print("Dispatching E (1st)")
     await sm.dispatch(hsm.Event(name="E"))
-    await asyncio.sleep(0.1)
     print("State after E (1st):", sm.state())
     print("Trace after E (1st):", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -456,7 +446,6 @@ async def test_complex_hsm():
     # Second E: From /s -> /s/s1/s11. Exits s11, s1. Effect. Enters s1, s11.
     print("Dispatching E (2nd)")
     await sm.dispatch(hsm.Event(name="E"))
-    await asyncio.sleep(0.1)
     print("State after E (2nd):", sm.state())
     print("Trace after E (2nd):", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -475,7 +464,6 @@ async def test_complex_hsm():
     # G: From /s/s1/s11 -> /s/s2/s21/s211. Exits s11, s1. Effect. Enters s2, s21, s211.
     print("Dispatching G")
     await sm.dispatch(hsm.Event(name="G"))
-    await asyncio.sleep(0.1)
     print("State after G:", sm.state())
     print("Trace after G:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"
@@ -497,7 +485,6 @@ async def test_complex_hsm():
     # I: From /s. Guard foo==0 is true. Effect. foo becomes 1. Stays in /s/s2/s21/s211.
     print("Dispatching I")
     await sm.dispatch(hsm.Event(name="I"))
-    await asyncio.sleep(0.1)
     print("State after I:", sm.state())
     print("Trace after I:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"
@@ -523,13 +510,11 @@ async def test_complex_hsm():
     # Need to be in /s/s1/s11 first. Let's add a G dispatch again.
     # Reset state to /s/s1/s11
     await sm.dispatch(hsm.Event(name="G"))  # s211->s11
-    await asyncio.sleep(0.1)
     trace["sync"].clear()
     sm.foo = 1  # Set foo on the instance
 
     print("Dispatching H")
     await sm.dispatch(hsm.Event(name="H"))
-    await asyncio.sleep(0.1)
     print("State after H:", sm.state())
     print("Trace after H:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"  # Target is /s/s2, then enters initial chain
@@ -577,7 +562,6 @@ async def test_complex_hsm():
     # Let's assume Z triggers, effect runs, stays in state.
     print("Dispatching Z")
     await sm.dispatch(hsm.Event(name="Z"))
-    await asyncio.sleep(0.1)
     print("State after Z:", sm.state())
     print("Trace after Z:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"  # No target specified, stays in state
