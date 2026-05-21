@@ -918,6 +918,44 @@ def test_context_registration_does_not_leak_on_repeated_start_stop():
     asyncio.run(_context_registration_lifecycle_stress(rounds=100))
 
 
+async def _repeated_start_fails_without_leaking_context_registration() -> None:
+    class RepeatedStartInstance(hsm.Instance):
+        pass
+
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "RepeatedStart",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+    instance = RepeatedStartInstance()
+    sm = await hsm.Start(ctx, instance, model)
+    assert ctx.machines() == [sm]
+
+    try:
+        await hsm.Start(ctx, instance, model)
+    except hsm.ValidationError as error:
+        assert "already has a running HSM" in str(error)
+    else:
+        raise AssertionError("repeated Start() on an instance should fail")
+
+    try:
+        await hsm.Start(ctx, sm)
+    except hsm.ValidationError as error:
+        assert "already started HSM" in str(error)
+    else:
+        raise AssertionError("repeated Start() on an HSM should fail")
+
+    assert ctx.machines() == [sm]
+    assert instance.state() == "/RepeatedStart/idle"
+    await hsm.Stop(instance)
+    assert ctx.machines() == []
+
+
+def test_repeated_start_fails_without_leaking_context_registration():
+    asyncio.run(_repeated_start_fails_without_leaking_context_registration())
+
+
 async def _restart_preserves_context_registration() -> None:
     class RestartInstance(hsm.Instance):
         pass

@@ -2427,12 +2427,17 @@ async def Start(
 ) -> HSM[TInstance]:
     if isinstance(instance, HSM):
         sm = instance
+        if sm._started:
+            raise ValidationError("Start() called on an already started HSM")
         start_data = model
         sm._root_context = ctx or Context()
         sm._root_context.register(sm)
     else:
         if not isinstance(model, Model):
             raise ValidationError("Start() requires a model when starting an instance")
+        existing = getattr(instance, "_Instance__hsm", None)
+        if isinstance(existing, HSM) and existing._started:
+            raise ValidationError("Start() called on an instance that already has a running HSM")
         sm = HSM(instance=instance, model=model, ctx=ctx)
         start_data = data
     await sm._start(start_data)
