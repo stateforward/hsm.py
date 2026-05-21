@@ -376,7 +376,7 @@ hsm.Transition(
 
 ## Lowercase Aliases
 
-Lowercase aliases are exported for Python ergonomics, for example `define`, `state`, `transition`, `on`, `target`, `start`, and `dispatch`. They map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
+Lowercase and snake_case aliases are exported for Python ergonomics. Examples include `define`, `state`, `transition`, `on`, `on_set`, `on_call`, `target`, `operation`, `start`, `dispatch`, `dispatch_all`, `take_snapshot`, `after_entry`, `after_dispatch`, `is_ancestor`, `make_kind`, `id`, `name`, and `qualified_name`. They map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
 
 ## Current Python Notes
 

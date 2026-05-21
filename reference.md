@@ -397,6 +397,12 @@ child_kind = hsm.make_kind(base_kind)
 assert hsm.is_kind(child_kind, base_kind)
 ```
 
+The DSL and runtime helpers also expose snake_case aliases, including
+`on_set`, `on_call`, `dispatch_all`, `dispatch_to`, `take_snapshot`,
+`after_entry`, `after_exit`, `after_process`, `after_dispatch`,
+`after_executed`, `is_ancestor`, `qualified_name`, `new_group`, and
+`operation`.
+
 ## Context and Cancellation
 
 ### Context Class

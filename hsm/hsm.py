@@ -1320,6 +1320,7 @@ class _OperationAPI:
 
 
 Operation = _OperationAPI()
+operation = Operation
 
 
 class _AfterWaiters:
@@ -2359,14 +2360,21 @@ get = Get
 set = Set
 call = Call
 take_snapshot = TakeSnapshot
-source = Source
-target = Target
 attribute = Attribute
+operation = Operation
+on_set = OnSet
 onset = OnSet
 on_call = OnCall
 shallow_history = ShallowHistory
 deep_history = DeepHistory
 new_group = NewGroup
+after_dispatch = AfterDispatch
+after_process = AfterProcess
+after_entry = AfterEntry
+after_exit = AfterExit
+after_executed = AfterExecuted
+lca = LCA
+is_ancestor = IsAncestor
 
 
 __all__ = [
@@ -2414,6 +2422,7 @@ __all__ = [
     "Event",
     "EventKind",
     "EventSnapshot",
+    "Every",
     "Exit",
     "Expression",
     "ExternalKind",
@@ -2473,6 +2482,11 @@ __all__ = [
     "When",
     "activity",
     "after",
+    "after_dispatch",
+    "after_entry",
+    "after_executed",
+    "after_exit",
+    "after_process",
     "at",
     "attribute",
     "call",
@@ -2490,15 +2504,22 @@ __all__ = [
     "final",
     "get",
     "guard",
+    "id",
     "initial",
+    "is_ancestor",
     "is_kind",
+    "lca",
     "match",
     "make_kind",
+    "name",
     "new",
     "new_group",
     "on",
     "on_call",
+    "on_set",
     "onset",
+    "operation",
+    "qualified_name",
     "restart",
     "set",
     "shallow_history",
@@ -2523,6 +2544,11 @@ def QualifiedName(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
 
 def Name(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
     return os.path.basename(QualifiedName(hsm))
+
+
+id = ID
+qualified_name = QualifiedName
+name = Name
 
 
 if __name__ == "__main__":

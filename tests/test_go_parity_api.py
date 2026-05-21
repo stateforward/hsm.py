@@ -12,6 +12,66 @@ class ParityInstance(hsm.Instance):
         self.log: list[str] = []
 
 
+def test_snake_case_dsl_aliases_are_available():
+    aliases = {
+        "activity": hsm.Activity,
+        "after": hsm.After,
+        "after_dispatch": hsm.AfterDispatch,
+        "after_entry": hsm.AfterEntry,
+        "after_executed": hsm.AfterExecuted,
+        "after_exit": hsm.AfterExit,
+        "after_process": hsm.AfterProcess,
+        "at": hsm.At,
+        "attribute": hsm.Attribute,
+        "call": hsm.Call,
+        "choice": hsm.Choice,
+        "deep_history": hsm.DeepHistory,
+        "define": hsm.Define,
+        "defer": hsm.Defer,
+        "dispatch": hsm.Dispatch,
+        "dispatch_all": hsm.DispatchAll,
+        "dispatch_to": hsm.DispatchTo,
+        "effect": hsm.Effect,
+        "entry": hsm.Entry,
+        "every": hsm.Every,
+        "exit": hsm.Exit,
+        "final": hsm.Final,
+        "get": hsm.Get,
+        "guard": hsm.Guard,
+        "id": hsm.ID,
+        "initial": hsm.Initial,
+        "is_ancestor": hsm.IsAncestor,
+        "lca": hsm.LCA,
+        "name": hsm.Name,
+        "new": hsm.New,
+        "new_group": hsm.NewGroup,
+        "on": hsm.On,
+        "on_call": hsm.OnCall,
+        "on_set": hsm.OnSet,
+        "operation": hsm.Operation,
+        "qualified_name": hsm.QualifiedName,
+        "restart": hsm.Restart,
+        "set": hsm.Set,
+        "shallow_history": hsm.ShallowHistory,
+        "source": hsm.Source,
+        "start": hsm.Start,
+        "state": hsm.State,
+        "stop": hsm.Stop,
+        "take_snapshot": hsm.TakeSnapshot,
+        "target": hsm.Target,
+        "transition": hsm.Transition,
+        "when": hsm.When,
+    }
+
+    for alias_name, canonical in aliases.items():
+        assert getattr(hsm, alias_name) is canonical
+
+    custom = hsm.make_kind(hsm.Kinds.Element)
+    assert hsm.is_kind(custom, hsm.Kinds.Element)
+    assert hsm.match("machine-1", "machine-*")
+    assert hsm.onset is hsm.OnSet
+
+
 @pytest.mark.asyncio
 async def test_pascal_case_aliases_and_snapshot():
     instance = ParityInstance()
