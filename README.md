@@ -384,6 +384,21 @@ Lowercase and snake_case aliases are exported for Python ergonomics. Examples in
 
 This package requires Python 3.13 or newer.
 
+## Testing And Hardening
+
+Run the full verification suite before shipping changes:
+
+```bash
+uv run pytest
+uv build
+uvx twine check dist/*
+```
+
+The suite includes deterministic Hypothesis fuzz tests for generated state
+machines and guarded transition order, plus stress tests for concurrent
+dispatch, broadcast dispatch, and activity cancellation cleanup. CI runs the
+same gates on pushes and pull requests.
+
 ## License
 
 MIT License. See [LICENSE](LICENSE).
