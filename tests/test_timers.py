@@ -25,10 +25,62 @@ class TimerInstance(Instance):
         self.log.append(action)
 
 
+class ManualClock:
+    def __init__(self):
+        self.sleeps: list[tuple[timedelta, asyncio.Future[None]]] = []
+        self.cancelled = 0
+
+    async def sleep(self, duration: timedelta) -> None:
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self.sleeps.append((duration, future))
+        try:
+            await future
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+
+    def _prune_done(self) -> None:
+        self.sleeps = [(duration, future) for duration, future in self.sleeps if not future.done()]
+
+    async def wait_for_sleep(self, count: int = 1) -> None:
+        for _ in range(100):
+            self._prune_done()
+            if len(self.sleeps) >= count:
+                return
+            await asyncio.sleep(0)
+        raise AssertionError(f"expected {count} scheduled sleeps, got {len(self.sleeps)}")
+
+    def release_next(self) -> timedelta:
+        self._prune_done()
+        duration, future = self.sleeps.pop(0)
+        if not future.done():
+            future.set_result(None)
+        return duration
+
+    def release_duration(self, expected: timedelta) -> None:
+        self._prune_done()
+        for index, (duration, future) in enumerate(self.sleeps):
+            if duration == expected:
+                self.sleeps.pop(index)
+                if not future.done():
+                    future.set_result(None)
+                return
+        raise AssertionError(f"expected scheduled sleep {expected}, got {[duration for duration, _ in self.sleeps]}")
+
+
+async def wait_until(predicate, message: str) -> None:
+    for _ in range(100):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(message)
+
+
 @pytest.mark.asyncio
 async def test_basic_after_timer_fires_once_after_delay():
     """Basic after timer - fires once after delay"""
     instance = TimerInstance()
+    clock = ManualClock()
 
     async def waiting_entry(ctx, inst, event):
         inst.log_action('waiting-entry')
@@ -58,12 +110,13 @@ async def test_basic_after_timer_fires_once_after_delay():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
     assert instance.log == ['waiting-entry']
     assert sm.state() == '/BasicAfterMachine/waiting'
 
-    # Wait for timer to fire
-    await asyncio.sleep(0.1)  # 100ms
+    await clock.wait_for_sleep()
+    assert clock.release_next() == timedelta(milliseconds=50)
+    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/BasicAfterMachine/done"), timeout=1)
 
     assert instance.log == [
         'waiting-entry',
@@ -79,6 +132,7 @@ async def test_basic_after_timer_fires_once_after_delay():
 async def test_after_timer_aborted_on_state_exit():
     """After timer aborted on state exit"""
     instance = TimerInstance()
+    clock = ManualClock()
 
     async def timeout_effect(ctx, inst, event):
         inst.log_action('timeout-fired')
@@ -108,17 +162,17 @@ async def test_after_timer_aborted_on_state_exit():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
 
-    # Cancel before timer fires
-    await asyncio.sleep(0.03)  # 30ms
+    await clock.wait_for_sleep()
     await sm.dispatch(Event(name='cancel'))
 
     assert instance.log == ['manual-cancel']
     assert sm.state() == '/AbortedAfterMachine/cancelled'
 
-    # Wait longer to ensure timer doesn't fire
-    await asyncio.sleep(0.1)  # 100ms
+    await wait_until(lambda: clock.cancelled >= 1, "timer sleep was not cancelled")
+    clock._prune_done()
+    await asyncio.sleep(0)
     assert 'timeout-fired' not in instance.log
 
     await hsm.stop(sm)
@@ -128,6 +182,7 @@ async def test_after_timer_aborted_on_state_exit():
 async def test_basic_every_timer_fires_repeatedly_at_intervals():
     """Basic every timer - fires repeatedly at intervals"""
     instance = TimerInstance()
+    clock = ManualClock()
 
     async def counting_entry(ctx, inst, event):
         inst.data['count'] = 0
@@ -161,25 +216,27 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
     assert instance.log == ['counting-entry']
 
-    # Let it tick a few times
-    await asyncio.sleep(0.1)  # 100ms
+    await clock.wait_for_sleep()
+    assert clock.release_next() == timedelta(milliseconds=30)
+    await wait_until(lambda: instance.data['count'] >= 1, "first tick did not fire")
+    await clock.wait_for_sleep()
+    assert clock.release_next() == timedelta(milliseconds=30)
+    await wait_until(lambda: instance.data['count'] >= 2, "second tick did not fire")
 
-    # Should have ticked at least 2-3 times
-    assert instance.data['count'] >= 2
     assert 'tick-1' in instance.log
     assert 'tick-2' in instance.log
 
-    # Stop the timer
     await sm.dispatch(Event(name='stop'))
 
     final_count = instance.data['count']
     assert f'stopped-at-{final_count}' in instance.log
 
-    # Wait and ensure no more ticks
-    await asyncio.sleep(0.05)  # 50ms
+    await wait_until(lambda: clock.cancelled >= 1, "repeating timer sleep was not cancelled")
+    clock._prune_done()
+    await asyncio.sleep(0)
     assert instance.data['count'] == final_count
 
     await hsm.stop(sm)
@@ -189,6 +246,7 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
 async def test_multiple_timers_in_same_state():
     """Multiple timers in same state"""
     instance = TimerInstance()
+    clock = ManualClock()
 
     async def timer1_effect(ctx, inst, event):
         inst.log_action('timer1-fired')
@@ -221,15 +279,21 @@ async def test_multiple_timers_in_same_state():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
 
-    # First timer should fire first
-    await asyncio.sleep(0.06)  # 60ms
+    await clock.wait_for_sleep(2)
+    assert sorted(duration for duration, _ in clock.sleeps) == [
+        timedelta(milliseconds=40),
+        timedelta(milliseconds=80),
+    ]
+    clock.release_duration(timedelta(milliseconds=40))
+    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/MultipleTimerMachine/path1"), timeout=1)
     assert instance.log == ['timer1-fired']
     assert sm.state() == '/MultipleTimerMachine/path1'
 
-    # Second timer should not fire because we've exited the state
-    await asyncio.sleep(0.04)  # 40ms
+    await wait_until(lambda: clock.cancelled >= 1, "second timer sleep was not cancelled")
+    clock._prune_done()
+    await asyncio.sleep(0)
     assert 'timer2-fired' not in instance.log
 
     await hsm.stop(sm)
@@ -240,6 +304,7 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
     """Timer with dynamic duration based on instance data"""
     instance = TimerInstance()
     instance.data['delay'] = 60
+    clock = ManualClock()
 
     async def waiting_entry(ctx, inst, event):
         inst.log_action(f'waiting-with-delay-{inst.data["delay"]}')
@@ -264,11 +329,12 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
     assert instance.log == ['waiting-with-delay-60']
 
-    # Timer should fire after instance.data.delay ms
-    await asyncio.sleep(0.08)  # 80ms
+    await clock.wait_for_sleep()
+    assert clock.release_next() == timedelta(milliseconds=60)
+    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/DynamicTimerMachine/finished"), timeout=1)
     assert instance.log == [
         'waiting-with-delay-60',
         'dynamic-timer-fired'
@@ -282,6 +348,7 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
 async def test_timer_with_event_data_access():
     """Timer with event data access"""
     instance = TimerInstance()
+    clock = ManualClock()
 
     async def event_data_timer(ctx, inst, event):
         inst.data['timer_event'] = event
@@ -299,16 +366,15 @@ async def test_timer_with_event_data_access():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
 
-    # Wait a brief moment for the timer activity to start and call the duration function
-    await asyncio.sleep(0.01)  # 10ms
+    await clock.wait_for_sleep()
 
-    # Timer function should receive initial event
     assert instance.data['timer_event'] is not None
     assert instance.data['timer_event'].name == 'hsm_initial'
 
-    await asyncio.sleep(0.07)  # 70ms
+    assert clock.release_next() == timedelta(milliseconds=50)
+    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/EventDataTimerMachine/triggered"), timeout=1)
     assert sm.state() == '/EventDataTimerMachine/triggered'
 
     await hsm.stop(sm)
@@ -318,6 +384,7 @@ async def test_timer_with_event_data_access():
 async def test_zero_or_negative_timer_duration():
     """Zero or negative timer duration"""
     instance = TimerInstance()
+    clock = ManualClock()
 
     async def immediate_effect(ctx, inst, event):
         inst.log_action('immediate-timer')
@@ -338,14 +405,13 @@ async def test_zero_or_negative_timer_duration():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
 
-    # Should not create timer for zero duration
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.sleep(0)
 
-    # State should remain unchanged
     assert sm.state() == '/ZeroTimerMachine/immediate'
     assert 'immediate-timer' not in instance.log
+    assert clock.sleeps == []
 
     await hsm.stop(sm)
 
@@ -354,6 +420,7 @@ async def test_zero_or_negative_timer_duration():
 async def test_timer_in_hierarchical_state():
     """Timer in hierarchical state"""
     instance = TimerInstance()
+    clock = ManualClock()
 
     async def parent_timeout_effect(ctx, inst, event):
         inst.log_action('parent-handled-timeout')
@@ -376,11 +443,12 @@ async def test_timer_in_hierarchical_state():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
     assert sm.state() == '/HierarchicalTimerMachine/parent/child'
 
-    # Timer should fire and bubble up
-    await asyncio.sleep(0.07)  # 70ms
+    await clock.wait_for_sleep()
+    assert clock.release_next() == timedelta(milliseconds=50)
+    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/HierarchicalTimerMachine/done"), timeout=1)
 
     assert instance.log == ['parent-handled-timeout']
     assert sm.state() == '/HierarchicalTimerMachine/done'
@@ -392,6 +460,7 @@ async def test_timer_in_hierarchical_state():
 async def test_every_timer_with_abort_signal_handling():
     """Every timer with abort signal handling"""
     instance = TimerInstance()
+    clock = ManualClock()
 
     async def active_entry(ctx, inst, event):
         # Only reset tick_count on initial entry, not on self-transitions
@@ -428,18 +497,26 @@ async def test_every_timer_with_abort_signal_handling():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
 
-    # Let it tick a few times
-    await asyncio.sleep(0.08)  # 80ms
-    assert instance.data['tick_count'] >= 2
+    await clock.wait_for_sleep()
+    assert clock.release_next() == timedelta(milliseconds=25)
+    await wait_until(lambda: instance.data['tick_count'] >= 1, "first self-transition tick did not fire")
+    await wait_until(lambda: clock.cancelled >= 1, "self-transition did not cancel the previous timer activity")
+    await clock.wait_for_sleep()
+    assert clock.release_next() == timedelta(milliseconds=25)
+    await wait_until(lambda: instance.data['tick_count'] >= 2, "second self-transition tick did not fire")
 
-    # Stop while ticking
+    cancelled_before_finish = clock.cancelled
     await sm.dispatch(Event(name='finish'))
     final_tick = instance.data['tick_count']
 
-    # Wait and ensure no more ticks
-    await asyncio.sleep(0.05)  # 50ms
+    await wait_until(
+        lambda: clock.cancelled > cancelled_before_finish,
+        "self-transition timer sleep was not cancelled on finish",
+    )
+    clock._prune_done()
+    await asyncio.sleep(0)
     assert instance.data['tick_count'] == final_tick
     assert f'finished-at-tick-{final_tick}' in instance.log
 
