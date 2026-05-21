@@ -393,6 +393,7 @@ This package requires Python 3.13 or newer.
 Run the full verification suite before shipping changes:
 
 ```bash
+uv sync --group dev
 uv run pytest --cov=hsm --cov-report=term-missing --cov-fail-under=90
 uv run pyright
 uv build
@@ -414,6 +415,15 @@ HSM_SOAK=1 uv run pytest tests/test_soak.py
 
 The CI workflow also runs soak tests on its nightly schedule, and supports a
 manual `workflow_dispatch` run with the `soak` input enabled.
+
+Use [RELEASE.md](RELEASE.md) for the full release checklist, including wheel
+smoke tests, PyPI publication, clean PyPI install verification, and CI
+monitoring.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for supported versions, private vulnerability
+reporting, the library security model, and security-release verification gates.
 
 ## License
 
