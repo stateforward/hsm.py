@@ -409,8 +409,8 @@ Longer deterministic soak tests are available when needed:
 HSM_SOAK=1 uv run pytest tests/test_soak.py
 ```
 
-The CI workflow also supports a manual `workflow_dispatch` run with the `soak`
-input enabled.
+The CI workflow also runs soak tests on its nightly schedule, and supports a
+manual `workflow_dispatch` run with the `soak` input enabled.
 
 ## License
 

@@ -7,6 +7,8 @@ on:
         description: "Run long soak tests"
         required: false
         default: "false"
+  schedule:
+    - cron: "17 8 * * *"
   pull_request:
   push:
     branches:
@@ -90,5 +92,7 @@ jobs:
           PY
 
       - name: Run soak tests
-        if: github.event_name == 'workflow_dispatch' && inputs.soak == 'true'
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.soak == 'true')
+        env:
+          HSM_SOAK: "1"
         run: uv run pytest tests/test_soak.py
