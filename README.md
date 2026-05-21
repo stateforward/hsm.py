@@ -380,7 +380,7 @@ hsm.Transition(
 
 Lowercase and snake_case aliases are exported for Python ergonomics. Builder and runtime function aliases include `define`, `state`, `transition`, `on`, `on_set`, `on_call`, `target`, `operation`, `start`, `started`, `dispatch`, `dispatch_all`, `take_snapshot`, `after_entry`, `after_dispatch`, `is_ancestor`, `make_kind`, `make_group`, `id`, `name`, and `qualified_name`.
 
-DSL values also have direct Python aliases: `event` maps to `Event`, `clock` maps to `Clock`, `config` maps to `Config`, `context` maps to `Context`, `default_clock` maps to `DefaultClock`, lifecycle events expose `initial_event`, `error_event`, `any_event`, and `final_event`, and kind constants expose names such as `state_kind`, `transition_kind`, `event_kind`, and `final_state_kind`. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; snapshots expose both PascalCase fields such as `QueueLen` and snake_case properties such as `queue_len`. These aliases map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
+DSL values and types also have direct Python aliases: `event` maps to `Event`, `completion_event` maps to `CompletionEvent`, `snapshot` maps to `Snapshot`, `event_snapshot` maps to `EventSnapshot`, `clock` maps to `Clock`, `config` maps to `Config`, `context` maps to `Context`, `default_clock` maps to `DefaultClock`, lifecycle events expose `initial_event`, `error_event`, `any_event`, and `final_event`, and kind constants expose names such as `state_kind`, `transition_kind`, `event_kind`, and `final_state_kind`. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; snapshots expose both PascalCase fields such as `QueueLen` and snake_case properties such as `queue_len`. These aliases map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
 
 ## Current Python Notes
 
@@ -394,7 +394,8 @@ Run the full verification suite before shipping changes:
 
 ```bash
 uv sync --group dev
-uv run pip-audit --local --strict --progress-spinner off
+uv export --quiet --all-groups --no-emit-project --format requirements.txt --output-file audit-requirements.txt
+uv run pip-audit -r audit-requirements.txt --require-hashes --disable-pip --strict --progress-spinner off
 uv run pytest --cov=hsm --cov-report=term-missing --cov-fail-under=90
 uv run pyright
 uv build

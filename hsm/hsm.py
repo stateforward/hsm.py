@@ -616,11 +616,17 @@ ErrorEvent = Event(name="hsm_error", kind=Kinds.ErrorEvent)
 AnyEvent = Event(name="*", kind=Kinds.Event)
 FinalEvent = Event(name="hsm_final", kind=Kinds.CompletionEvent)
 event = Event
+completion_event = CompletionEvent
+call_data = CallData
+attribute_change = AttributeChange
+event_snapshot = EventSnapshot
+snapshot = Snapshot
 initial_event = InitialEvent
 error_event = ErrorEvent
 any_event = AnyEvent
 final_event = FinalEvent
 InfiniteDuration = timedelta.max
+infinite_duration = InfiniteDuration
 
 
 @dataclass
@@ -2500,7 +2506,13 @@ def TakeSnapshot(
 
 
 define = Define
+element = Element
+validation_error = ValidationError
+behavior = Behavior
+model = Model
+instance = Instance
 state = State
+final_state = FinalState
 initial = Initial
 transition = Transition
 source = Source
@@ -2667,13 +2679,17 @@ __all__ = [
     "attribute",
     "attribute_kind",
     "any_event",
+    "attribute_change",
     "behavior_kind",
+    "behavior",
     "call",
+    "call_data",
     "call_event_kind",
     "change_event_kind",
     "choice",
     "choice_kind",
     "clock",
+    "completion_event",
     "completion_event_kind",
     "concurrent_kind",
     "config",
@@ -2688,17 +2704,20 @@ __all__ = [
     "dispatch_all",
     "dispatch_to",
     "effect",
+    "element",
     "element_kind",
     "entry",
     "error_event",
     "error_event_kind",
     "event",
+    "event_snapshot",
     "event_kind",
     "every",
     "exit",
     "external_kind",
     "final",
     "final_event",
+    "final_state",
     "final_state_kind",
     "get",
     "guard",
@@ -2706,6 +2725,8 @@ __all__ = [
     "initial",
     "initial_event",
     "initial_kind",
+    "infinite_duration",
+    "instance",
     "internal_kind",
     "is_ancestor",
     "is_kind",
@@ -2715,6 +2736,7 @@ __all__ = [
     "match",
     "make_kind",
     "make_group",
+    "model",
     "name",
     "named_element_kind",
     "namespace_kind",
@@ -2736,6 +2758,7 @@ __all__ = [
     "set",
     "shallow_history",
     "shallow_history_kind",
+    "snapshot",
     "source",
     "start",
     "started",
@@ -2748,6 +2771,7 @@ __all__ = [
     "time_event_kind",
     "transition",
     "transition_kind",
+    "validation_error",
     "vertex_kind",
     "when",
 ]
