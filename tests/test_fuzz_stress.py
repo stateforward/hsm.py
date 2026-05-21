@@ -839,6 +839,93 @@ def test_awaited_restart_from_effect_does_not_self_deadlock():
     asyncio.run(_awaited_restart_from_effect_does_not_self_deadlock())
 
 
+async def _stop_from_activity_does_not_await_current_activity_task() -> None:
+    class ActivityStopInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.trace: list[str] = []
+
+    activity_started = asyncio.Event()
+    activity_done = asyncio.Event()
+
+    async def self_stopping_activity(ctx, inst, event):
+        inst.trace.append("activity.before-stop")
+        activity_started.set()
+        await hsm.Stop(inst)
+        assert ctx.done is True
+        inst.trace.append("activity.after-stop")
+        activity_done.set()
+
+    model = hsm.Define(
+        "ActivitySelfStop",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Activity(self_stopping_activity)),
+    )
+
+    instance = ActivityStopInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+    await asyncio.wait_for(activity_started.wait(), timeout=1)
+    await asyncio.wait_for(activity_done.wait(), timeout=1)
+
+    assert instance.state() == "/ActivitySelfStop"
+    assert ctx.machines() == []
+    assert instance.trace == ["activity.before-stop", "activity.after-stop"]
+
+
+def test_stop_from_activity_does_not_await_current_activity_task():
+    asyncio.run(_stop_from_activity_does_not_await_current_activity_task())
+
+
+async def _restart_from_activity_does_not_await_current_activity_task() -> None:
+    class ActivityRestartInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.trace: list[str] = []
+            self.restarted = False
+
+    activity_done = asyncio.Event()
+
+    async def self_restarting_activity(ctx, inst: ActivityRestartInstance, event):
+        if inst.restarted:
+            return
+        inst.restarted = True
+        inst.trace.append("activity.before-restart")
+        await hsm.Restart(inst, "again")
+        assert ctx.done is True
+        inst.trace.append("activity.after-restart")
+        activity_done.set()
+
+    async def active_entry(ctx, inst, event):
+        inst.trace.append(f"entry:{event.Data!r}")
+
+    model = hsm.Define(
+        "ActivitySelfRestart",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Entry(active_entry), hsm.Activity(self_restarting_activity)),
+    )
+
+    instance = ActivityRestartInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+    await asyncio.wait_for(activity_done.wait(), timeout=1)
+
+    assert instance.state() == "/ActivitySelfRestart/active"
+    assert len(ctx.machines()) == 1
+    assert instance.trace == [
+        "entry:None",
+        "activity.before-restart",
+        "entry:'again'",
+        "activity.after-restart",
+    ]
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    await hsm.Stop(instance)
+
+
+def test_restart_from_activity_does_not_await_current_activity_task():
+    asyncio.run(_restart_from_activity_does_not_await_current_activity_task())
+
+
 async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
     class BlockingInstance(hsm.Instance):
         pass

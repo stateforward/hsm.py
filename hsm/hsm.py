@@ -1781,6 +1781,9 @@ class HSM(Behavior[TInstance]):
         active = self._active.pop(behavior.qualified_name, None)
         if active is None:
             return
+        if active.task is asyncio.current_task():
+            active.context.cancel()
+            return
         active.task.cancel()
         try:
             await active.task
@@ -1922,6 +1925,9 @@ class HSM(Behavior[TInstance]):
                 break
             self._state = parent
         for active in list(self._active.values()):
+            if active.task is asyncio.current_task():
+                active.context.cancel()
+                continue
             active.task.cancel()
             try:
                 await active.task
