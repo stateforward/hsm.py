@@ -29,6 +29,8 @@ Issues = "https://github.com/stateforward/hsm-python/issues"
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
 asyncio_mode = "strict"
+timeout = 30
+timeout_method = "thread"
 pythonpath = [
     "."
 ]
@@ -48,6 +50,7 @@ dev-dependencies = [
     "hypothesis>=6.136.0",
     "pytest>=8.3.5",
     "pytest-asyncio>=0.26.0",
+    "pytest-timeout>=2.4.0",
     "scalene>=1.5.51",
     "yappi>=1.6.10",
 ]
