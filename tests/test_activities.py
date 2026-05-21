@@ -36,20 +36,25 @@ class ActivityInstance(Instance):
 async def test_basic_activity_starts_on_entry_stops_on_exit():
     """Basic activity - starts on entry, stops on exit"""
     instance = ActivityInstance()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
 
     async def basic_activity(ctx: Context, inst: ActivityInstance, event: Event):
         inst.log_action("activity-started")
         inst.data["activity_started"] += 1
+        started.set()
 
         async def handle_cancellation():
             try:
-                await asyncio.sleep(0.05)  # 50ms
+                await release.wait()
                 if not ctx.is_done():
                     inst.log_action("activity-completed")
                     inst.data["activity_completed"] += 1
             except asyncio.CancelledError:
                 inst.log_action("activity-aborted")
                 inst.data["activity_aborted"] += 1
+                cancelled.set()
                 raise
 
         return await handle_cancellation()
@@ -68,19 +73,16 @@ async def test_basic_activity_starts_on_entry_stops_on_exit():
     ctx = Context()
     sm = await hsm.start(ctx=ctx, instance=instance, model=model)
 
-    # Wait a brief moment for activity to start
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(started.wait(), timeout=1)
 
     # Activity should start immediately
     assert "activity-started" in instance.log
     assert instance.data["activity_started"] == 1
 
     # Exit state before activity completes
-    await asyncio.sleep(0.01)  # 10ms
     await sm.dispatch(Event(name="stop"))
 
-    # Wait for the activity to be cancelled
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
 
     # Activity should be aborted
     assert "activity-aborted" in instance.log
@@ -94,23 +96,32 @@ async def test_basic_activity_starts_on_entry_stops_on_exit():
 async def test_multiple_concurrent_activities():
     """Multiple concurrent activities"""
     instance = ActivityInstance()
+    activity1_started = asyncio.Event()
+    activity1_release = asyncio.Event()
+    activity1_completed = asyncio.Event()
+    activity2_started = asyncio.Event()
+    activity2_cancelled = asyncio.Event()
 
     async def activity1(ctx: Context, inst: ActivityInstance, event: Event):
         inst.log_action("activity1-started")
+        activity1_started.set()
         try:
-            await asyncio.sleep(0.03)  # 30ms
+            await activity1_release.wait()
             inst.log_action("activity1-completed")
+            activity1_completed.set()
         except asyncio.CancelledError:
             inst.log_action("activity1-aborted")
             raise
 
     async def activity2(ctx: Context, inst: ActivityInstance, event: Event):
         inst.log_action("activity2-started")
+        activity2_started.set()
         try:
-            await asyncio.sleep(0.08)  # 80ms - longer delay
+            await asyncio.Event().wait()
             inst.log_action("activity2-completed")
         except asyncio.CancelledError:
             inst.log_action("activity2-aborted")
+            activity2_cancelled.set()
             raise
 
     async def activity3(ctx: Context, inst: ActivityInstance, event: Event):
@@ -132,8 +143,8 @@ async def test_multiple_concurrent_activities():
     ctx = Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait a brief moment for activity to start
-    await asyncio.sleep(0.01)
+    await asyncio.wait_for(activity1_started.wait(), timeout=1)
+    await asyncio.wait_for(activity2_started.wait(), timeout=1)
 
     # All activities should start
     assert "activity1-started" in instance.log
@@ -141,13 +152,13 @@ async def test_multiple_concurrent_activities():
     assert "activity3-started" in instance.log
     assert instance.data["sync_activity_ran"] is True
 
-    # Let activity1 complete, but stop before activity2
-    await asyncio.sleep(0.04)  # 40ms
+    activity1_release.set()
+    await asyncio.wait_for(activity1_completed.wait(), timeout=1)
     assert "activity1-completed" in instance.log
     assert "activity2-completed" not in instance.log
 
     await sm.dispatch(Event("stop"))
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.wait_for(activity2_cancelled.wait(), timeout=1)
 
     # Activity2 should be aborted
     assert "activity2-aborted" in instance.log
@@ -161,6 +172,7 @@ async def test_activity_error_handling():
     """Activity error handling"""
     instance = ActivityInstance()
     error_event_received = False
+    error_handled = asyncio.Event()
 
     async def error_activity(ctx: Context, inst: ActivityInstance, event: Event):
         inst.log_action("activity-throwing")
@@ -171,6 +183,7 @@ async def test_activity_error_handling():
         inst.log_action("error-handled")
         inst.data["error_data"] = event.data
         error_event_received = True
+        error_handled.set()
 
     model = hsm.define(
         "ActivityErrorMachine",
@@ -188,9 +201,7 @@ async def test_activity_error_handling():
     ctx = Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for error event to be dispatched
-    await asyncio.sleep(0.01)  # Give error time to occur
-    await asyncio.sleep(0.1)  # 100ms
+    await asyncio.wait_for(error_handled.wait(), timeout=1)
 
     assert error_event_received is True
     assert sm.state() == "/ActivityErrorMachine/error"

@@ -23,6 +23,7 @@ class ErrorInstance(Instance):
 async def test_error_event_from_activity_exception():
     """Error event from activity exception"""
     instance = ErrorInstance()
+    error_entered = asyncio.Event()
 
     async def failing_activity(ctx, inst, event):
         inst.log_action('activity-starting')
@@ -35,6 +36,7 @@ async def test_error_event_from_activity_exception():
 
     async def error_entry(ctx, inst, event):
         inst.log_action('error-state-entry')
+        error_entered.set()
 
     model = hsm.define('ActivityErrorMachine',
         hsm.initial(hsm.target('working')),
@@ -54,8 +56,7 @@ async def test_error_event_from_activity_exception():
     ctx = hsm.Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for error event to be dispatched
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.wait_for(error_entered.wait(), timeout=1)
 
     assert 'activity-starting' in instance.log
     assert 'error-caught' in instance.log
@@ -71,6 +72,7 @@ async def test_error_event_from_activity_exception():
 async def test_error_event_handled_at_different_hierarchy_levels():
     """Error event handled at different hierarchy levels"""
     instance = ErrorInstance()
+    child_error_entered = asyncio.Event()
 
     async def child_activity_error(ctx, inst, event):
         inst.log_action('child-activity-error')
@@ -84,6 +86,7 @@ async def test_error_event_handled_at_different_hierarchy_levels():
 
     async def child_error_entry(ctx, inst, event):
         inst.log_action('child-error-entry')
+        child_error_entered.set()
 
     async def parent_error_entry(ctx, inst, event):
         inst.log_action('parent-error-entry')
@@ -116,8 +119,7 @@ async def test_error_event_handled_at_different_hierarchy_levels():
     ctx = hsm.Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for error event to bubble up
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.wait_for(child_error_entered.wait(), timeout=1)
 
     # Child should handle its own error
     assert 'child-activity-error' in instance.log
@@ -135,9 +137,11 @@ async def test_error_event_handled_at_different_hierarchy_levels():
 async def test_unhandled_error_events():
     """Unhandled error events"""
     instance = ErrorInstance()
+    activity_failed = asyncio.Event()
 
     async def failing_activity(ctx, inst, event):
         inst.log_action('activity-will-fail')
+        activity_failed.set()
         raise Exception('Unhandled error!')
 
     model = hsm.define('UnhandledErrorMachine',
@@ -151,8 +155,8 @@ async def test_unhandled_error_events():
     ctx = hsm.Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for error - should remain in same state since unhandled
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.wait_for(activity_failed.wait(), timeout=1)
+    await asyncio.sleep(0)
 
     assert 'activity-will-fail' in instance.log
     # Should remain in fragile state since error is unhandled
@@ -165,6 +169,7 @@ async def test_unhandled_error_events():
 async def test_error_in_entry_actions():
     """Error in entry actions"""
     instance = ErrorInstance()
+    error_caught = asyncio.Event()
 
     async def failing_entry(ctx, inst, event):
         inst.log_action('entry-will-fail')
@@ -173,6 +178,7 @@ async def test_error_in_entry_actions():
     async def error_effect(ctx, inst, event):
         inst.log_action('caught-entry-error')
         inst.data['entry_error'] = str(event.data)
+        error_caught.set()
 
     model = hsm.define('EntryErrorMachine',
         hsm.initial(hsm.target('start')),
@@ -198,7 +204,7 @@ async def test_error_in_entry_actions():
 
     # Trigger transition to failing state
     await sm.dispatch(Event('go'))
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.wait_for(error_caught.wait(), timeout=1)
 
     assert 'entry-will-fail' in instance.log
     assert 'caught-entry-error' in instance.log
@@ -211,6 +217,7 @@ async def test_error_in_entry_actions():
 async def test_error_in_exit_actions():
     """Error in exit actions"""
     instance = ErrorInstance()
+    error_caught = asyncio.Event()
 
     async def failing_exit(ctx, inst, event):
         inst.log_action('exit-will-fail')
@@ -219,6 +226,7 @@ async def test_error_in_exit_actions():
     async def error_effect(ctx, inst, event):
         inst.log_action('caught-exit-error')
         inst.data['exit_error'] = str(event.data)
+        error_caught.set()
 
     model = hsm.define('ExitErrorMachine',
         hsm.initial(hsm.target('unstable')),
@@ -243,7 +251,7 @@ async def test_error_in_exit_actions():
 
     # Trigger transition that will cause exit action to fail
     await sm.dispatch(Event('leave'))
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.wait_for(error_caught.wait(), timeout=1)
 
     assert 'exit-will-fail' in instance.log
     assert 'caught-exit-error' in instance.log
@@ -256,6 +264,7 @@ async def test_error_in_exit_actions():
 async def test_error_in_transition_effects():
     """Error in transition effects"""
     instance = ErrorInstance()
+    error_caught = asyncio.Event()
 
     async def failing_effect(ctx, inst, event):
         inst.log_action('effect-will-fail')
@@ -264,6 +273,7 @@ async def test_error_in_transition_effects():
     async def error_effect(ctx, inst, event):
         inst.log_action('caught-effect-error')
         inst.data['effect_error'] = str(event.data)
+        error_caught.set()
 
     model = hsm.define('EffectErrorMachine',
         hsm.initial(hsm.target('start')),
@@ -288,7 +298,7 @@ async def test_error_in_transition_effects():
 
     # Trigger transition with failing effect
     await sm.dispatch(Event('trigger'))
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.wait_for(error_caught.wait(), timeout=1)
 
     assert 'effect-will-fail' in instance.log
     assert 'caught-effect-error' in instance.log
@@ -301,6 +311,7 @@ async def test_error_in_transition_effects():
 async def test_multiple_error_events_in_sequence():
     """Multiple error events in sequence"""
     instance = ErrorInstance()
+    final_reached = asyncio.Event()
 
     async def first_error_activity(ctx, inst, event):
         inst.log_action('first-error')
@@ -315,6 +326,7 @@ async def test_multiple_error_events_in_sequence():
 
     async def second_error_effect(ctx, inst, event):
         inst.log_action('handled-second-error')
+        final_reached.set()
 
     model = hsm.define('MultipleErrorMachine',
         hsm.initial(hsm.target('first')),
@@ -340,8 +352,7 @@ async def test_multiple_error_events_in_sequence():
     ctx = hsm.Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for both errors to be handled
-    await asyncio.sleep(0.05)  # 50ms
+    await asyncio.wait_for(final_reached.wait(), timeout=1)
 
     assert 'first-error' in instance.log
     assert 'handled-first-error' in instance.log
@@ -357,6 +368,7 @@ async def test_error_event_with_guard_conditions():
     """Error event handling with guard conditions for error routing"""
     instance = ErrorInstance()
     instance.data['error_type'] = 'critical'
+    critical_handled = asyncio.Event()
 
     async def error_activity(ctx, inst, event):
         inst.log_action('error-activity')
@@ -370,6 +382,7 @@ async def test_error_event_with_guard_conditions():
 
     async def critical_effect(ctx, inst, event):
         inst.log_action('critical-error-handled')
+        critical_handled.set()
 
     async def warning_effect(ctx, inst, event):
         inst.log_action('warning-error-handled')
@@ -407,8 +420,7 @@ async def test_error_event_with_guard_conditions():
     ctx = hsm.Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Wait for error to be routed to critical handler
-    await asyncio.sleep(0.02)  # 20ms
+    await asyncio.wait_for(critical_handled.wait(), timeout=1)
 
     assert 'error-activity' in instance.log
     assert 'critical-error-handled' in instance.log
