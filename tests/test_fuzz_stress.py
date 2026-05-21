@@ -385,6 +385,66 @@ def test_invalid_model_definitions_fail_fast(cases: list[str]):
             raise AssertionError(f"{case} unexpectedly built a model")
 
 
+@given(
+    st.sampled_from(("after", "every", "at")),
+    st.one_of(st.none(), st.integers(), st.text(max_size=20), st.booleans()),
+)
+@settings(max_examples=60, deadline=None, derandomize=True)
+def test_invalid_timer_callback_results_dispatch_error(mode: str, invalid_value: object):
+    asyncio.run(_drive_invalid_timer_callback(mode, invalid_value))
+
+
+async def _drive_invalid_timer_callback(mode: str, invalid_value: object) -> None:
+    class TimerErrorInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.error: Exception | None = None
+
+    async def invalid_timer(ctx, inst, event):
+        return invalid_value
+
+    async def error_effect(ctx, inst: TimerErrorInstance, event: hsm.Event) -> None:
+        inst.error = event.Data
+
+    if mode == "after":
+        timer = hsm.After(invalid_timer)
+        expected = "After()/Every() duration must return timedelta"
+    elif mode == "every":
+        timer = hsm.Every(invalid_timer)
+        expected = "After()/Every() duration must return timedelta"
+    else:
+        timer = hsm.At(invalid_timer)
+        expected = "At() timepoint must return datetime"
+
+    model = hsm.Define(
+        "InvalidTimer",
+        hsm.Initial(hsm.Target("waiting")),
+        hsm.State(
+            "waiting",
+            hsm.Transition(timer, hsm.Target("../done")),
+            hsm.Transition(
+                hsm.On(hsm.ErrorEvent),
+                hsm.Target("../error"),
+                hsm.Effect(error_effect),
+            ),
+        ),
+        hsm.State("done"),
+        hsm.State("error"),
+    )
+    instance = TimerErrorInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/InvalidTimer/error"), timeout=1)
+
+    assert isinstance(instance.error, TypeError)
+    assert expected in str(instance.error)
+    assert instance.state() == "/InvalidTimer/error"
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+
+
 async def _stop_during_inflight_dispatch_does_not_block_loop() -> None:
     class BlockingInstance(hsm.Instance):
         pass
