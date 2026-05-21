@@ -60,7 +60,7 @@ asyncio.run(main())
 
 ## Canonical Naming
 
-The canonical API is PascalCase: `Define`, `State`, `Transition`, `Start`, `Dispatch`, `TakeSnapshot`, and so on. Lowercase aliases such as `define`, `state`, and `dispatch` exist for convenience, but docs and cross-language examples should use PascalCase.
+The canonical API is PascalCase: `Define`, `State`, `Transition`, `Start`, `Dispatch`, `TakeSnapshot`, and so on. Lowercase and snake_case aliases such as `define`, `state`, `dispatch`, `take_snapshot`, and `make_group` exist for Python callers. Docs and cross-language examples should use PascalCase.
 
 ## API Map
 
@@ -76,7 +76,7 @@ The canonical API is PascalCase: `Define`, `State`, `Transition`, `Start`, `Disp
 | Runtime identity | `Config`, `ID`, `Name`, `QualifiedName` |
 | Timers | `Clock`, `DefaultClock`, `Config(Clock=...)` |
 | Observability | `TakeSnapshot`, `AfterDispatch`, `AfterProcess`, `AfterEntry`, `AfterExit`, `AfterExecuted` |
-| Utilities | `Match`, `LCA`, `IsAncestor`, `MakeKind`, `IsKind`, kind constants |
+| Utilities | `Match`, `LCA`, `IsAncestor`, `MakeKind`, `IsKind`, `MakeGroup`, kind constants |
 
 ## Model DSL
 
@@ -311,10 +311,10 @@ await hsm.Stop(instance)
 
 ## Groups And Broadcast
 
-`NewGroup` flattens nested groups and forwards runtime operations to all members.
+`NewGroup` flattens nested groups and forwards runtime operations to all members. `MakeGroup` is also exported for DSL parity with TypeScript and `dsl.md`; `new_group` and `make_group` are the Python snake_case aliases.
 
 ```python
-group = hsm.NewGroup(first, hsm.NewGroup(second))
+group = hsm.MakeGroup(first, hsm.MakeGroup(second))
 
 await hsm.Dispatch(ctx, group, hsm.Event("refresh"))
 await hsm.Set(ctx, group, "temperature", 72)
@@ -336,6 +336,8 @@ snapshot.State          # Current active state path
 snapshot.Attributes     # Fully-qualified attribute map
 snapshot.QueueLen       # Pending queue length
 snapshot.Events         # Enabled event/transition details
+
+snapshot.queue_len      # Same value, using Python snake_case
 ```
 
 Identity helpers read from snapshots:
@@ -376,7 +378,7 @@ hsm.Transition(
 
 ## Lowercase Aliases
 
-Lowercase and snake_case aliases are exported for Python ergonomics. Examples include `define`, `state`, `transition`, `on`, `on_set`, `on_call`, `target`, `operation`, `start`, `dispatch`, `dispatch_all`, `take_snapshot`, `after_entry`, `after_dispatch`, `is_ancestor`, `make_kind`, `id`, `name`, and `qualified_name`. They map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
+Lowercase and snake_case aliases are exported for Python ergonomics. Examples include `define`, `state`, `transition`, `on`, `on_set`, `on_call`, `target`, `operation`, `start`, `dispatch`, `dispatch_all`, `take_snapshot`, `after_entry`, `after_dispatch`, `is_ancestor`, `make_kind`, `make_group`, `id`, `name`, and `qualified_name`. Event helpers also expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; snapshots expose both PascalCase fields such as `QueueLen` and snake_case properties such as `queue_len`. These aliases map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
 
 ## Current Python Notes
 

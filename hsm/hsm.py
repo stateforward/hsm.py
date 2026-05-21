@@ -451,6 +451,9 @@ class Event(typing.Generic[TData]):
             schema=self.schema,
         )
 
+    with_data = WithData
+    with_data_and_id = WithDataAndID
+
     @property
     def Name(self) -> str:
         return self.name
@@ -510,6 +513,26 @@ class EventSnapshot:
     Guard: bool
     Schema: typing.Any
 
+    @property
+    def name(self) -> str:
+        return self.Name
+
+    @property
+    def kind(self) -> int:
+        return self.Kind
+
+    @property
+    def target(self) -> str:
+        return self.Target
+
+    @property
+    def guard(self) -> bool:
+        return self.Guard
+
+    @property
+    def schema(self) -> typing.Any:
+        return self.Schema
+
 
 @dataclass
 class Snapshot:
@@ -519,6 +542,30 @@ class Snapshot:
     Attributes: dict[str, typing.Any] | None = None
     QueueLen: int = 0
     Events: list[EventSnapshot] = field(default_factory=list)
+
+    @property
+    def id(self) -> str:
+        return self.ID
+
+    @property
+    def qualified_name(self) -> str:
+        return self.QualifiedName
+
+    @property
+    def state(self) -> str:
+        return self.State
+
+    @property
+    def attributes(self) -> dict[str, typing.Any] | None:
+        return self.Attributes
+
+    @property
+    def queue_len(self) -> int:
+        return self.QueueLen
+
+    @property
+    def events(self) -> list[EventSnapshot]:
+        return self.Events
 
 
 InitialEvent = Event(name="hsm_initial", kind=Kinds.Event)
@@ -1966,6 +2013,9 @@ def NewGroup(*instances: typing.Union[Instance, Group, None]) -> Group:
     return Group(*instances)
 
 
+MakeGroup = NewGroup
+
+
 def _new_future() -> asyncio.Future[None]:
     return asyncio.get_running_loop().create_future()
 
@@ -2420,6 +2470,7 @@ on_call = OnCall
 shallow_history = ShallowHistory
 deep_history = DeepHistory
 new_group = NewGroup
+make_group = MakeGroup
 after_dispatch = AfterDispatch
 after_process = AfterProcess
 after_entry = AfterEntry
@@ -2498,6 +2549,7 @@ __all__ = [
     "LCA",
     "LocalKind",
     "Match",
+    "MakeGroup",
     "MakeKind",
     "Model",
     "Name",
@@ -2564,6 +2616,7 @@ __all__ = [
     "lca",
     "match",
     "make_kind",
+    "make_group",
     "name",
     "new",
     "new_group",

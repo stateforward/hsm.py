@@ -42,6 +42,7 @@ def test_snake_case_dsl_aliases_are_available():
         "initial": hsm.Initial,
         "is_ancestor": hsm.IsAncestor,
         "lca": hsm.LCA,
+        "make_group": hsm.MakeGroup,
         "name": hsm.Name,
         "new": hsm.New,
         "new_group": hsm.NewGroup,
@@ -70,6 +71,7 @@ def test_snake_case_dsl_aliases_are_available():
     assert hsm.is_kind(custom, hsm.Kinds.Element)
     assert hsm.match("machine-1", "machine-*")
     assert hsm.onset is hsm.OnSet
+    assert hsm.MakeGroup is hsm.NewGroup
 
 
 @pytest.mark.asyncio
@@ -99,12 +101,17 @@ async def test_pascal_case_aliases_and_snapshot():
 
     snapshot = hsm.TakeSnapshot(ctx, instance)
     assert snapshot.QualifiedName == "/AliasMachine"
+    assert snapshot.qualified_name == "/AliasMachine"
     assert snapshot.State == "/AliasMachine/idle"
+    assert snapshot.state == "/AliasMachine/idle"
     assert snapshot.QueueLen == 0
+    assert snapshot.queue_len == 0
     assert hsm.ID(instance) == snapshot.ID
+    assert hsm.ID(instance) == snapshot.id
     assert hsm.QualifiedName(instance) == "/AliasMachine"
     assert hsm.Name(instance) == "AliasMachine"
     assert any(event.Name == "go" and event.Target == "/AliasMachine/done" for event in snapshot.Events)
+    assert any(event.name == "go" and event.target == "/AliasMachine/done" for event in snapshot.events)
 
     await hsm.Stop(instance)
 
@@ -175,6 +182,8 @@ async def test_snapshot_identity_config_and_event_data_helpers():
     )
 
     event = hsm.Event(name="go").WithDataAndID({"value": 1}, "event-1")
+    snake_event = hsm.Event(name="go").with_data_and_id({"value": 1}, "event-1")
+    snake_data_event = hsm.Event(name="go").with_data({"value": 2})
 
     assert hsm.ID(sm) == "alpha"
     assert hsm.ID(instance) == "alpha"
@@ -184,6 +193,10 @@ async def test_snapshot_identity_config_and_event_data_helpers():
     assert seen == ["boot"]
     assert event.Data == {"value": 1}
     assert event.ID == "event-1"
+    assert snake_event.Name == event.Name
+    assert snake_event.Data == event.Data
+    assert snake_event.ID == event.ID
+    assert snake_data_event.Data == {"value": 2}
 
     await hsm.Restart(instance, "again")
     assert seen == ["boot", "again"]
