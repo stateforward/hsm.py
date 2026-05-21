@@ -56,6 +56,7 @@ def test_snake_case_dsl_aliases_are_available():
         "shallow_history": hsm.ShallowHistory,
         "source": hsm.Source,
         "start": hsm.Start,
+        "started": hsm.Started,
         "state": hsm.State,
         "stop": hsm.Stop,
         "take_snapshot": hsm.TakeSnapshot,
@@ -67,6 +68,7 @@ def test_snake_case_dsl_aliases_are_available():
     for alias_name, canonical in aliases.items():
         assert getattr(hsm, alias_name) is canonical
 
+    assert "started" in hsm.__all__
     custom = hsm.make_kind(hsm.Kinds.Element)
     assert hsm.is_kind(custom, hsm.Kinds.Element)
     assert hsm.match("machine-1", "machine-*")

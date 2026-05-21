@@ -2631,6 +2631,7 @@ __all__ = [
     "shallow_history",
     "source",
     "start",
+    "started",
     "state",
     "stop",
     "take_snapshot",
