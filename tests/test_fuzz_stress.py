@@ -1145,6 +1145,92 @@ def test_stopped_machine_rejects_event_mutating_operations():
     asyncio.run(_stopped_machine_rejects_event_mutating_operations())
 
 
+async def _stop_suppresses_exit_action_errors_without_leaving_stale_queue() -> None:
+    class StopErrorInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.error_handled = False
+
+    async def failing_exit(ctx, inst, event):
+        raise RuntimeError("stop cleanup failed")
+
+    async def error_effect(ctx, inst: StopErrorInstance, event):
+        inst.error_handled = True
+
+    model = hsm.Define(
+        "StopExitError",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Exit(failing_exit)),
+        hsm.State(
+            "error",
+            hsm.Transition(hsm.On(hsm.ErrorEvent), hsm.Effect(error_effect)),
+        ),
+    )
+    instance = StopErrorInstance()
+    ctx = hsm.Context()
+    sm = await hsm.Start(ctx, instance, model)
+
+    await hsm.Stop(instance)
+
+    assert instance.state() == "/StopExitError"
+    assert ctx.machines() == []
+    assert instance.error_handled is False
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+
+
+def test_stop_suppresses_exit_action_errors_without_leaving_stale_queue():
+    asyncio.run(_stop_suppresses_exit_action_errors_without_leaving_stale_queue())
+
+
+async def _activity_cancellation_cleanup_errors_do_not_dispatch_error_events() -> None:
+    class CleanupErrorInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.error_handled = False
+
+    activity_started = asyncio.Event()
+
+    async def cleanup_error_activity(ctx, inst, event):
+        activity_started.set()
+        try:
+            while True:
+                await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            assert ctx.done is True
+            raise RuntimeError("activity cleanup failed")
+
+    async def error_effect(ctx, inst: CleanupErrorInstance, event):
+        inst.error_handled = True
+
+    model = hsm.Define(
+        "ActivityCleanupError",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State(
+            "active",
+            hsm.Activity(cleanup_error_activity),
+            hsm.Transition(hsm.On("finish"), hsm.Target("../done")),
+            hsm.Transition(hsm.On(hsm.ErrorEvent), hsm.Target("../error"), hsm.Effect(error_effect)),
+        ),
+        hsm.State("done"),
+        hsm.State("error"),
+    )
+    instance = CleanupErrorInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+    await asyncio.wait_for(activity_started.wait(), timeout=1)
+
+    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("finish")), timeout=1)
+
+    assert instance.state() == "/ActivityCleanupError/done"
+    assert instance.error_handled is False
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    await hsm.Stop(instance)
+
+
+def test_activity_cancellation_cleanup_errors_do_not_dispatch_error_events():
+    asyncio.run(_activity_cancellation_cleanup_errors_do_not_dispatch_error_events())
+
+
 async def _cancelled_start_cleans_up_registration_and_activities() -> None:
     class CancelledStartInstance(hsm.Instance):
         def __init__(self):

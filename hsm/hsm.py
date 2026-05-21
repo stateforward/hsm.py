@@ -1619,6 +1619,7 @@ class HSM(Behavior[TInstance]):
         self._qualified_name = config.Name or model.qualified_name
         self._clock = (config.Clock or DefaultClock).with_defaults()
         self._started = False
+        self._stopping = False
         self._stop_requested = False
         self._restart_requested: tuple[typing.Any] | None = None
         self._root_context.register(self)
@@ -1671,8 +1672,8 @@ class HSM(Behavior[TInstance]):
 
     def _cleanup_failed_start(self) -> None:
         for active in list(self._active.values()):
+            active.context.cancel()
             if active.task is asyncio.current_task():
-                active.context.cancel()
                 continue
             active.task.cancel()
         self._active.clear()
@@ -1794,7 +1795,10 @@ class HSM(Behavior[TInstance]):
                     except asyncio.CancelledError:
                         activity_ctx.cancel()
                     except Exception as error:
-                        self._dispatch_task(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
+                        if activity_ctx.is_done():
+                            return
+                        activity_ctx.cancel()
+                        self._dispatch_error(error)
 
                 task = asyncio.create_task(run_activity(), name=behavior.qualified_name)
                 self._active[behavior.qualified_name] = ActiveBehavior(context=activity_ctx, task=task)
@@ -1803,14 +1807,22 @@ class HSM(Behavior[TInstance]):
         except Exception as error:
             if is_kind(event.kind, Kinds.ErrorEvent):
                 return
+            self._dispatch_error(error)
+
+    def _dispatch_error(self, error: Exception) -> None:
+        if self._stopping:
+            return
+        try:
             self._dispatch_task(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
+        except ValidationError:
+            return
 
     async def _terminate(self, behavior: BehaviorNode[TInstance]) -> None:
         active = self._active.pop(behavior.qualified_name, None)
         if active is None:
             return
+        active.context.cancel()
         if active.task is asyncio.current_task():
-            active.context.cancel()
             return
         active.task.cancel()
         try:
@@ -1947,21 +1959,25 @@ class HSM(Behavior[TInstance]):
 
     async def _stop_locked(self) -> None:
         final_event = Event(name=FinalEvent.name, kind=Kinds.CompletionEvent)
-        while self._state.qualified_name != self.model.qualified_name:
-            await self._exit(self._state, final_event)
-            parent = self.model.get(posixpath.dirname(self._state.qualified_name), VertexNode)
-            if parent is None:
-                break
-            self._state = parent
-        for active in list(self._active.values()):
-            if active.task is asyncio.current_task():
+        self._stopping = True
+        try:
+            while self._state.qualified_name != self.model.qualified_name:
+                await self._exit(self._state, final_event)
+                parent = self.model.get(posixpath.dirname(self._state.qualified_name), VertexNode)
+                if parent is None:
+                    break
+                self._state = parent
+            for active in list(self._active.values()):
                 active.context.cancel()
-                continue
-            active.task.cancel()
-            try:
-                await active.task
-            except asyncio.CancelledError:
-                pass
+                if active.task is asyncio.current_task():
+                    continue
+                active.task.cancel()
+                try:
+                    await active.task
+                except asyncio.CancelledError:
+                    pass
+        finally:
+            self._stopping = False
         self._active.clear()
         self._runtime_context.cancel()
         self._state = self.model
