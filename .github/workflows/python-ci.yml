@@ -1,6 +1,12 @@
 name: Python CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      soak:
+        description: "Run long soak tests"
+        required: false
+        default: "false"
   pull_request:
   push:
     branches:
@@ -8,8 +14,15 @@ on:
 
 jobs:
   test:
-    name: Test and package
-    runs-on: ubuntu-latest
+    name: Test and package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
 
     steps:
       - name: Check out
@@ -34,3 +47,48 @@ jobs:
 
       - name: Check package metadata
         run: uvx twine check dist/*
+
+      - name: Install built wheel smoke test
+        shell: bash
+        run: |
+          uv run --no-project --isolated --with dist/*.whl python - <<'PY'
+          import asyncio
+          import hsm
+
+          class Instance(hsm.Instance):
+              pass
+
+          async def main():
+              model = hsm.Define(
+                  "Smoke",
+                  hsm.Initial(hsm.Target("idle")),
+                  hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
+                  hsm.State("done"),
+              )
+              instance = Instance()
+              ctx = hsm.Context()
+              await hsm.Start(ctx, instance, model)
+              await hsm.Dispatch(ctx, instance, hsm.Event("go"))
+              assert instance.state() == "/Smoke/done"
+              assert hsm.ValidationError is not None
+              await hsm.Stop(instance)
+
+          asyncio.run(main())
+          PY
+
+      - name: Verify typed marker in wheel
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          [wheel] = glob.glob("dist/*.whl")
+          with zipfile.ZipFile(wheel) as archive:
+              names = set(archive.namelist())
+          assert "hsm/py.typed" in names
+          PY
+
+      - name: Run soak tests
+        if: github.event_name == 'workflow_dispatch' && inputs.soak == 'true'
+        run: uv run pytest tests/test_soak.py

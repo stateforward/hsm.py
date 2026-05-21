@@ -399,6 +399,15 @@ machines and guarded transition order, plus stress tests for concurrent
 dispatch, broadcast dispatch, and activity cancellation cleanup. CI runs the
 same gates on pushes and pull requests.
 
+Longer deterministic soak tests are available when needed:
+
+```bash
+HSM_SOAK=1 uv run pytest tests/test_soak.py
+```
+
+The CI workflow also supports a manual `workflow_dispatch` run with the `soak`
+input enabled.
+
 ## License
 
 MIT License. See [LICENSE](LICENSE).
