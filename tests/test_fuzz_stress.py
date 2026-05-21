@@ -785,6 +785,60 @@ def test_awaited_stop_from_effect_does_not_self_deadlock():
     asyncio.run(_awaited_stop_from_effect_does_not_self_deadlock())
 
 
+async def _awaited_restart_from_effect_does_not_self_deadlock() -> None:
+    class SelfRestartingInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.trace: list[str] = []
+
+    async def idle_entry(ctx, inst, event):
+        inst.trace.append(f"idle.entry:{event.Data!r}")
+
+    async def restart_effect(ctx, inst, event):
+        inst.trace.append("effect.before-restart")
+        await hsm.Restart(inst, "again")
+        inst.trace.append("effect.after-restart")
+
+    async def done_entry(ctx, inst, event):
+        inst.trace.append("done.entry")
+
+    model = hsm.Define(
+        "SelfRestarting",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Entry(idle_entry),
+            hsm.Transition(
+                hsm.On("restart"),
+                hsm.Target("../done"),
+                hsm.Effect(restart_effect),
+            ),
+        ),
+        hsm.State("done", hsm.Entry(done_entry)),
+    )
+
+    instance = SelfRestartingInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("restart")), timeout=1)
+
+    assert instance.state() == "/SelfRestarting/idle"
+    assert len(ctx.machines()) == 1
+    assert instance.trace == [
+        "idle.entry:None",
+        "effect.before-restart",
+        "effect.after-restart",
+        "done.entry",
+        "idle.entry:'again'",
+    ]
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+
+def test_awaited_restart_from_effect_does_not_self_deadlock():
+    asyncio.run(_awaited_restart_from_effect_does_not_self_deadlock())
+
+
 async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
     class BlockingInstance(hsm.Instance):
         pass

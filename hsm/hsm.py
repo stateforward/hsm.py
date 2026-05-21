@@ -1617,6 +1617,7 @@ class HSM(Behavior[TInstance]):
         self._clock = (config.Clock or DefaultClock).with_defaults()
         self._started = False
         self._stop_requested = False
+        self._restart_requested: tuple[typing.Any] | None = None
         self._root_context.register(self)
         setattr(self._instance, "_Instance__hsm", self)
 
@@ -1644,12 +1645,15 @@ class HSM(Behavior[TInstance]):
     async def _start(self, data: typing.Any = None) -> None:
         await self._processing.acquire()
         try:
-            initial_event = InitialEvent.WithData(data) if data is not None else InitialEvent
-            await self._execute(self, initial_event)
-            self._started = True
+            await self._start_locked(data)
         except BaseException:
             self._processing.release()
             raise
+
+    async def _start_locked(self, data: typing.Any = None) -> None:
+        initial_event = InitialEvent.WithData(data) if data is not None else InitialEvent
+        await self._execute(self, initial_event)
+        self._started = True
 
     def _remember_history(self, leaf_name: str) -> None:
         current = leaf_name
@@ -1810,59 +1814,65 @@ class HSM(Behavior[TInstance]):
     async def _process(self) -> None:
         deferred: list[Event] = []
         try:
-            local_events: collections.deque[Event] = collections.deque()
-            event = await self._queue.pop()
-            while event is not None:
-                current_leaf = self._state
-                qualified_name = current_leaf.qualified_name
-                handled = False
-                while qualified_name:
-                    source = self.model.get(qualified_name, StateNode)
-                    if source is None:
-                        break
-                    transition = await self._enabled(source, event)
-                    if transition is not None:
-                        self._state = await self._transition(current_leaf, transition, event)
-                        handled = True
-                        break
-                    if self.model.deferred_map.get(qualified_name, {}).get(event.qualified_name, False):
-                        deferred.append(event)
-                        handled = True
-                        break
-                    qualified_name = source.owner()
-                event_qualified_name = event.qualified_name
-                self._after._notify(
-                    self._after.process,
-                    lambda expected: expected is None or expected == event_qualified_name,
-                )
-                if local_events:
-                    event = local_events.popleft()
-                else:
-                    event = await self._queue.pop()
-                if event is None and deferred:
-                    retry: list[Event] = []
-                    still_deferred: list[Event] = []
-                    for deferred_event in deferred:
-                        if await self._should_retry_deferred(deferred_event):
-                            retry.append(deferred_event)
-                        else:
-                            still_deferred.append(deferred_event)
-                    deferred = still_deferred
-                    if retry:
-                        local_events.extend(retry[1:])
-                        event = retry[0]
-            for deferred_event in deferred:
-                self._queue.push(deferred_event)
-            deferred = []
+            await self._drain_queue(deferred)
         finally:
             for deferred_event in deferred:
                 self._queue.push(deferred_event)
             try:
-                if self._stop_requested:
+                while self._restart_requested is not None or self._stop_requested:
+                    if self._restart_requested is not None:
+                        (restart_data,) = self._restart_requested
+                        self._restart_requested = None
+                        self._stop_requested = False
+                        await self._restart_locked(restart_data)
+                        continue
                     self._stop_requested = False
                     await self._stop_locked()
             finally:
                 self._processing.release()
+
+    async def _drain_queue(self, deferred: list[Event]) -> None:
+        local_events: collections.deque[Event] = collections.deque()
+        event = await self._queue.pop()
+        while event is not None:
+            current_leaf = self._state
+            qualified_name = current_leaf.qualified_name
+            while qualified_name:
+                source = self.model.get(qualified_name, StateNode)
+                if source is None:
+                    break
+                transition = await self._enabled(source, event)
+                if transition is not None:
+                    self._state = await self._transition(current_leaf, transition, event)
+                    break
+                if self.model.deferred_map.get(qualified_name, {}).get(event.qualified_name, False):
+                    deferred.append(event)
+                    break
+                qualified_name = source.owner()
+            event_qualified_name = event.qualified_name
+            self._after._notify(
+                self._after.process,
+                lambda expected: expected is None or expected == event_qualified_name,
+            )
+            if local_events:
+                event = local_events.popleft()
+            else:
+                event = await self._queue.pop()
+            if event is None and deferred:
+                retry: list[Event] = []
+                still_deferred: list[Event] = []
+                for deferred_event in deferred:
+                    if await self._should_retry_deferred(deferred_event):
+                        retry.append(deferred_event)
+                    else:
+                        still_deferred.append(deferred_event)
+                deferred[:] = still_deferred
+                if retry:
+                    local_events.extend(retry[1:])
+                    event = retry[0]
+        for deferred_event in deferred:
+            self._queue.push(deferred_event)
+        deferred.clear()
 
     async def _transition(self, current_leaf: VertexNode, transition: TransitionNode, event: Event) -> VertexNode:
         path = transition.paths.get(current_leaf.qualified_name)
@@ -1934,14 +1944,33 @@ class HSM(Behavior[TInstance]):
             self._processing.release()
 
     async def restart(self, data: typing.Any = None) -> None:
+        if asyncio.current_task() is self._awaitable:
+            self._restart_requested = (data,)
+            return
         await self.stop()
+        self._reset_for_restart()
+        await self._start(data)
+
+    def _reset_for_restart(self) -> None:
         self._runtime_context = Context()
         self._queue = Queue()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
         self._history_deep.clear()
         self._root_context.register(self)
-        await self._start(data)
+
+    async def _restart_locked(self, data: typing.Any = None) -> None:
+        await self._stop_locked()
+        self._reset_for_restart()
+        initial_event = InitialEvent.WithData(data) if data is not None else InitialEvent
+        self._state = await self._enter(self.model, initial_event, True)
+        self._started = True
+        startup_deferred: list[Event] = []
+        try:
+            await self._drain_queue(startup_deferred)
+        finally:
+            for deferred_event in startup_deferred:
+                self._queue.push(deferred_event)
 
     def get(self, name: str) -> tuple[typing.Any, bool]:
         qualified_name = _qualify_model_name(self.model.qualified_name, name)
