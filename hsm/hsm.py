@@ -1890,6 +1890,8 @@ class HSM(Behavior[TInstance]):
         self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
         if self._processing.try_acquire():
             self._awaitable = asyncio.create_task(self._process())
+        elif asyncio.current_task() is self._awaitable:
+            return _future_done()
         return self._awaitable
 
     def dispatch(self, event: Event[typing.Any]) -> typing.Awaitable[None]:

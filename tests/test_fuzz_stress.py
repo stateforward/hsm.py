@@ -687,6 +687,57 @@ def test_cancelled_dispatch_awaiter_does_not_cancel_processing_task():
     asyncio.run(_cancelled_dispatch_awaiter_does_not_cancel_processing_task())
 
 
+async def _awaited_nested_dispatch_from_effect_does_not_self_await() -> None:
+    class NestedDispatchInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.trace: list[str] = []
+
+    async def j_effect(ctx, inst, event):
+        inst.trace.append("j.effect")
+        await hsm.Dispatch(ctx, inst, hsm.Event("k"))
+        inst.trace.append("j.after-dispatch")
+
+    async def k_effect(ctx, inst, event):
+        inst.trace.append("k.effect")
+
+    model = hsm.Define(
+        "NestedDispatch",
+        hsm.Initial(hsm.Target("left")),
+        hsm.State(
+            "left",
+            hsm.Transition(
+                hsm.On("j"),
+                hsm.Target("../middle"),
+                hsm.Effect(j_effect),
+            ),
+        ),
+        hsm.State(
+            "middle",
+            hsm.Transition(
+                hsm.On("k"),
+                hsm.Target("../right"),
+                hsm.Effect(k_effect),
+            ),
+        ),
+        hsm.State("right"),
+    )
+
+    instance = NestedDispatchInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("j")), timeout=1)
+
+    assert instance.state() == "/NestedDispatch/right"
+    assert instance.trace == ["j.effect", "j.after-dispatch", "k.effect"]
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+
+def test_awaited_nested_dispatch_from_effect_does_not_self_await():
+    asyncio.run(_awaited_nested_dispatch_from_effect_does_not_self_await())
+
+
 async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
     class BlockingInstance(hsm.Instance):
         pass
