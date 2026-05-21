@@ -1637,9 +1637,13 @@ class HSM(Behavior[TInstance]):
 
     async def _start(self, data: typing.Any = None) -> None:
         await self._processing.acquire()
-        initial_event = InitialEvent.WithData(data) if data is not None else InitialEvent
-        await self._execute(self, initial_event)
-        self._started = True
+        try:
+            initial_event = InitialEvent.WithData(data) if data is not None else InitialEvent
+            await self._execute(self, initial_event)
+            self._started = True
+        except BaseException:
+            self._processing.release()
+            raise
 
     def _remember_history(self, leaf_name: str) -> None:
         current = leaf_name
@@ -1754,14 +1758,14 @@ class HSM(Behavior[TInstance]):
                     except asyncio.CancelledError:
                         activity_ctx.cancel()
                     except Exception as error:
-                        self.dispatch(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
+                        self._dispatch_task(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
 
                 task = asyncio.create_task(run_activity(), name=behavior.qualified_name)
                 self._active[behavior.qualified_name] = ActiveBehavior(context=activity_ctx, task=task)
                 return
             await _maybe_await(behavior.operation(self._runtime_context, self._instance, event))
         except Exception as error:
-            self.dispatch(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
+            self._dispatch_task(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
 
     async def _terminate(self, behavior: BehaviorNode[TInstance]) -> None:
         active = self._active.pop(behavior.qualified_name, None)
@@ -1798,50 +1802,55 @@ class HSM(Behavior[TInstance]):
         return True
 
     async def _process(self) -> None:
-        local_events: collections.deque[Event] = collections.deque()
-        event = await self._queue.pop()
         deferred: list[Event] = []
-        while event is not None:
-            current_leaf = self._state
-            qualified_name = current_leaf.qualified_name
-            handled = False
-            while qualified_name:
-                source = self.model.get(qualified_name, StateNode)
-                if source is None:
-                    break
-                transition = await self._enabled(source, event)
-                if transition is not None:
-                    self._state = await self._transition(current_leaf, transition, event)
-                    handled = True
-                    break
-                if self.model.deferred_map.get(qualified_name, {}).get(event.qualified_name, False):
-                    deferred.append(event)
-                    handled = True
-                    break
-                qualified_name = source.owner()
-            self._after._notify(
-                self._after.process,
-                lambda expected: expected is None or expected == event.qualified_name,
-            )
-            if local_events:
-                event = local_events.popleft()
-            else:
-                event = await self._queue.pop()
-            if event is None and deferred:
-                retry: list[Event] = []
-                still_deferred: list[Event] = []
-                for deferred_event in deferred:
-                    if await self._should_retry_deferred(deferred_event):
-                        retry.append(deferred_event)
-                    else:
-                        still_deferred.append(deferred_event)
-                deferred = still_deferred
-                if retry:
-                    local_events.extend(retry[1:])
-                    event = retry[0]
-        for deferred_event in deferred:
-            self._queue.push(deferred_event)
-        self._processing.release()
+        try:
+            local_events: collections.deque[Event] = collections.deque()
+            event = await self._queue.pop()
+            while event is not None:
+                current_leaf = self._state
+                qualified_name = current_leaf.qualified_name
+                handled = False
+                while qualified_name:
+                    source = self.model.get(qualified_name, StateNode)
+                    if source is None:
+                        break
+                    transition = await self._enabled(source, event)
+                    if transition is not None:
+                        self._state = await self._transition(current_leaf, transition, event)
+                        handled = True
+                        break
+                    if self.model.deferred_map.get(qualified_name, {}).get(event.qualified_name, False):
+                        deferred.append(event)
+                        handled = True
+                        break
+                    qualified_name = source.owner()
+                self._after._notify(
+                    self._after.process,
+                    lambda expected: expected is None or expected == event.qualified_name,
+                )
+                if local_events:
+                    event = local_events.popleft()
+                else:
+                    event = await self._queue.pop()
+                if event is None and deferred:
+                    retry: list[Event] = []
+                    still_deferred: list[Event] = []
+                    for deferred_event in deferred:
+                        if await self._should_retry_deferred(deferred_event):
+                            retry.append(deferred_event)
+                        else:
+                            still_deferred.append(deferred_event)
+                    deferred = still_deferred
+                    if retry:
+                        local_events.extend(retry[1:])
+                        event = retry[0]
+            for deferred_event in deferred:
+                self._queue.push(deferred_event)
+            deferred = []
+        finally:
+            for deferred_event in deferred:
+                self._queue.push(deferred_event)
+            self._processing.release()
 
     async def _transition(self, current_leaf: VertexNode, transition: TransitionNode, event: Event) -> VertexNode:
         path = transition.paths.get(current_leaf.qualified_name)
@@ -1870,16 +1879,17 @@ class HSM(Behavior[TInstance]):
         target = self.model.get(transition.target, VertexNode)
         return current if target is None else target
 
-    def dispatch(self, event: Event) -> typing.Awaitable[None]:
+    def _dispatch_task(self, event: Event) -> typing.Awaitable[None]:
         self._queue.push(event)
         self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
         if self._processing.try_acquire():
             self._awaitable = asyncio.create_task(self._process())
-            return self._awaitable
         return self._awaitable
 
-    async def stop(self) -> None:
-        await self._processing.acquire()
+    def dispatch(self, event: Event) -> typing.Awaitable[None]:
+        return asyncio.shield(self._dispatch_task(event))
+
+    async def _stop_locked(self) -> None:
         final_event = Event(name=FinalEvent.name, kind=Kinds.CompletionEvent)
         while self._state.qualified_name != self.model.qualified_name:
             await self._exit(self._state, final_event)
@@ -1898,7 +1908,13 @@ class HSM(Behavior[TInstance]):
         self._state = self.model
         self._started = False
         self._root_context.unregister(self)
-        self._processing.release()
+
+    async def stop(self) -> None:
+        await self._processing.acquire()
+        try:
+            await self._stop_locked()
+        finally:
+            self._processing.release()
 
     async def restart(self, data: typing.Any = None) -> None:
         await self.stop()

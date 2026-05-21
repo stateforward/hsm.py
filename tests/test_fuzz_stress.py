@@ -645,6 +645,96 @@ def test_cancelled_stop_waiter_does_not_poison_processing_mutex():
     asyncio.run(_cancelled_stop_waiter_releases_processing_mutex())
 
 
+async def _cancelled_dispatch_awaiter_does_not_cancel_processing_task() -> None:
+    class BlockingInstance(hsm.Instance):
+        pass
+
+    entered_effect = asyncio.Event()
+    release_effect = asyncio.Event()
+
+    async def slow_effect(ctx, inst, event):
+        entered_effect.set()
+        await release_effect.wait()
+
+    model = hsm.Define(
+        "CancelledDispatchAwaiter",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect))),
+        hsm.State("done"),
+    )
+    instance = BlockingInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    dispatch_task = asyncio.create_task(hsm.Dispatch(ctx, instance, hsm.Event("go")))
+    await asyncio.wait_for(entered_effect.wait(), timeout=1)
+
+    dispatch_task.cancel()
+    try:
+        await dispatch_task
+    except asyncio.CancelledError:
+        pass
+
+    release_effect.set()
+    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/CancelledDispatchAwaiter/done"), timeout=1)
+
+    assert instance.state() == "/CancelledDispatchAwaiter/done"
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    await asyncio.wait_for(hsm.Stop(instance), timeout=1)
+
+
+def test_cancelled_dispatch_awaiter_does_not_cancel_processing_task():
+    asyncio.run(_cancelled_dispatch_awaiter_does_not_cancel_processing_task())
+
+
+async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
+    class BlockingInstance(hsm.Instance):
+        pass
+
+    entered_exit = asyncio.Event()
+    release_exits: asyncio.Queue[asyncio.Event] = asyncio.Queue()
+
+    async def slow_exit(ctx, inst, event):
+        entered_exit.set()
+        release_exit = asyncio.Event()
+        release_exits.put_nowait(release_exit)
+        await release_exit.wait()
+
+    model = hsm.Define(
+        "CancelledAcquiredStop",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Exit(slow_exit)),
+    )
+    instance = BlockingInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    cancelled_stop = asyncio.create_task(hsm.Stop(instance))
+    await asyncio.wait_for(entered_exit.wait(), timeout=1)
+    cancelled_stop.cancel()
+    try:
+        await cancelled_stop
+    except asyncio.CancelledError:
+        pass
+
+    first_release = await asyncio.wait_for(release_exits.get(), timeout=1)
+    first_release.set()
+
+    entered_exit.clear()
+    second_stop = asyncio.create_task(hsm.Stop(instance))
+    await asyncio.wait_for(entered_exit.wait(), timeout=1)
+    second_release = await asyncio.wait_for(release_exits.get(), timeout=1)
+    second_release.set()
+    await asyncio.wait_for(second_stop, timeout=1)
+
+    assert instance.state() == "/CancelledAcquiredStop"
+    assert ctx.machines() == []
+
+
+def test_cancelled_stop_after_acquire_releases_processing_mutex():
+    asyncio.run(_cancelled_stop_after_acquire_releases_processing_mutex())
+
+
 async def _context_registration_lifecycle_stress(rounds: int) -> None:
     class LifecycleInstance(hsm.Instance):
         pass
