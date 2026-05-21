@@ -117,6 +117,27 @@ async def test_pascal_case_aliases_and_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_model_paths_use_posix_semantics_for_absolute_targets():
+    instance = ParityInstance()
+    model = hsm.Define(
+        "PosixPathMachine",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Transition(hsm.On("stop"), hsm.Target("/inactive"))),
+        hsm.State("inactive"),
+    )
+
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+    await hsm.Dispatch(ctx, instance, hsm.Event("stop"))
+
+    snapshot = hsm.TakeSnapshot(ctx, instance)
+    assert snapshot.State == "/PosixPathMachine/inactive"
+    assert "\\" not in snapshot.State
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
 async def test_attribute_onset_get_set_and_snapshot():
     instance = ParityInstance()
 

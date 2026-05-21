@@ -5,7 +5,7 @@ import collections
 import copy
 import fnmatch
 import inspect
-import os
+import posixpath
 import sys
 import threading
 import typing
@@ -51,7 +51,7 @@ def traceback() -> tuple[str, int]:
 
 
 def join(path: str, *paths: str) -> str:
-    return os.path.normpath(os.path.join(path, *paths))
+    return posixpath.normpath(posixpath.join(path, *paths))
 
 
 def _future_done() -> asyncio.Future[None]:
@@ -99,11 +99,11 @@ _next_id.counter = 0  # type: ignore[attr-defined]
 def _qualify_model_name(model_qualified_name: str, name: str) -> str:
     if name == "":
         return ""
-    if os.path.isabs(name):
-        qualified = os.path.normpath(name)
+    if posixpath.isabs(name):
+        qualified = posixpath.normpath(name)
         if IsAncestor(model_qualified_name, qualified) or qualified == model_qualified_name:
             return qualified
-        return join(model_qualified_name, qualified.lstrip(os.sep))
+        return join(model_qualified_name, qualified.lstrip("/"))
     return join(model_qualified_name, name)
 
 
@@ -271,10 +271,10 @@ class NamedElement(Element):
     def owner(self) -> str:
         if self.qualified_name in ("", "/"):
             return ""
-        return os.path.dirname(self.qualified_name)
+        return posixpath.dirname(self.qualified_name)
 
     def name(self) -> str:
-        return os.path.basename(self.qualified_name)
+        return posixpath.basename(self.qualified_name)
 
 
 def find(
@@ -699,7 +699,7 @@ class PartialInitial(PartialElement):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: initial state is required for state machine"
             )
-        if not is_ancestor(state.qualified_name, initial_transition.target) and state.qualified_name != os.path.dirname(initial_transition.target):
+        if not is_ancestor(state.qualified_name, initial_transition.target) and state.qualified_name != posixpath.dirname(initial_transition.target):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: Initial transition {initial_transition.qualified_name} must target a nested state not {initial_transition.target}"
             )
@@ -750,12 +750,12 @@ class ResolvePaths(PartialElement):
         lca = LCA(self.transition.source, self.transition.target)
         while entering not in ("", "/", lca):
             enter.insert(0, entering)
-            entering = os.path.dirname(entering)
+            entering = posixpath.dirname(entering)
         if self.transition.kind == Kinds.Self:
             enter.append(self.transition.source)
         source_element = model.get(self.transition.source, VertexNode)
         if isinstance(source_element, InitialNode):
-            self.transition.paths[os.path.dirname(self.transition.source)] = TransitionPaths(enter=enter, exit=[])
+            self.transition.paths[posixpath.dirname(self.transition.source)] = TransitionPaths(enter=enter, exit=[])
             return
         if self.transition.source == "/" and self.transition.target:
             raise ValidationError(
@@ -775,24 +775,24 @@ class ResolvePaths(PartialElement):
                 exiting = qualified_name
                 while exiting not in ("", lca):
                     exit_path.append(exiting)
-                    exiting = os.path.dirname(exiting)
+                    exiting = posixpath.dirname(exiting)
             self.transition.paths[qualified_name] = TransitionPaths(enter=enter, exit=exit_path)
 
 
 def LCA(a: str, b: str) -> str:
     if a == b:
-        return os.path.dirname(a)
+        return posixpath.dirname(a)
     if not a:
         return b
     if not b:
         return a
-    if os.path.dirname(a) == os.path.dirname(b):
-        return os.path.dirname(a)
+    if posixpath.dirname(a) == posixpath.dirname(b):
+        return posixpath.dirname(a)
     if IsAncestor(a, b):
         return a
     if IsAncestor(b, a):
         return b
-    return LCA(os.path.dirname(a), os.path.dirname(b))
+    return LCA(posixpath.dirname(a), posixpath.dirname(b))
 
 
 def least_common_ancestor(source: str, target: str) -> str:
@@ -800,17 +800,17 @@ def least_common_ancestor(source: str, target: str) -> str:
 
 
 def IsAncestor(current: str, target: str) -> bool:
-    current_norm = os.path.normpath(current)
-    target_norm = os.path.normpath(target)
+    current_norm = posixpath.normpath(current)
+    target_norm = posixpath.normpath(target)
     if current_norm in ("", ".", target_norm):
         return False
     if current_norm == "/":
         return True
-    parent = os.path.dirname(target_norm)
+    parent = posixpath.dirname(target_norm)
     while parent not in ("", ".", "/"):
         if parent == current_norm:
             return True
-        parent = os.path.dirname(parent)
+        parent = posixpath.dirname(parent)
     return parent == current_norm
 
 
@@ -819,9 +819,9 @@ def is_ancestor(source: str, target: str) -> bool:
 
 
 def is_path_in_path(child: str, parent: str) -> bool:
-    parent_abs = os.path.abspath(parent)
-    child_abs = os.path.abspath(child)
-    return os.path.commonpath([parent_abs]) == os.path.commonpath([parent_abs, child_abs])
+    parent_abs = posixpath.abspath(parent)
+    child_abs = posixpath.abspath(child)
+    return posixpath.commonpath([parent_abs]) == posixpath.commonpath([parent_abs, child_abs])
 
 
 @dataclass
@@ -891,7 +891,7 @@ class PartialSource(PartialElement):
                     )
                 source = resolved
             self.qualified_name = source.qualified_name
-        elif not os.path.isabs(self.qualified_name):
+        elif not posixpath.isabs(self.qualified_name):
             state = find(stack, StateNode)
             if state is not None and not self.qualified_name.startswith(state.qualified_name):
                 self.qualified_name = join(state.qualified_name, self.qualified_name)
@@ -924,7 +924,7 @@ class PartialTarget(PartialElement):
                     )
                 target = resolved
             self.qualified_name = target.qualified_name
-        elif not os.path.isabs(self.qualified_name):
+        elif not posixpath.isabs(self.qualified_name):
             state = find(stack, StateNode)
             if state is not None and not self.qualified_name.startswith(state.qualified_name):
                 self.qualified_name = join(state.qualified_name, self.qualified_name)
@@ -1408,7 +1408,7 @@ def _segments_between(owner: str, target: str) -> list[str]:
     segments: list[str] = []
     while current not in ("", owner):
         segments.insert(0, current)
-        current = os.path.dirname(current)
+        current = posixpath.dirname(current)
     return segments
 
 
@@ -1595,14 +1595,14 @@ class HSM(Behavior[TInstance]):
     def _remember_history(self, leaf_name: str) -> None:
         current = leaf_name
         while current not in ("", "/", self.model.qualified_name):
-            parent = os.path.dirname(current)
+            parent = posixpath.dirname(current)
             if parent in ("", ".", "/") or parent == current:
                 break
             self._history_shallow[parent] = current
             current = parent
         current = leaf_name
         while current not in ("", ".", "/"):
-            parent = os.path.dirname(current)
+            parent = posixpath.dirname(current)
             if parent in ("", ".", "/") or parent == current:
                 break
             self._history_deep[parent] = leaf_name
@@ -1834,7 +1834,7 @@ class HSM(Behavior[TInstance]):
         final_event = Event(name=FinalEvent.name, kind=Kinds.CompletionEvent)
         while self._state.qualified_name != self.model.qualified_name:
             await self._exit(self._state, final_event)
-            parent = self.model.get(os.path.dirname(self._state.qualified_name), VertexNode)
+            parent = self.model.get(posixpath.dirname(self._state.qualified_name), VertexNode)
             if parent is None:
                 break
             self._state = parent
@@ -2106,10 +2106,10 @@ def _build_transition_table(model: Model) -> None:
                         transitions_by_event.setdefault(event_name, []).append((transition, depth, index))
             if current_path in ("", "/", model.qualified_name):
                 if current_path == model.qualified_name:
-                    current_path = os.path.dirname(current_path)
+                    current_path = posixpath.dirname(current_path)
                 else:
                     break
-            current_path = os.path.dirname(current_path)
+            current_path = posixpath.dirname(current_path)
             depth += 1
         for event_name, transitions in transitions_by_event.items():
             transitions.sort(key=lambda item: (item[1], item[2]))
@@ -2133,10 +2133,10 @@ def _build_deferred_table(model: Model) -> None:
                     model.deferred_map[state_name][deferred_event] = True
             if current_path in ("", "/", model.qualified_name):
                 if current_path == model.qualified_name:
-                    current_path = os.path.dirname(current_path)
+                    current_path = posixpath.dirname(current_path)
                 else:
                     break
-            current_path = os.path.dirname(current_path)
+            current_path = posixpath.dirname(current_path)
 
 
 def Define(name: str, *elements: NamedElement) -> Model:
@@ -2649,7 +2649,7 @@ def QualifiedName(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
 
 
 def Name(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
-    return os.path.basename(QualifiedName(hsm))
+    return posixpath.basename(QualifiedName(hsm))
 
 
 id = ID
