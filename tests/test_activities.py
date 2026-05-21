@@ -324,6 +324,7 @@ async def test_activity_with_event_data_access():
 async def test_long_running_activity_completion():
     """Long-running activity completion"""
     instance = ActivityInstance()
+    completed = asyncio.Event()
 
     async def long_running_activity(ctx: Context, inst: ActivityInstance, event: Event):
         inst.log_action("long-activity-started")
@@ -338,6 +339,7 @@ async def test_long_running_activity_completion():
             if count >= 3:
                 inst.log_action("long-activity-completed")
                 inst.data["final_count"] = count
+                completed.set()
         except asyncio.CancelledError:
             inst.log_action(f"long-activity-aborted-at-{count}")
             raise
@@ -351,8 +353,7 @@ async def test_long_running_activity_completion():
     ctx = Context()
     sm = await hsm.start(ctx, instance, model)
 
-    # Let activity run to completion
-    await asyncio.sleep(0.08)  # 80ms
+    await asyncio.wait_for(completed.wait(), timeout=1)
 
     assert "long-activity-started" in instance.log
     assert "long-activity-tick-1" in instance.log
