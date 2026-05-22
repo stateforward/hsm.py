@@ -2195,7 +2195,18 @@ def _new_future() -> asyncio.Future[None]:
 
 def _after_future(waiters: list[tuple[typing.Any, asyncio.Future[None]]], expected: typing.Any) -> asyncio.Future[None]:
     future = _new_future()
-    waiters.append((expected, future))
+    waiter = (expected, future)
+    waiters.append(waiter)
+
+    def remove_waiter(done: asyncio.Future[None]) -> None:
+        if not done.cancelled():
+            return
+        try:
+            waiters.remove(waiter)
+        except ValueError:
+            pass
+
+    future.add_done_callback(remove_waiter)
     return future
 
 

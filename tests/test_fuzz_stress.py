@@ -1262,6 +1262,53 @@ def test_starting_new_hsm_in_new_context_clears_old_context_registration():
     asyncio.run(_starting_new_hsm_in_new_context_clears_old_context_registration())
 
 
+async def _cancelled_observer_waiters_do_not_accumulate(rounds: int) -> None:
+    class ObserverLeakInstance(hsm.Instance):
+        pass
+
+    model = hsm.Define(
+        "ObserverLeak",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
+        hsm.State("done"),
+    )
+    instance = ObserverLeakInstance()
+    ctx = hsm.Context()
+    sm = await hsm.Start(ctx, instance, model)
+
+    async def cancel_waiter(future: asyncio.Future[None]) -> None:
+        future.cancel()
+        try:
+            await future
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0)
+
+    for _ in range(rounds):
+        await asyncio.gather(
+            cancel_waiter(hsm.AfterEntry(ctx, instance, "/ObserverLeak/missing")),
+            cancel_waiter(hsm.AfterExit(ctx, instance, "/ObserverLeak/missing")),
+            cancel_waiter(hsm.AfterExecuted(ctx, instance, "/ObserverLeak/missing")),
+            cancel_waiter(hsm.AfterDispatch(ctx, instance, hsm.Event("missing"))),
+            cancel_waiter(hsm.AfterProcess(ctx, instance, hsm.Event("missing"))),
+        )
+
+    assert sm._after.entry == []
+    assert sm._after.exit == []
+    assert sm._after.executed == []
+    assert sm._after.dispatch == []
+    assert sm._after.process == []
+
+    await hsm.Dispatch(ctx, instance, hsm.Event("go"))
+    assert instance.state() == "/ObserverLeak/done"
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    await hsm.Stop(instance)
+
+
+def test_cancelled_observer_waiters_do_not_accumulate():
+    asyncio.run(_cancelled_observer_waiters_do_not_accumulate(rounds=100))
+
+
 @given(
     st.lists(
         st.sampled_from(
