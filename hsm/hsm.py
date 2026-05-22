@@ -1676,7 +1676,7 @@ class HSM(Behavior[TInstance]):
         try:
             await self._start_locked(data)
         except BaseException:
-            self._cleanup_failed_start()
+            await self._cleanup_failed_start()
             raise
         finally:
             self._processing.release()
@@ -1686,12 +1686,16 @@ class HSM(Behavior[TInstance]):
         await self._execute(self, initial_event)
         self._started = True
 
-    def _cleanup_failed_start(self) -> None:
+    async def _cleanup_failed_start(self) -> None:
+        tasks: list[asyncio.Task[None]] = []
         for active in list(self._active.values()):
             active.context.cancel()
             if active.task is asyncio.current_task():
                 continue
             active.task.cancel()
+            tasks.append(active.task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._active.clear()
         self._after._cancel_all()
         self._runtime_context.cancel()

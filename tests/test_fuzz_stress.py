@@ -1967,11 +1967,6 @@ async def _cancelled_start_cleans_up_registration_and_activities() -> None:
     except asyncio.CancelledError:
         pass
 
-    for _ in range(10):
-        if instance.activity_cancelled:
-            break
-        await asyncio.sleep(0)
-
     assert instance.activity_cancelled is True
     assert instance.state() == "/CancelledStart"
     assert ctx.machines() == []
