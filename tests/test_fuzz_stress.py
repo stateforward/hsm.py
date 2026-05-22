@@ -2210,7 +2210,13 @@ async def _timer_restart_cancellation_stress(rounds: int) -> None:
             break
         await asyncio.sleep(0)
     assert instance.state() == "/TimerRestart/done"
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     await hsm.Stop(instance)
+    await asyncio.sleep(0)
+    sm = getattr(instance, "_Instance__hsm")
+    assert sm._active == {}
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    assert all(future.done() for future in sleeps)
 
 
 def test_timer_restart_cancellation_stress():
