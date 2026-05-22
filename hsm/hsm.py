@@ -30,6 +30,7 @@ Expression = typing.Callable[
     ["Context", TInstance, "Event"],
     typing.Awaitable[bool] | bool,
 ]
+expression = Expression
 Duration = typing.Callable[
     ["Context", TInstance, "Event"],
     typing.Awaitable[timedelta] | timedelta,
@@ -112,8 +113,7 @@ def Match(value: str, *patterns: str) -> bool:
     return any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns)
 
 
-def match(value: str, *patterns: str) -> bool:
-    return Match(value, *patterns)
+match = Match
 
 
 class ValidationError(RuntimeError):
@@ -2812,6 +2812,7 @@ __all__ = [
     "event_kind",
     "every",
     "exit",
+    "expression",
     "external_kind",
     "final",
     "final_event",

@@ -1,9 +1,16 @@
 import asyncio
+import re
 from datetime import datetime, timedelta
 
 import pytest
 
 import hsm
+
+
+def _snake_case(name: str) -> str:
+    value = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    return value.lower()
 
 
 class ParityInstance(hsm.Instance):
@@ -48,6 +55,7 @@ def test_snake_case_dsl_aliases_are_available():
         "event_snapshot": hsm.EventSnapshot,
         "every": hsm.Every,
         "exit": hsm.Exit,
+        "expression": hsm.Expression,
         "final": hsm.Final,
         "final_state": hsm.FinalState,
         "get": hsm.Get,
@@ -92,6 +100,23 @@ def test_snake_case_dsl_aliases_are_available():
     assert hsm.match("machine-1", "other-*", "machine-*")
     assert hsm.onset is hsm.OnSet
     assert hsm.MakeGroup is hsm.NewGroup
+
+
+def test_public_pascal_case_exports_have_snake_case_aliases():
+    missing = []
+    for name in hsm.__all__:
+        if not name[:1].isupper():
+            continue
+        if name == "HSM":
+            continue
+        alias = _snake_case(name)
+        if not hasattr(hsm, alias):
+            missing.append((name, alias))
+            continue
+        assert getattr(hsm, alias) is getattr(hsm, name)
+        assert alias in hsm.__all__
+
+    assert missing == []
 
 
 def test_snake_case_dsl_values_are_available():
