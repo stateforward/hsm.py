@@ -2408,6 +2408,56 @@ def test_concurrent_start_attempts_do_not_double_bind_instance():
     asyncio.run(_concurrent_start_attempts_do_not_double_bind_instance())
 
 
+async def _concurrent_hsm_start_attempts_reject_in_progress_start() -> None:
+    class ConcurrentHSMStartInstance(hsm.Instance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entries: list[object] = []
+
+    entered_entry = asyncio.Event()
+    release_entry = asyncio.Event()
+
+    async def slow_entry(ctx, inst: ConcurrentHSMStartInstance, event: hsm.Event) -> None:
+        inst.entries.append(event.Data)
+        entered_entry.set()
+        await release_entry.wait()
+
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "ConcurrentHSMStart",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Entry(slow_entry)),
+    )
+    instance = ConcurrentHSMStartInstance()
+    sm = hsm.New(instance, model)
+
+    first_start = asyncio.create_task(hsm.Start(ctx, sm, "first"))
+    await asyncio.wait_for(entered_entry.wait(), timeout=1)
+
+    try:
+        await hsm.Start(ctx, sm, "second")
+    except hsm.ValidationError as error:
+        assert "already started HSM" in str(error)
+    else:
+        raise AssertionError("concurrent Start() on an HSM should reject in-progress start")
+
+    assert len(ctx.machines()) == 1
+    release_entry.set()
+    assert await asyncio.wait_for(first_start, timeout=1) is sm
+
+    assert ctx.machines() == [sm]
+    assert instance.entries == ["first"]
+    assert instance.state() == "/ConcurrentHSMStart/idle"
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+
+    await hsm.Stop(sm)
+    assert ctx.machines() == []
+
+
+def test_concurrent_hsm_start_attempts_reject_in_progress_start():
+    asyncio.run(_concurrent_hsm_start_attempts_reject_in_progress_start())
+
+
 async def _stopped_hsm_start_resets_runtime_state() -> None:
     class ReusableInstance(hsm.Instance):
         pass
