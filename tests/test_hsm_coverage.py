@@ -187,11 +187,13 @@ async def test_context_waitable_queue_and_instance_branches():
     assert await queue.pop() is None
 
     machine_free = CoverageInstance()
-    await machine_free.dispatch(core.Event(name="noop"))
+    with pytest.raises(core.ValidationError, match="missing hsm"):
+        machine_free.dispatch(core.Event(name="noop"))
     assert machine_free.state() == ""
     assert machine_free.context() is None
     await machine_free.stop()
-    await machine_free.restart()
+    with pytest.raises(core.ValidationError, match="missing hsm"):
+        await machine_free.restart()
 
     await core.noop_operation(core.Context(), machine_free, core.Event(name="noop"))
     assert await core.noop_expression(core.Context(), machine_free, core.Event(name="noop")) is True

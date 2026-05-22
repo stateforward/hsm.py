@@ -1618,7 +1618,7 @@ class Instance(Element):
 
     def dispatch(self, event: Event) -> typing.Awaitable[None]:
         if self.__hsm is None:
-            return _future_done()
+            raise ValidationError("missing hsm")
         return self.__hsm.dispatch(event)
 
     def state(self) -> str:
@@ -1641,8 +1641,9 @@ class Instance(Element):
             await self.__hsm.stop()
 
     async def restart(self, data: typing.Any = None) -> None:
-        if self.__hsm is not None:
-            await self.__hsm.restart(data)
+        if self.__hsm is None:
+            raise ValidationError("missing hsm")
+        await self.__hsm.restart(data)
 
     Dispatch = dispatch
     State = state

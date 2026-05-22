@@ -1831,6 +1831,13 @@ async def _stopped_machine_rejects_event_mutating_operations() -> None:
         else:
             raise AssertionError("operation on stopped HSM should fail")
 
+    try:
+        instance.dispatch(hsm.Event("go"))
+    except hsm.ValidationError as error:
+        assert "started HSM" in str(error)
+    else:
+        raise AssertionError("instance.dispatch() on stopped HSM should fail")
+
     assert instance.called is False
     assert instance.state() == "/StoppedRejects"
     assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
@@ -1838,6 +1845,32 @@ async def _stopped_machine_rejects_event_mutating_operations() -> None:
 
 def test_stopped_machine_rejects_event_mutating_operations():
     asyncio.run(_stopped_machine_rejects_event_mutating_operations())
+
+
+async def _never_started_instance_rejects_event_mutating_conveniences() -> None:
+    instance = hsm.Instance()
+
+    try:
+        instance.dispatch(hsm.Event("go"))
+    except hsm.ValidationError as error:
+        assert "missing hsm" in str(error)
+    else:
+        raise AssertionError("instance.dispatch() on never-started instance should fail")
+
+    try:
+        await instance.restart()
+    except hsm.ValidationError as error:
+        assert "missing hsm" in str(error)
+    else:
+        raise AssertionError("instance.restart() on never-started instance should fail")
+
+    await instance.stop()
+    assert instance.state() == ""
+    assert instance.context() is None
+
+
+def test_never_started_instance_rejects_event_mutating_conveniences():
+    asyncio.run(_never_started_instance_rejects_event_mutating_conveniences())
 
 
 async def _stop_suppresses_exit_action_errors_without_leaving_stale_queue() -> None:
