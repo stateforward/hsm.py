@@ -2111,6 +2111,67 @@ def test_cancelled_restart_after_stop_acquire_remains_recoverable():
     asyncio.run(_cancelled_restart_after_stop_acquire_remains_recoverable())
 
 
+async def _concurrent_restart_awaiters_remain_consistent() -> None:
+    class ConcurrentRestartInstance(hsm.Instance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entries: list[object] = []
+            self.exits = 0
+
+    release_exits: asyncio.Queue[asyncio.Event] = asyncio.Queue()
+
+    async def active_entry(ctx, inst: ConcurrentRestartInstance, event: hsm.Event) -> None:
+        inst.entries.append(event.Data)
+
+    async def slow_exit(ctx, inst: ConcurrentRestartInstance, event: hsm.Event) -> None:
+        inst.exits += 1
+        release_exit = asyncio.Event()
+        release_exits.put_nowait(release_exit)
+        await release_exit.wait()
+
+    model = hsm.Define(
+        "ConcurrentRestartAwaiters",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Entry(active_entry), hsm.Exit(slow_exit)),
+    )
+    instance = ConcurrentRestartInstance()
+    ctx = hsm.Context()
+    sm = await hsm.Start(ctx, instance, model)
+
+    restart_count = 12
+    restart_tasks = [
+        asyncio.create_task(hsm.Restart(instance, index))
+        for index in range(restart_count)
+    ]
+    remaining = set(restart_tasks)
+    while remaining:
+        try:
+            release_exit = await asyncio.wait_for(release_exits.get(), timeout=0.05)
+            release_exit.set()
+            continue
+        except TimeoutError:
+            pass
+        done, remaining = await asyncio.wait(remaining, timeout=0.05)
+        for task in done:
+            await task
+
+    assert sorted(value for value in instance.entries if value is not None) == list(range(restart_count))
+    assert instance.state() == "/ConcurrentRestartAwaiters/active"
+    assert {id(machine) for machine in ctx.machines()} == {id(sm)}
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    assert instance.exits >= 1
+
+    final_stop = asyncio.create_task(hsm.Stop(instance))
+    final_release = await asyncio.wait_for(release_exits.get(), timeout=1)
+    final_release.set()
+    await asyncio.wait_for(final_stop, timeout=1)
+    assert ctx.machines() == []
+
+
+def test_concurrent_restart_awaiters_remain_consistent():
+    asyncio.run(_concurrent_restart_awaiters_remain_consistent())
+
+
 async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> None:
     class BlockingInstance(hsm.Instance):
         def __init__(self, index: int) -> None:
