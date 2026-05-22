@@ -1462,6 +1462,75 @@ def test_cancelled_broadcast_awaiter_does_not_cancel_member_processing():
     asyncio.run(_cancelled_broadcast_awaiter_does_not_cancel_member_processing())
 
 
+async def _cancelled_dispatch_to_awaiter_does_not_cancel_selected_processing() -> None:
+    class DispatchToCancelInstance(FuzzInstance):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+            self.effects = 0
+
+    entered_effects: asyncio.Queue[int] = asyncio.Queue()
+    release_effect = asyncio.Event()
+
+    async def slow_effect(ctx, inst: DispatchToCancelInstance, event: hsm.Event) -> None:
+        inst.effects += 1
+        await entered_effects.put(inst.index)
+        await release_effect.wait()
+
+    model = hsm.Define(
+        "CancelledDispatchToAwaiter",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect)),
+        ),
+        hsm.State("done"),
+    )
+    ctx = hsm.Context()
+    instances = [DispatchToCancelInstance(index) for index in range(12)]
+    for index, instance in enumerate(instances):
+        prefix = "target" if index % 2 == 0 else "skip"
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"{prefix}-{index}"))
+
+    selected = [instance for instance in instances if instance.index % 2 == 0]
+    skipped = [instance for instance in instances if instance.index % 2 == 1]
+
+    dispatch_task = asyncio.create_task(hsm.DispatchTo(ctx, hsm.Event("go"), "target-*"))
+    seen = {
+        await asyncio.wait_for(entered_effects.get(), timeout=1)
+        for _ in range(len(selected))
+    }
+    assert seen == {instance.index for instance in selected}
+
+    dispatch_task.cancel()
+    try:
+        await dispatch_task
+    except asyncio.CancelledError:
+        pass
+
+    selected_done = [
+        hsm.AfterEntry(ctx, instance, "/CancelledDispatchToAwaiter/done")
+        for instance in selected
+    ]
+    release_effect.set()
+    await asyncio.gather(*(
+        asyncio.wait_for(done, timeout=1)
+        for done in selected_done
+    ))
+
+    assert all(instance.state() == "/CancelledDispatchToAwaiter/done" for instance in selected)
+    assert all(instance.effects == 1 for instance in selected)
+    assert all(instance.state() == "/CancelledDispatchToAwaiter/idle" for instance in skipped)
+    assert all(instance.effects == 0 for instance in skipped)
+    assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
+
+    await hsm.Stop(hsm.MakeGroup(*instances))
+
+
+def test_cancelled_dispatch_to_awaiter_does_not_cancel_selected_processing():
+    asyncio.run(_cancelled_dispatch_to_awaiter_does_not_cancel_selected_processing())
+
+
 async def _cancelled_group_dispatch_awaiter_does_not_cancel_member_processing() -> None:
     class GroupCancelInstance(FuzzInstance):
         def __init__(self, index: int) -> None:
