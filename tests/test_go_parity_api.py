@@ -1,11 +1,46 @@
 import asyncio
 import re
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
 import hsm
+
+
+DSL_HSM_APIS = {
+    "After",
+    "At",
+    "Attribute",
+    "Activity",
+    "Choice",
+    "Clock",
+    "Config",
+    "DeepHistory",
+    "DefaultClock",
+    "Defer",
+    "Define",
+    "Effect",
+    "Entry",
+    "Every",
+    "Exit",
+    "Final",
+    "Guard",
+    "Initial",
+    "IsKind",
+    "MakeGroup",
+    "MakeKind",
+    "On",
+    "OnCall",
+    "OnSet",
+    "Operation",
+    "ShallowHistory",
+    "Source",
+    "State",
+    "TakeSnapshot",
+    "Target",
+    "Transition",
+    "When",
+}
 
 
 def _snake_case(name: str) -> str:
@@ -121,13 +156,8 @@ def test_public_pascal_case_exports_have_snake_case_aliases():
 
 
 def test_dsl_documented_hsm_apis_have_snake_case_aliases():
-    dsl_path = Path(__file__).resolve().parents[2] / "dsl.md"
-    documented = set(
-        re.findall(r"^### `hsm\.([A-Z][A-Za-z0-9_]*)", dsl_path.read_text(), re.MULTILINE)
-    )
-
     missing = []
-    for name in sorted(documented):
+    for name in sorted(DSL_HSM_APIS):
         if not hasattr(hsm, name):
             missing.append((name, "<canonical>"))
             continue
