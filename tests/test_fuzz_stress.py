@@ -347,6 +347,58 @@ def test_broadcast_self_stop_stress():
     asyncio.run(_broadcast_self_stop_stress(machine_count=40, rounds=25))
 
 
+async def _snapshot_attribute_aliasing_stress(rounds: int) -> None:
+    class SnapshotIsolationInstance(FuzzInstance):
+        pass
+
+    model = hsm.Define(
+        "SnapshotIsolation",
+        hsm.Attribute("payload", {"items": []}),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.OnSet("payload"))),
+    )
+
+    ctx = hsm.Context()
+    instance = SnapshotIsolationInstance()
+    await hsm.Start(ctx, instance, model)
+
+    original_payload = {"items": ["original"]}
+    await hsm.Set(ctx, instance, "payload", original_payload)
+    original_payload["items"].append("mutated-after-set")
+
+    runtime_value, ok = hsm.Get(ctx, instance, "payload")
+    assert ok is True
+    assert runtime_value["items"] == ["original", "mutated-after-set"]
+
+    for index in range(rounds):
+        value = {"items": [index, {"nested": [index]}]}
+        await hsm.Set(ctx, instance, "payload", value)
+
+        snapshot = hsm.TakeSnapshot(ctx, instance)
+        snapshot_payload = snapshot.Attributes["/SnapshotIsolation/payload"]
+        snapshot_payload["items"][1]["nested"].append("snapshot-mutated")
+        snapshot.Attributes["/SnapshotIsolation/payload"] = {"items": ["replaced"]}
+
+        runtime_value, ok = hsm.Get(ctx, instance, "payload")
+        assert ok is True
+        assert runtime_value == {"items": [index, {"nested": [index]}]}
+
+        value["items"][1]["nested"].append("caller-mutated")
+        runtime_value, ok = hsm.Get(ctx, instance, "payload")
+        assert ok is True
+        assert runtime_value == {"items": [index, {"nested": [index, "caller-mutated"]}]}
+
+        fresh_snapshot = hsm.TakeSnapshot(ctx, instance)
+        assert fresh_snapshot.Attributes["/SnapshotIsolation/payload"] == runtime_value
+        assert fresh_snapshot.QueueLen == 0
+
+    await hsm.Stop(instance)
+
+
+def test_snapshot_attribute_aliasing_stress():
+    asyncio.run(_snapshot_attribute_aliasing_stress(rounds=100))
+
+
 @given(st.lists(st.integers(min_value=-5, max_value=5), min_size=0, max_size=80))
 @settings(max_examples=80, deadline=None, derandomize=True)
 def test_attribute_set_event_fuzz(values: list[int]):
