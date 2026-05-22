@@ -298,6 +298,55 @@ def test_dispatch_all_and_dispatch_to_stress():
     asyncio.run(_broadcast_stress(machine_count=50, rounds=25))
 
 
+async def _broadcast_self_stop_stress(machine_count: int, rounds: int) -> None:
+    class BroadcastSelfStopInstance(FuzzInstance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stops = 0
+            self.entries = 0
+
+    async def stop_effect(ctx, inst: BroadcastSelfStopInstance, event) -> None:
+        inst.stops += 1
+        await hsm.Stop(inst)
+
+    async def idle_entry(ctx, inst: BroadcastSelfStopInstance, event) -> None:
+        inst.entries += 1
+
+    model = hsm.Define(
+        "BroadcastSelfStop",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Entry(idle_entry),
+            hsm.Transition(hsm.On("stop"), hsm.Effect(stop_effect)),
+        ),
+    )
+
+    ctx = hsm.Context()
+    instances = [BroadcastSelfStopInstance() for _ in range(machine_count)]
+
+    for round_index in range(rounds):
+        for index, instance in enumerate(instances):
+            assert instance.state() in ("", "/BroadcastSelfStop")
+            await hsm.Started(ctx, instance, model, hsm.Config(ID=f"self-stop-{round_index}-{index}"))
+
+        assert len(ctx.machines()) == machine_count
+        await hsm.DispatchAll(ctx, hsm.Event("stop"))
+
+        assert ctx.machines() == []
+        for instance in instances:
+            assert instance.state() == "/BroadcastSelfStop"
+            assert instance.stops == round_index + 1
+            assert instance.entries == round_index + 1
+            snapshot = hsm.TakeSnapshot(ctx, instance)
+            assert snapshot.State == "/BroadcastSelfStop"
+            assert snapshot.QueueLen == 0
+
+
+def test_broadcast_self_stop_stress():
+    asyncio.run(_broadcast_self_stop_stress(machine_count=40, rounds=25))
+
+
 @given(st.lists(st.integers(min_value=-5, max_value=5), min_size=0, max_size=80))
 @settings(max_examples=80, deadline=None, derandomize=True)
 def test_attribute_set_event_fuzz(values: list[int]):
