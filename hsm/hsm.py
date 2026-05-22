@@ -2316,8 +2316,14 @@ def _after_future(waiters: list[tuple[typing.Any, asyncio.Future[None]]], expect
     return future
 
 
+def _resolve_observable_machine(sm: typing.Union[HSM[TInstance], Instance]) -> HSM[TInstance]:
+    machine = _resolve_machine(sm)
+    machine._ensure_accepting_events()
+    return machine
+
+
 def AfterDispatch(ctx: Context | None, hsm: typing.Union[HSM[TInstance], Instance], event: Event) -> asyncio.Future[None]:
-    machine = _resolve_machine(hsm)
+    machine = _resolve_observable_machine(hsm)
     return _after_future(machine._after.dispatch, event.qualified_name)
 
 
@@ -2326,22 +2332,22 @@ def AfterProcess(
     hsm: typing.Union[HSM[TInstance], Instance],
     maybe_event: Event | None = None,
 ) -> asyncio.Future[None]:
-    machine = _resolve_machine(hsm)
+    machine = _resolve_observable_machine(hsm)
     return _after_future(machine._after.process, None if maybe_event is None else maybe_event.qualified_name)
 
 
 def AfterEntry(ctx: Context | None, hsm: typing.Union[HSM[TInstance], Instance], state: str) -> asyncio.Future[None]:
-    machine = _resolve_machine(hsm)
+    machine = _resolve_observable_machine(hsm)
     return _after_future(machine._after.entry, state)
 
 
 def AfterExit(ctx: Context | None, hsm: typing.Union[HSM[TInstance], Instance], state: str) -> asyncio.Future[None]:
-    machine = _resolve_machine(hsm)
+    machine = _resolve_observable_machine(hsm)
     return _after_future(machine._after.exit, state)
 
 
 def AfterExecuted(ctx: Context | None, hsm: typing.Union[HSM[TInstance], Instance], state: str) -> asyncio.Future[None]:
-    machine = _resolve_machine(hsm)
+    machine = _resolve_observable_machine(hsm)
     return _after_future(machine._after.executed, state)
 
 

@@ -1449,6 +1449,45 @@ def test_stop_cancels_pending_observer_waiters():
     asyncio.run(_stop_cancels_pending_observer_waiters())
 
 
+async def _stopped_machine_rejects_observer_waiters() -> None:
+    class ObserverStoppedInstance(hsm.Instance):
+        pass
+
+    model = hsm.Define(
+        "ObserverStopped",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+    instance = ObserverStoppedInstance()
+    ctx = hsm.Context()
+    sm = await hsm.Start(ctx, instance, model)
+    await hsm.Stop(instance)
+
+    for make_waiter in (
+        lambda: hsm.AfterEntry(ctx, instance, "/ObserverStopped/idle"),
+        lambda: hsm.AfterExit(ctx, instance, "/ObserverStopped/idle"),
+        lambda: hsm.AfterExecuted(ctx, instance, "/ObserverStopped/idle"),
+        lambda: hsm.AfterDispatch(ctx, instance, hsm.Event("go")),
+        lambda: hsm.AfterProcess(ctx, instance, hsm.Event("go")),
+    ):
+        try:
+            make_waiter()
+        except hsm.ValidationError as error:
+            assert "started HSM" in str(error)
+        else:
+            raise AssertionError("observer waiter on stopped HSM should fail")
+
+    assert sm._after.entry == []
+    assert sm._after.exit == []
+    assert sm._after.executed == []
+    assert sm._after.dispatch == []
+    assert sm._after.process == []
+
+
+def test_stopped_machine_rejects_observer_waiters():
+    asyncio.run(_stopped_machine_rejects_observer_waiters())
+
+
 async def _cancelled_context_waiter_does_not_poison_future() -> None:
     ctx = hsm.Context()
 
