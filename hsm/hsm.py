@@ -2686,14 +2686,14 @@ async def Dispatch(
 
 
 async def DispatchAll(ctx: Context | None, event: Event) -> None:
-    if ctx is None:
+    if ctx is None or ctx.done:
         return
     machines = [machine for machine in ctx.machines() if machine._started]
     await asyncio.gather(*(machine.dispatch(event) for machine in machines))
 
 
 async def DispatchTo(ctx: Context | None, event: Event, *maybe_ids: str) -> None:
-    if ctx is None:
+    if ctx is None or ctx.done:
         return
     selected = [
         machine

@@ -1281,6 +1281,39 @@ def test_context_registration_does_not_leak_on_repeated_start_stop():
     asyncio.run(_context_registration_lifecycle_stress(rounds=100))
 
 
+async def _cancelled_context_broadcasts_do_not_dispatch() -> None:
+    class CancelledContextInstance(hsm.Instance):
+        pass
+
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "CancelledContextBroadcast",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
+        hsm.State("done"),
+    )
+    first = await hsm.Started(ctx, CancelledContextInstance(), model, hsm.Config(ID="first"))
+    second = await hsm.Started(ctx, CancelledContextInstance(), model, hsm.Config(ID="second"))
+
+    assert {hsm.ID(machine) for machine in ctx.machines()} == {"first", "second"}
+    ctx.cancel()
+
+    await hsm.DispatchAll(ctx, hsm.Event("go"))
+    await hsm.DispatchTo(ctx, hsm.Event("go"), "first")
+
+    assert first.state() == "/CancelledContextBroadcast/idle"
+    assert second.state() == "/CancelledContextBroadcast/idle"
+    assert hsm.TakeSnapshot(ctx, first).QueueLen == 0
+    assert hsm.TakeSnapshot(ctx, second).QueueLen == 0
+
+    await hsm.Stop(first)
+    await hsm.Stop(second)
+
+
+def test_cancelled_context_broadcasts_do_not_dispatch():
+    asyncio.run(_cancelled_context_broadcasts_do_not_dispatch())
+
+
 async def _repeated_start_fails_without_leaking_context_registration() -> None:
     class RepeatedStartInstance(hsm.Instance):
         pass
