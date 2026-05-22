@@ -555,6 +555,7 @@ class Config:
     Name: str = ""
     Data: typing.Any = None
     Clock: Clock | None = None
+    Queue: "Queue | None" = None
 
     def __init__(
         self,
@@ -562,16 +563,19 @@ class Config:
         Name: str = "",
         Data: typing.Any = None,
         Clock: Clock | None = None,
+        Queue: "Queue | None" = None,
         *,
         id: str | None = None,
         name: str | None = None,
         data: typing.Any = None,
         clock: Clock | None = None,
+        queue: "Queue | None" = None,
     ) -> None:
         self.ID = ID if id is None else id
         self.Name = Name if name is None else name
         self.Data = Data if data is None else data
         self.Clock = Clock if clock is None else clock
+        self.Queue = Queue if queue is None else queue
 
     @property
     def id(self) -> str:
@@ -604,6 +608,14 @@ class Config:
     @clock.setter
     def clock(self, value: Clock | None) -> None:
         self.Clock = value
+
+    @property
+    def queue(self) -> "Queue | None":
+        return self.Queue
+
+    @queue.setter
+    def queue(self, value: "Queue | None") -> None:
+        self.Queue = value
 
 
 config = Config
@@ -1879,10 +1891,11 @@ class HSM(Behavior[TInstance]):
         )
         self.model = model
         self._instance = instance
+        self._config = config
         self._root_context = ctx or Context()
         self._runtime_context = Context()
         self._processing = Mutex()
-        self._queue = Queue()
+        self._queue = config.Queue or Queue()
         self._active: dict[str, ActiveBehavior] = {}
         self._after = _AfterWaiters()
         self._state: VertexNode = model
@@ -1958,7 +1971,7 @@ class HSM(Behavior[TInstance]):
         self._after._cancel_all()
         self._runtime_context.cancel()
         self._runtime_context = Context()
-        self._queue = Queue()
+        self._queue = self._config.Queue or Queue()
         self._active.clear()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
@@ -2301,7 +2314,7 @@ class HSM(Behavior[TInstance]):
         self._after._cancel_all()
         self._runtime_context.cancel()
         self._runtime_context = Context()
-        self._queue = Queue()
+        self._queue = self._config.Queue or Queue()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
         self._history_deep.clear()
@@ -2332,7 +2345,7 @@ class HSM(Behavior[TInstance]):
 
     def _reset_for_restart(self) -> None:
         self._runtime_context = Context()
-        self._queue = Queue()
+        self._queue = self._config.Queue or Queue()
         self._active.clear()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
@@ -3165,6 +3178,7 @@ __all__ = [
     "OperationKind",
     "PartialKind",
     "PseudostateKind",
+    "Queue",
     "QualifiedName",
     "Restart",
     "SelfKind",
