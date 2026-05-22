@@ -1991,6 +1991,91 @@ def test_cancelled_restart_after_stop_acquire_remains_recoverable():
     asyncio.run(_cancelled_restart_after_stop_acquire_remains_recoverable())
 
 
+async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> None:
+    class BlockingInstance(hsm.Instance):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+            self.entries: list[object] = []
+
+    entered_exits: asyncio.Queue[int] = asyncio.Queue()
+    release_exits: asyncio.Queue[asyncio.Event] = asyncio.Queue()
+
+    async def active_entry(ctx, inst: BlockingInstance, event: hsm.Event) -> None:
+        inst.entries.append(event.Data)
+
+    async def slow_exit(ctx, inst: BlockingInstance, event: hsm.Event) -> None:
+        release_exit = asyncio.Event()
+        await entered_exits.put(inst.index)
+        await release_exits.put(release_exit)
+        await release_exit.wait()
+
+    model = hsm.Define(
+        "CancelledGroupRestart",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Entry(active_entry), hsm.Exit(slow_exit)),
+    )
+    ctx = hsm.Context()
+    instances = [BlockingInstance(index) for index in range(8)]
+    machines = [
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-restart-{index}"))
+        for index, instance in enumerate(instances)
+    ]
+    group = hsm.MakeGroup(*instances)
+
+    cancelled_restart = asyncio.create_task(hsm.Restart(group, "cancelled"))
+    seen_cancelled = {
+        await asyncio.wait_for(entered_exits.get(), timeout=1)
+        for _ in range(len(instances))
+    }
+    assert seen_cancelled == set(range(len(instances)))
+
+    cancelled_restart.cancel()
+    try:
+        await cancelled_restart
+    except asyncio.CancelledError:
+        pass
+    for _ in range(len(instances)):
+        release_exits.get_nowait()
+
+    await asyncio.sleep(0)
+    assert all(instance.entries == [None] for instance in instances)
+    assert all(instance.state() == "/CancelledGroupRestart/active" for instance in instances)
+    assert {id(machine) for machine in ctx.machines()} == {id(machine) for machine in machines}
+
+    recovered_restart = asyncio.create_task(hsm.Restart(group, "recovered"))
+    seen_recovered = {
+        await asyncio.wait_for(entered_exits.get(), timeout=1)
+        for _ in range(len(instances))
+    }
+    assert seen_recovered == set(range(len(instances)))
+    for _ in range(len(instances)):
+        release_exit = await asyncio.wait_for(release_exits.get(), timeout=1)
+        release_exit.set()
+    await asyncio.wait_for(recovered_restart, timeout=1)
+
+    assert all(instance.state() == "/CancelledGroupRestart/active" for instance in instances)
+    assert all(instance.entries == [None, "recovered"] for instance in instances)
+    assert {id(machine) for machine in ctx.machines()} == {id(machine) for machine in machines}
+    assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
+
+    final_stop = asyncio.create_task(hsm.Stop(group))
+    seen_final = {
+        await asyncio.wait_for(entered_exits.get(), timeout=1)
+        for _ in range(len(instances))
+    }
+    assert seen_final == set(range(len(instances)))
+    for _ in range(len(instances)):
+        release_exit = await asyncio.wait_for(release_exits.get(), timeout=1)
+        release_exit.set()
+    await asyncio.wait_for(final_stop, timeout=1)
+    assert ctx.machines() == []
+
+
+def test_cancelled_group_restart_after_stop_acquire_remains_recoverable():
+    asyncio.run(_cancelled_group_restart_after_stop_acquire_remains_recoverable())
+
+
 async def _context_registration_lifecycle_stress(rounds: int) -> None:
     class LifecycleInstance(hsm.Instance):
         pass
