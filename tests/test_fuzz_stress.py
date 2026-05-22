@@ -1436,6 +1436,51 @@ def test_cancelled_stop_waiter_does_not_poison_processing_mutex():
     asyncio.run(_cancelled_stop_waiter_releases_processing_mutex())
 
 
+async def _concurrent_stop_awaiters_share_one_stop_sequence() -> None:
+    class ConcurrentStopInstance(hsm.Instance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.exits = 0
+
+    entered_exit = asyncio.Event()
+    release_exit = asyncio.Event()
+
+    async def slow_exit(ctx, inst: ConcurrentStopInstance, event: hsm.Event) -> None:
+        inst.exits += 1
+        entered_exit.set()
+        await release_exit.wait()
+
+    model = hsm.Define(
+        "ConcurrentStopAwaiters",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Exit(slow_exit)),
+    )
+    instance = ConcurrentStopInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    stop_tasks = [asyncio.create_task(hsm.Stop(instance)) for _ in range(20)]
+    await asyncio.wait_for(entered_exit.wait(), timeout=1)
+    assert instance.exits == 1
+    assert all(not task.done() for task in stop_tasks)
+
+    release_exit.set()
+    await asyncio.wait_for(asyncio.gather(*stop_tasks), timeout=1)
+
+    assert instance.exits == 1
+    assert instance.state() == "/ConcurrentStopAwaiters"
+    assert ctx.machines() == []
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await asyncio.wait_for(hsm.Stop(instance), timeout=1)
+    assert instance.exits == 1
+    assert ctx.machines() == []
+
+
+def test_concurrent_stop_awaiters_share_one_stop_sequence():
+    asyncio.run(_concurrent_stop_awaiters_share_one_stop_sequence())
+
+
 async def _cancelled_dispatch_awaiter_does_not_cancel_processing_task() -> None:
     class BlockingInstance(hsm.Instance):
         pass
