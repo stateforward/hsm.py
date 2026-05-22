@@ -49,6 +49,8 @@ def MakeKind(*base_kinds: int) -> int:
     return id_
 
 
+Make = MakeKind
+make = MakeKind
 make_kind = MakeKind
 kind = MakeKind
 
@@ -72,6 +74,7 @@ __all__ = [
     "Bases",
     "IsKind",
     "List",
+    "Make",
     "MakeKind",
     "bases",
     "depth_max",
@@ -81,6 +84,7 @@ __all__ = [
     "kind",
     "length",
     "list_kind",
+    "make",
     "make_kind",
     "subkinds",
 ]

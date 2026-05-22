@@ -1,5 +1,5 @@
 import hsm
-from hsm.kind import IsKind, List, MakeKind, is_kind, kind, make_kind
+from hsm.kind import IsKind, List, Make, MakeKind, is_kind, kind, make, make_kind
 from hsm import Kinds
 
 
@@ -20,16 +20,20 @@ def test_make_kind_builds_hierarchy_without_manual_ids():
 
 
 def test_snake_case_and_kind_aliases_match_pascal_case():
+    assert Make is MakeKind
+    assert make is MakeKind
     assert make_kind is MakeKind
     assert kind is MakeKind
     assert is_kind is IsKind
 
     base = MakeKind()
-    child = make_kind(base)
+    child = make(base)
     sibling = kind(base)
+    named = make_kind(base)
 
     assert is_kind(child, base)
     assert IsKind(sibling, base)
+    assert IsKind(named, base)
 
 
 def test_list_exposes_base_ids():
