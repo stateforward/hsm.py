@@ -1571,7 +1571,11 @@ class PartialWhen(typing.Generic[TInstance], PartialElement):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: when must be called within a Transition"
             )
-        source = model.get(transition.source or "", StateNode)
+        source = None
+        if transition.source not in ("", "."):
+            source = model.get(transition.source, StateNode)
+        if source is None and transition.source in ("", "."):
+            source = find(stack, StateNode)
         if source is None:
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: when can only be used on transitions where the source is a State"

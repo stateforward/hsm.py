@@ -2643,3 +2643,80 @@ async def _named_operation_activity_and_error_stress(rounds: int) -> None:
 
 def test_named_operation_activity_and_error_stress():
     asyncio.run(_named_operation_activity_and_error_stress(rounds=50))
+
+
+async def _when_waitable_cancellation_stress(rounds: int) -> None:
+    class WhenWaitableInstance(FuzzInstance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.armed: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
+            self.cancelled = 0
+            self.fired = 0
+
+    async def wait_for_external_signal(ctx, inst: WhenWaitableInstance, event):
+        future = asyncio.get_running_loop().create_future()
+        await inst.armed.put(future)
+
+        async def waiter() -> None:
+            try:
+                await future
+            except asyncio.CancelledError:
+                inst.cancelled += 1
+                raise
+
+        return waiter()
+
+    async def record_fire(ctx, inst: WhenWaitableInstance, event) -> None:
+        inst.fired += 1
+
+    model = hsm.define(
+        "WhenWaitableStress",
+        hsm.initial(hsm.target("waiting")),
+        hsm.state(
+            "waiting",
+            hsm.transition(hsm.when(wait_for_external_signal), hsm.target("../fired"), hsm.effect(record_fire)),
+            hsm.transition(hsm.on("cancel"), hsm.target("../cancelled")),
+        ),
+        hsm.state("fired", hsm.transition(hsm.on("reset"), hsm.target("../waiting"))),
+        hsm.state("cancelled", hsm.transition(hsm.on("reset"), hsm.target("../waiting"))),
+    )
+
+    ctx = hsm.context()
+    instance = WhenWaitableInstance()
+    await hsm.start(ctx, instance, model)
+
+    for index in range(rounds):
+        future = await asyncio.wait_for(instance.armed.get(), timeout=1)
+        assert hsm.take_snapshot(ctx, instance).queue_len == 0
+        if index % 2 == 0:
+            entered_cancelled = hsm.AfterEntry(ctx, instance, "/WhenWaitableStress/cancelled")
+            await hsm.dispatch(ctx, instance, hsm.event("cancel"))
+            await asyncio.wait_for(entered_cancelled, timeout=1)
+            assert instance.state() == "/WhenWaitableStress/cancelled"
+            assert instance.cancelled >= (index // 2) + 1
+            if not future.done():
+                future.set_result(None)
+            await asyncio.sleep(0)
+            assert instance.state() == "/WhenWaitableStress/cancelled"
+            assert instance.fired == index // 2
+        else:
+            entered_fired = hsm.AfterEntry(ctx, instance, "/WhenWaitableStress/fired")
+            future.set_result(None)
+            await asyncio.wait_for(entered_fired, timeout=1)
+            assert instance.state() == "/WhenWaitableStress/fired"
+            assert instance.fired == (index // 2) + 1
+        assert hsm.take_snapshot(ctx, instance).queue_len == 0
+        await hsm.dispatch(ctx, instance, hsm.event("reset"))
+        assert instance.state() == "/WhenWaitableStress/waiting"
+
+    stop_future = await asyncio.wait_for(instance.armed.get(), timeout=1)
+    await hsm.stop(instance)
+    if not stop_future.done():
+        stop_future.set_result(None)
+    await asyncio.sleep(0)
+    assert instance.state() == "/WhenWaitableStress"
+    assert hsm.take_snapshot(ctx, instance).queue_len == 0
+
+
+def test_when_waitable_cancellation_stress():
+    asyncio.run(_when_waitable_cancellation_stress(rounds=50))
