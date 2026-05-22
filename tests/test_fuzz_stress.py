@@ -1262,6 +1262,164 @@ def test_starting_new_hsm_in_new_context_clears_old_context_registration():
     asyncio.run(_starting_new_hsm_in_new_context_clears_old_context_registration())
 
 
+@given(
+    st.lists(
+        st.sampled_from(
+            (
+                "start_a",
+                "start_b",
+                "restart",
+                "stop",
+                "go",
+                "reset",
+                "set_0",
+                "set_1",
+                "call",
+            )
+        ),
+        min_size=1,
+        max_size=80,
+    )
+)
+@settings(max_examples=80, deadline=None, derandomize=True)
+def test_adversarial_lifecycle_event_script_fuzz(actions: list[str]):
+    asyncio.run(_drive_adversarial_lifecycle_event_script(tuple(actions)))
+
+
+async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) -> None:
+    class ScriptInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+    async def ping(ctx: hsm.Context, inst: ScriptInstance, value: int) -> int:
+        inst.calls += 1
+        return value + 1
+
+    model = hsm.Define(
+        "LifecycleScript",
+        hsm.Attribute("flag", 0),
+        hsm.Operation("ping", ping),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
+            hsm.Transition(hsm.OnSet("flag")),
+            hsm.Transition(hsm.OnCall("ping")),
+        ),
+        hsm.State(
+            "done",
+            hsm.Transition(hsm.On("reset"), hsm.Target("../idle")),
+            hsm.Transition(hsm.OnSet("flag")),
+            hsm.Transition(hsm.OnCall("ping")),
+        ),
+    )
+    instance = ScriptInstance()
+    sm = hsm.New(instance, model)
+    initial_context = sm.context()
+    context_a = hsm.Context()
+    context_b = hsm.Context()
+    contexts = (initial_context, context_a, context_b)
+
+    expected_context: hsm.Context | None = initial_context
+    expected_state = "/LifecycleScript"
+    expected_flag = 0
+    expected_calls = 0
+
+    def assert_context_membership() -> None:
+        memberships = [ctx for ctx in contexts if sm in ctx.machines()]
+        if expected_context is None:
+            assert memberships == []
+        else:
+            assert memberships == [expected_context]
+
+    assert_context_membership()
+
+    for index, action in enumerate(actions):
+        if action in ("start_a", "start_b"):
+            target_context = context_a if action == "start_a" else context_b
+            if sm._started:
+                try:
+                    await hsm.Start(target_context, sm, index)
+                except hsm.ValidationError as error:
+                    assert "already started HSM" in str(error)
+                else:
+                    raise AssertionError("Start() on a running HSM should fail")
+            else:
+                await hsm.Start(target_context, sm, index)
+                expected_context = target_context
+                expected_state = "/LifecycleScript/idle"
+                expected_flag = 0
+        elif action == "restart":
+            await hsm.Restart(sm, index)
+            expected_context = sm.context()
+            expected_state = "/LifecycleScript/idle"
+            expected_flag = 0
+        elif action == "stop":
+            await hsm.Stop(sm)
+            expected_context = None
+            expected_state = "/LifecycleScript"
+        elif action == "go":
+            if sm._started:
+                await hsm.Dispatch(sm.context(), sm, hsm.Event("go"))
+                if expected_state == "/LifecycleScript/idle":
+                    expected_state = "/LifecycleScript/done"
+            else:
+                try:
+                    await hsm.Dispatch(sm.context(), sm, hsm.Event("go"))
+                except hsm.ValidationError as error:
+                    assert "started HSM" in str(error)
+                else:
+                    raise AssertionError("Dispatch() on a stopped HSM should fail")
+        elif action == "reset":
+            if sm._started:
+                await hsm.Dispatch(sm.context(), sm, hsm.Event("reset"))
+                if expected_state == "/LifecycleScript/done":
+                    expected_state = "/LifecycleScript/idle"
+            else:
+                try:
+                    await hsm.Dispatch(sm.context(), sm, hsm.Event("reset"))
+                except hsm.ValidationError as error:
+                    assert "started HSM" in str(error)
+                else:
+                    raise AssertionError("Dispatch() on a stopped HSM should fail")
+        elif action in ("set_0", "set_1"):
+            value = 0 if action == "set_0" else 1
+            if sm._started:
+                await hsm.Set(sm.context(), sm, "flag", value)
+                expected_flag = value
+            else:
+                try:
+                    await hsm.Set(sm.context(), sm, "flag", value)
+                except hsm.ValidationError as error:
+                    assert "started HSM" in str(error)
+                else:
+                    raise AssertionError("Set() on a stopped HSM should fail")
+        elif action == "call":
+            if sm._started:
+                assert await hsm.Call(sm.context(), sm, "ping", index) == index + 1
+                expected_calls += 1
+            else:
+                try:
+                    await hsm.Call(sm.context(), sm, "ping", index)
+                except hsm.ValidationError as error:
+                    assert "started HSM" in str(error)
+                else:
+                    raise AssertionError("Call() on a stopped HSM should fail")
+
+        assert_context_membership()
+        snapshot = hsm.TakeSnapshot(sm.context(), sm)
+        assert snapshot.State == expected_state
+        assert snapshot.QueueLen == 0
+        assert hsm.Get(sm.context(), sm, "flag") == (expected_flag, True)
+        assert instance.calls == expected_calls
+
+    await hsm.Stop(sm)
+    expected_context = None
+    assert_context_membership()
+    assert hsm.TakeSnapshot(sm.context(), sm).QueueLen == 0
+
+
 async def _stopped_machine_rejects_event_mutating_operations() -> None:
     class StoppedInstance(hsm.Instance):
         def __init__(self):
