@@ -2359,6 +2359,55 @@ def test_repeated_start_fails_without_leaking_context_registration():
     asyncio.run(_repeated_start_fails_without_leaking_context_registration())
 
 
+async def _concurrent_start_attempts_do_not_double_bind_instance() -> None:
+    class ConcurrentStartInstance(hsm.Instance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entries = 0
+
+    entered_entry = asyncio.Event()
+    release_entry = asyncio.Event()
+
+    async def slow_entry(ctx, inst: ConcurrentStartInstance, event: hsm.Event) -> None:
+        inst.entries += 1
+        entered_entry.set()
+        await release_entry.wait()
+
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "ConcurrentStart",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Entry(slow_entry)),
+    )
+    instance = ConcurrentStartInstance()
+
+    first_start = asyncio.create_task(hsm.Start(ctx, instance, model))
+    await asyncio.wait_for(entered_entry.wait(), timeout=1)
+
+    try:
+        await hsm.Start(ctx, instance, model)
+    except hsm.ValidationError as error:
+        assert "already has a running HSM" in str(error)
+    else:
+        raise AssertionError("concurrent Start() should not double-bind an instance")
+
+    assert len(ctx.machines()) == 1
+    release_entry.set()
+    sm = await asyncio.wait_for(first_start, timeout=1)
+
+    assert ctx.machines() == [sm]
+    assert instance.entries == 1
+    assert instance.state() == "/ConcurrentStart/idle"
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+    assert ctx.machines() == []
+
+
+def test_concurrent_start_attempts_do_not_double_bind_instance():
+    asyncio.run(_concurrent_start_attempts_do_not_double_bind_instance())
+
+
 async def _stopped_hsm_start_resets_runtime_state() -> None:
     class ReusableInstance(hsm.Instance):
         pass
