@@ -2262,6 +2262,8 @@ class Group:
         await asyncio.gather(*(instance.dispatch(event) for instance in self.instances if instance is not None))
 
     async def stop(self) -> None:
+        if self.instances:
+            self._ensure_accepting_events()
         await asyncio.gather(*(instance.stop() for instance in self.instances if instance is not None))
 
     async def restart(self, data: typing.Any = None) -> None:

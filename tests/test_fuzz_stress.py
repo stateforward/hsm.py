@@ -1569,6 +1569,7 @@ async def _group_event_mutations_preflight_members() -> None:
             lambda group=group: hsm.Dispatch(ctx, group, hsm.Event("go")),
             lambda group=group: hsm.Set(ctx, group, "flag", True),
             lambda group=group: hsm.Restart(group, "restarted"),
+            lambda group=group: hsm.Stop(group),
         ):
             try:
                 await operation()
