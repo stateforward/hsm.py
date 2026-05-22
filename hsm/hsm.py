@@ -643,16 +643,76 @@ class Model(State):
             self.operations[element.declared_name or element.name()] = element
 
 
-@dataclass
+@dataclass(init=False)
 class Event(typing.Generic[TData]):
     name: str = field(default_factory=str)
-    data: typing.Optional[TData] = field(default=None)
+    data: TData = field(default=typing.cast(TData, None))
     kind: int = Kinds.Event
     id: str = field(default_factory=str)
     source: str = field(default_factory=str)
     target: str = field(default_factory=str)
     qualified_name: str = field(default_factory=str)
     schema: typing.Any = None
+
+    @typing.overload
+    def __init__(
+        self,
+        name: str = "",
+        data: None = None,
+        kind: int = Kinds.Event,
+        id: str = "",
+        source: str = "",
+        target: str = "",
+        qualified_name: str = "",
+        schema: typing.Any = None,
+    ) -> None: ...
+
+    @typing.overload
+    def __init__(
+        self,
+        name: str,
+        data: TData,
+        kind: int = Kinds.Event,
+        id: str = "",
+        source: str = "",
+        target: str = "",
+        qualified_name: str = "",
+        schema: typing.Any = None,
+    ) -> None: ...
+
+    @typing.overload
+    def __init__(
+        self,
+        *,
+        data: TData,
+        name: str = "",
+        kind: int = Kinds.Event,
+        id: str = "",
+        source: str = "",
+        target: str = "",
+        qualified_name: str = "",
+        schema: typing.Any = None,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        name: str = "",
+        data: typing.Any = None,
+        kind: int = Kinds.Event,
+        id: str = "",
+        source: str = "",
+        target: str = "",
+        qualified_name: str = "",
+        schema: typing.Any = None,
+    ) -> None:
+        self.name = name
+        self.data = data
+        self.kind = kind
+        self.id = id
+        self.source = source
+        self.target = target
+        self.qualified_name = qualified_name or name
+        self.schema = schema
 
     def __post_init__(self) -> None:
         if not self.qualified_name:
@@ -690,7 +750,7 @@ class Event(typing.Generic[TData]):
         return self.name
 
     @property
-    def Data(self) -> typing.Optional[TData]:
+    def Data(self) -> TData:
         return self.data
 
     @property

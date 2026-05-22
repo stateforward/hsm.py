@@ -1,5 +1,5 @@
 {
-  "include": ["hsm"],
+  "include": ["hsm", "type_tests"],
   "pythonVersion": "3.13",
   "typeCheckingMode": "basic",
   "reportRedeclaration": false,

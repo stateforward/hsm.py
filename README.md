@@ -167,7 +167,7 @@ hsm.Define(
 
 ## Events
 
-Create events with `Event(name, data=None)`. `WithData` and `WithDataAndID` mirror the Go API and return a new event.
+Create events with `Event(name, data=None)`. `Event` is generic for static analysis: `Event("update", {"message": "hello"})` is inferred as `Event[dict[str, str]]`, and `event.Data` has that payload type. `WithData` and `WithDataAndID` mirror the Go API and return a new event with the new payload type.
 
 ```python
 event = hsm.Event("update").WithData({"message": "hello"})
