@@ -1837,6 +1837,44 @@ def test_stop_suppresses_exit_action_errors_without_leaving_stale_queue():
     asyncio.run(_stop_suppresses_exit_action_errors_without_leaving_stale_queue())
 
 
+async def _stop_suppresses_exit_cancelled_error_without_stale_registration() -> None:
+    class StopCancelledInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.exit_seen = False
+
+    async def cancelling_exit(ctx, inst: StopCancelledInstance, event):
+        inst.exit_seen = True
+        raise asyncio.CancelledError("manual exit cancellation")
+
+    model = hsm.Define(
+        "StopExitCancelled",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Exit(cancelling_exit)),
+    )
+    instance = StopCancelledInstance()
+    ctx = hsm.Context()
+    sm = await hsm.Start(ctx, instance, model)
+
+    await hsm.Stop(instance)
+
+    assert instance.exit_seen is True
+    assert instance.state() == "/StopExitCancelled"
+    assert ctx.machines() == []
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+
+    try:
+        await hsm.Dispatch(ctx, instance, hsm.Event("go"))
+    except hsm.ValidationError as error:
+        assert "started HSM" in str(error)
+    else:
+        raise AssertionError("Stop() with manual CancelledError must leave a stopped HSM")
+
+
+def test_stop_suppresses_exit_cancelled_error_without_stale_registration():
+    asyncio.run(_stop_suppresses_exit_cancelled_error_without_stale_registration())
+
+
 async def _activity_cancellation_cleanup_errors_do_not_dispatch_error_events() -> None:
     class CleanupErrorInstance(hsm.Instance):
         def __init__(self):
