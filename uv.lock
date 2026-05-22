@@ -715,7 +715,7 @@ wheels = [
 
 [[package]]
 name = "stateforward-hsm"
-version = "0.5.41"
+version = "0.5.42"
 source = { editable = "." }
 
 [package.dev-dependencies]

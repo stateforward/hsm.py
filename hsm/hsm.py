@@ -1887,9 +1887,13 @@ class HSM(Behavior[TInstance]):
                             return
                         activity_ctx.cancel()
                         self._dispatch_error(error)
+                    finally:
+                        if self._active.get(behavior.qualified_name) is active_behavior:
+                            self._active.pop(behavior.qualified_name, None)
 
                 task = asyncio.create_task(run_activity(), name=behavior.qualified_name)
-                self._active[behavior.qualified_name] = ActiveBehavior(context=activity_ctx, task=task)
+                active_behavior = ActiveBehavior(context=activity_ctx, task=task)
+                self._active[behavior.qualified_name] = active_behavior
                 return
             await _maybe_await(behavior.operation(self._runtime_context, self._instance, event))
         except asyncio.CancelledError as error:

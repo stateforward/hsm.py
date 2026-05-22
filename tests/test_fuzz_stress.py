@@ -2025,6 +2025,52 @@ def test_activity_cancellation_cleanup_errors_do_not_dispatch_error_events():
     asyncio.run(_activity_cancellation_cleanup_errors_do_not_dispatch_error_events())
 
 
+async def _completed_activity_removes_active_record_without_exit() -> None:
+    class CompletedActivityInstance(hsm.Instance):
+        pass
+
+    activity_started = asyncio.Event()
+    release_activity = asyncio.Event()
+
+    async def one_shot_activity(ctx, inst: CompletedActivityInstance, event):
+        activity_started.set()
+        await release_activity.wait()
+
+    model = hsm.Define(
+        "CompletedActivityCleanup",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State(
+            "active",
+            hsm.Activity(one_shot_activity),
+            hsm.Transition(hsm.On("finish"), hsm.Target("../done")),
+        ),
+        hsm.State("done"),
+    )
+    instance = CompletedActivityInstance()
+    ctx = hsm.Context()
+    sm = await hsm.Started(ctx, instance, model)
+    await asyncio.wait_for(activity_started.wait(), timeout=1)
+    active_tasks = [active.task for active in sm._active.values()]
+    assert len(active_tasks) == 1
+
+    release_activity.set()
+    await asyncio.wait_for(active_tasks[0], timeout=1)
+
+    assert instance.state() == "/CompletedActivityCleanup/active"
+    assert sm._active == {}
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+
+    await hsm.Dispatch(ctx, sm, hsm.Event("finish"))
+    assert instance.state() == "/CompletedActivityCleanup/done"
+    assert sm._active == {}
+
+    await hsm.Stop(sm)
+
+
+def test_completed_activity_removes_active_record_without_exit():
+    asyncio.run(_completed_activity_removes_active_record_without_exit())
+
+
 async def _cancelled_start_cleans_up_registration_and_activities() -> None:
     class CancelledStartInstance(hsm.Instance):
         def __init__(self):

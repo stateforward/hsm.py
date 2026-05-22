@@ -1,3 +1,3 @@
 """Version information for stateforward.hsm."""
 
-__version__ = "0.5.41"
+__version__ = "0.5.42"
