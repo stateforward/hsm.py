@@ -298,6 +298,63 @@ def test_dispatch_all_and_dispatch_to_stress():
     asyncio.run(_broadcast_stress(machine_count=50, rounds=25))
 
 
+async def _broadcast_event_metadata_isolation_stress(machine_count: int, rounds: int) -> None:
+    class BroadcastEventInstance(FuzzInstance):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+            self.seen_names: list[str] = []
+            self.seen_sources: list[str] = []
+
+    async def mutate_event(ctx, inst: BroadcastEventInstance, event: hsm.Event) -> None:
+        inst.seen_names.append(event.name)
+        inst.seen_sources.append(event.source)
+        event.name = f"mutated-{inst.index}"
+        event.qualified_name = event.name
+        event.source = f"source-{inst.index}"
+        event.target = f"target-{inst.index}"
+
+    model = hsm.Define(
+        "BroadcastEventIsolation",
+        hsm.Initial(hsm.Target("ready")),
+        hsm.State("ready", hsm.Transition(hsm.On("shared"), hsm.Effect(mutate_event))),
+    )
+
+    ctx = hsm.Context()
+    instances = [BroadcastEventInstance(index) for index in range(machine_count)]
+    for index, instance in enumerate(instances):
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"event-isolation-{index}"))
+
+    for round_index in range(rounds):
+        event = hsm.Event("shared", source=f"round-{round_index}", target="target")
+        await hsm.DispatchAll(ctx, event)
+
+        assert event.name == "shared"
+        assert event.qualified_name == "shared"
+        assert event.source == f"round-{round_index}"
+        assert event.target == "target"
+        assert all(instance.seen_names[-1] == "shared" for instance in instances)
+        assert all(instance.seen_sources[-1] == f"round-{round_index}" for instance in instances)
+        assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
+
+    group_event = hsm.Event("shared", source="group", target="target")
+    await hsm.Dispatch(ctx, hsm.MakeGroup(*instances), group_event)
+
+    assert group_event.name == "shared"
+    assert group_event.qualified_name == "shared"
+    assert group_event.source == "group"
+    assert group_event.target == "target"
+    assert all(instance.seen_names[-1] == "shared" for instance in instances)
+    assert all(instance.seen_sources[-1] == "group" for instance in instances)
+    assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
+
+    await asyncio.gather(*(hsm.Stop(instance) for instance in instances))
+
+
+def test_broadcast_event_metadata_isolation_stress():
+    asyncio.run(_broadcast_event_metadata_isolation_stress(machine_count=40, rounds=25))
+
+
 async def _broadcast_self_stop_stress(machine_count: int, rounds: int) -> None:
     class BroadcastSelfStopInstance(FuzzInstance):
         def __init__(self) -> None:

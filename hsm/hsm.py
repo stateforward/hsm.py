@@ -2431,7 +2431,11 @@ class Group:
 
     async def dispatch(self, event: Event) -> None:
         self._ensure_accepting_events()
-        await asyncio.gather(*(instance.dispatch(event) for instance in self.instances if instance is not None))
+        await asyncio.gather(*(
+            instance.dispatch(_clone_event(event))
+            for instance in self.instances
+            if instance is not None
+        ))
 
     async def stop(self) -> None:
         if self.instances:
@@ -2538,6 +2542,19 @@ def _event_from_name(event_or_name: str | Event, kind_value: int = Kinds.Event) 
     if event_or_name == AnyEvent.name:
         return AnyEvent
     return Event(name=event_or_name, kind=kind_value)
+
+
+def _clone_event(event: Event[TData]) -> Event[TData]:
+    return Event(
+        name=event.name,
+        data=event.data,
+        kind=event.kind,
+        id=event.id,
+        source=event.source,
+        target=event.target,
+        qualified_name=event.qualified_name,
+        schema=event.schema,
+    )
 
 
 def _finalize_model(model: Model) -> None:
@@ -2880,7 +2897,7 @@ async def DispatchAll(ctx: Context | None, event: Event) -> None:
     if ctx is None or ctx.done:
         return
     machines = [machine for machine in ctx.machines() if machine._started]
-    await asyncio.gather(*(machine.dispatch(event) for machine in machines))
+    await asyncio.gather(*(machine.dispatch(_clone_event(event)) for machine in machines))
 
 
 async def DispatchTo(ctx: Context | None, event: Event, *maybe_ids: str) -> None:
@@ -2891,7 +2908,7 @@ async def DispatchTo(ctx: Context | None, event: Event, *maybe_ids: str) -> None
         for machine in ctx.machines()
         if machine._started and (not maybe_ids or Match(machine.take_snapshot().ID, *maybe_ids))
     ]
-    await asyncio.gather(*(machine.dispatch(event) for machine in selected))
+    await asyncio.gather(*(machine.dispatch(_clone_event(event)) for machine in selected))
 
 
 def Get(
