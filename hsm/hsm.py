@@ -68,6 +68,11 @@ async def _maybe_await(value: typing.Any) -> typing.Any:
     return value
 
 
+def _task_is_cancelling() -> bool:
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
 async def _normalize_waitable(value: typing.Any) -> None:
     if value is None:
         return
@@ -1318,7 +1323,9 @@ class TimedBehavior(typing.Generic[TInstance], PartialElement):
                 try:
                     await _clock_for_instance(instance).Sleep(delta)
                 except asyncio.CancelledError:
-                    return
+                    if _task_is_cancelling() or ctx.is_done():
+                        return
+                    raise
                 if ctx.is_done():
                     return
                 instance.dispatch(self.event)
@@ -1397,7 +1404,9 @@ class PartialWhen(typing.Generic[TInstance], PartialElement):
                 if not ctx.is_done():
                     instance.dispatch(event)
             except asyncio.CancelledError:
-                return
+                if _task_is_cancelling() or ctx.is_done():
+                    return
+                raise
 
         behavior = BehaviorNode(
             qualified_name=join(source.qualified_name, event.name, str(len(model.members))),
@@ -1785,6 +1794,10 @@ class HSM(Behavior[TInstance]):
         try:
             result = await _maybe_await(guard.expression(self._runtime_context, self._instance, event))
             return bool(result)
+        except asyncio.CancelledError:
+            if _task_is_cancelling():
+                raise
+            return False
         except Exception:
             return False
 
@@ -1800,8 +1813,12 @@ class HSM(Behavior[TInstance]):
                             self._after.executed,
                             lambda expected: expected == behavior.owner(),
                         )
-                    except asyncio.CancelledError:
+                    except asyncio.CancelledError as error:
+                        was_done = activity_ctx.is_done()
                         activity_ctx.cancel()
+                        if _task_is_cancelling() or was_done:
+                            return
+                        self._dispatch_error(error)
                     except Exception as error:
                         if activity_ctx.is_done():
                             return
@@ -1812,12 +1829,18 @@ class HSM(Behavior[TInstance]):
                 self._active[behavior.qualified_name] = ActiveBehavior(context=activity_ctx, task=task)
                 return
             await _maybe_await(behavior.operation(self._runtime_context, self._instance, event))
+        except asyncio.CancelledError as error:
+            if _task_is_cancelling():
+                raise
+            if is_kind(event.kind, Kinds.ErrorEvent):
+                return
+            self._dispatch_error(error)
         except Exception as error:
             if is_kind(event.kind, Kinds.ErrorEvent):
                 return
             self._dispatch_error(error)
 
-    def _dispatch_error(self, error: Exception) -> None:
+    def _dispatch_error(self, error: BaseException) -> None:
         if self._stopping:
             return
         try:

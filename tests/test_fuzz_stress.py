@@ -699,6 +699,110 @@ def test_failing_error_handler_does_not_recursively_enqueue_error_events():
     asyncio.run(_failing_error_handler_does_not_recursively_enqueue_error_events())
 
 
+async def _manual_cancelled_error_callbacks_do_not_abort_processing() -> None:
+    class CancelledCallbackInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.errors: list[BaseException] = []
+            self.activity_started = False
+
+    async def cancelled_effect(ctx, inst, event):
+        raise asyncio.CancelledError("manual effect cancellation")
+
+    async def cancelled_activity(ctx, inst: CancelledCallbackInstance, event):
+        inst.activity_started = True
+        raise asyncio.CancelledError("manual activity cancellation")
+
+    async def cancelled_guard(ctx, inst, event):
+        raise asyncio.CancelledError("manual guard cancellation")
+
+    async def error_effect(ctx, inst: CancelledCallbackInstance, event):
+        inst.errors.append(event.Data)
+
+    model = hsm.Define(
+        "ManualCancelledCallbacks",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.On("effect"),
+                hsm.Target("../after_effect"),
+                hsm.Effect(cancelled_effect),
+            ),
+            hsm.Transition(
+                hsm.On("guard"),
+                hsm.Guard(cancelled_guard),
+                hsm.Target("../guarded"),
+            ),
+        ),
+        hsm.State(
+            "after_effect",
+            hsm.Transition(
+                hsm.On(hsm.ErrorEvent),
+                hsm.Target("../error"),
+                hsm.Effect(error_effect),
+            ),
+        ),
+        hsm.State(
+            "activity",
+            hsm.Activity(cancelled_activity),
+            hsm.Transition(
+                hsm.On(hsm.ErrorEvent),
+                hsm.Target("../error"),
+                hsm.Effect(error_effect),
+            ),
+        ),
+        hsm.State("guarded"),
+        hsm.State("error"),
+    )
+
+    ctx = hsm.Context()
+
+    effect_instance = CancelledCallbackInstance()
+    await hsm.Start(ctx, effect_instance, model)
+    await hsm.Dispatch(ctx, effect_instance, hsm.Event("effect"))
+    assert effect_instance.state() == "/ManualCancelledCallbacks/error"
+    assert len(effect_instance.errors) == 1
+    assert isinstance(effect_instance.errors[0], asyncio.CancelledError)
+    assert hsm.TakeSnapshot(ctx, effect_instance).QueueLen == 0
+    await hsm.Stop(effect_instance)
+
+    guard_instance = CancelledCallbackInstance()
+    await hsm.Start(ctx, guard_instance, model)
+    await hsm.Dispatch(ctx, guard_instance, hsm.Event("guard"))
+    assert guard_instance.state() == "/ManualCancelledCallbacks/idle"
+    assert guard_instance.errors == []
+    assert hsm.TakeSnapshot(ctx, guard_instance).QueueLen == 0
+    await hsm.Stop(guard_instance)
+
+    activity_instance = CancelledCallbackInstance()
+    activity_model = hsm.Define(
+        "ManualCancelledActivity",
+        hsm.Initial(hsm.Target("activity")),
+        hsm.State(
+            "activity",
+            hsm.Activity(cancelled_activity),
+            hsm.Transition(
+                hsm.On(hsm.ErrorEvent),
+                hsm.Target("../error"),
+                hsm.Effect(error_effect),
+            ),
+        ),
+        hsm.State("error"),
+    )
+    await hsm.Start(ctx, activity_instance, activity_model)
+    await asyncio.wait_for(hsm.AfterEntry(ctx, activity_instance, "/ManualCancelledActivity/error"), timeout=1)
+    assert activity_instance.activity_started is True
+    assert len(activity_instance.errors) == 1
+    assert isinstance(activity_instance.errors[0], asyncio.CancelledError)
+    assert hsm.TakeSnapshot(ctx, activity_instance).QueueLen == 0
+    await hsm.Stop(activity_instance)
+
+
+def test_manual_cancelled_error_callbacks_do_not_abort_processing():
+    asyncio.run(_manual_cancelled_error_callbacks_do_not_abort_processing())
+
+
 async def _stop_during_inflight_dispatch_does_not_block_loop() -> None:
     class BlockingInstance(hsm.Instance):
         pass
