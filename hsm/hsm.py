@@ -2005,9 +2005,16 @@ class HSM(Behavior[TInstance]):
     def _reset_for_restart(self) -> None:
         self._runtime_context = Context()
         self._queue = Queue()
+        self._active.clear()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
         self._history_deep.clear()
+        self._state = self.model
+        self._started = False
+        self._stopping = False
+        self._stop_requested = False
+        self._restart_requested = None
+        self._awaitable = _future_done()
         self._root_context.register(self)
 
     async def _restart_locked(self, data: typing.Any = None) -> None:
@@ -2484,7 +2491,7 @@ async def Start(
             raise ValidationError("Start() called on an already started HSM")
         start_data = model
         sm._root_context = ctx or Context()
-        sm._root_context.register(sm)
+        sm._reset_for_restart()
     else:
         if not isinstance(model, Model):
             raise ValidationError("Start() requires a model when starting an instance")

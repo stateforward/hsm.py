@@ -1187,6 +1187,49 @@ def test_repeated_start_fails_without_leaking_context_registration():
     asyncio.run(_repeated_start_fails_without_leaking_context_registration())
 
 
+async def _stopped_hsm_start_resets_runtime_state() -> None:
+    class ReusableInstance(hsm.Instance):
+        pass
+
+    entries: list[tuple[object, bool]] = []
+
+    async def record_entry(ctx: hsm.Context, inst: ReusableInstance, event: hsm.Event) -> None:
+        entries.append((event.Data, ctx.done))
+
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "ReusableStart",
+        hsm.Attribute("count", 0),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Entry(record_entry)),
+    )
+    instance = ReusableInstance()
+    sm = hsm.New(instance, model)
+
+    await hsm.Start(ctx, sm, "first")
+    await hsm.Set(ctx, instance, "count", 7)
+    assert hsm.Get(ctx, sm, "count") == (7, True)
+    await hsm.Stop(sm)
+
+    assert instance.state() == "/ReusableStart"
+    assert ctx.machines() == []
+
+    await hsm.Start(ctx, sm, "second")
+
+    assert instance.state() == "/ReusableStart/idle"
+    assert ctx.machines() == [sm]
+    assert hsm.Get(ctx, sm, "count") == (0, True)
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+    assert entries == [("first", False), ("second", False)]
+
+    await hsm.Stop(sm)
+    assert ctx.machines() == []
+
+
+def test_stopped_hsm_start_resets_runtime_state():
+    asyncio.run(_stopped_hsm_start_resets_runtime_state())
+
+
 async def _stopped_machine_rejects_event_mutating_operations() -> None:
     class StoppedInstance(hsm.Instance):
         def __init__(self):
