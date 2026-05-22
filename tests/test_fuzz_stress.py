@@ -508,6 +508,67 @@ def test_concurrent_set_and_call_stress():
     asyncio.run(_set_call_concurrency_stress(rounds=200))
 
 
+async def _cancelled_call_awaiter_does_not_cancel_oncall_processing() -> None:
+    class CancelledCallInstance(hsm.Instance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.effects = 0
+            self.operations: list[int] = []
+
+    entered_effect = asyncio.Event()
+    release_effect = asyncio.Event()
+
+    async def operation(ctx, inst: CancelledCallInstance, value: int) -> int:
+        inst.operations.append(value)
+        return value + 1
+
+    async def slow_oncall_effect(ctx, inst: CancelledCallInstance, event: hsm.Event) -> None:
+        assert isinstance(event.Data, hsm.CallData)
+        inst.effects += 1
+        entered_effect.set()
+        await release_effect.wait()
+
+    model = hsm.Define(
+        "CancelledCallAwaiter",
+        hsm.Operation("work", operation),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.OnCall("work"), hsm.Effect(slow_oncall_effect))),
+    )
+
+    ctx = hsm.Context()
+    instance = CancelledCallInstance()
+    await hsm.Start(ctx, instance, model)
+
+    call_task = asyncio.create_task(hsm.Call(ctx, instance, "work", 1))
+    await asyncio.wait_for(entered_effect.wait(), timeout=1)
+    call_task.cancel()
+    try:
+        await call_task
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("cancelled Call() awaiter should raise CancelledError")
+
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    assert instance.effects == 1
+    assert instance.operations == []
+
+    release_effect.set()
+    await asyncio.wait_for(hsm.AfterProcess(ctx, instance), timeout=1)
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    assert await hsm.Call(ctx, instance, "work", 2) == 3
+    assert instance.effects == 2
+    assert instance.operations == [2]
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+
+
+def test_cancelled_call_awaiter_does_not_cancel_oncall_processing():
+    asyncio.run(_cancelled_call_awaiter_does_not_cancel_oncall_processing())
+
+
 async def _activity_cancellation_stress(rounds: int) -> None:
     class ActivityInstance(hsm.Instance):
         def __init__(self):
