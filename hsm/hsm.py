@@ -165,9 +165,9 @@ class Context:
     async def wait_done(self) -> None:
         if self._done:
             return
-        if self._done_future is None:
+        if self._done_future is None or self._done_future.cancelled():
             self._done_future = asyncio.get_running_loop().create_future()
-        await self._done_future
+        await asyncio.shield(self._done_future)
 
     def register(self, machine: "HSM[typing.Any]") -> None:
         self._machines.add(machine)

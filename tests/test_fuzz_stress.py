@@ -1344,6 +1344,34 @@ def test_stop_cancels_pending_observer_waiters():
     asyncio.run(_stop_cancels_pending_observer_waiters())
 
 
+async def _cancelled_context_waiter_does_not_poison_future() -> None:
+    ctx = hsm.Context()
+
+    cancelled_waiter = asyncio.create_task(ctx.wait_done())
+    await asyncio.sleep(0)
+    cancelled_waiter.cancel()
+    try:
+        await cancelled_waiter
+    except asyncio.CancelledError:
+        pass
+
+    assert ctx.done is False
+    assert ctx._done_future is not None
+    assert ctx._done_future.cancelled() is False
+
+    live_waiter = asyncio.create_task(ctx.wait_done())
+    await asyncio.sleep(0)
+    assert live_waiter.done() is False
+
+    ctx.cancel()
+    await asyncio.wait_for(live_waiter, timeout=1)
+    await ctx.wait_done()
+
+
+def test_cancelled_context_waiter_does_not_poison_future():
+    asyncio.run(_cancelled_context_waiter_does_not_poison_future())
+
+
 @given(
     st.lists(
         st.sampled_from(
