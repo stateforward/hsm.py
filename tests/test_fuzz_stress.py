@@ -2720,3 +2720,55 @@ async def _when_waitable_cancellation_stress(rounds: int) -> None:
 
 def test_when_waitable_cancellation_stress():
     asyncio.run(_when_waitable_cancellation_stress(rounds=50))
+
+
+async def _when_owned_future_is_not_cancelled_on_state_exit() -> None:
+    class OwnedFutureInstance(FuzzInstance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.armed: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
+            self.fired = 0
+
+    async def owned_future(ctx, inst: OwnedFutureInstance, event):
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        await inst.armed.put(future)
+        return future
+
+    async def record_fire(ctx, inst: OwnedFutureInstance, event) -> None:
+        inst.fired += 1
+
+    model = hsm.define(
+        "WhenOwnedFuture",
+        hsm.initial(hsm.target("waiting")),
+        hsm.state(
+            "waiting",
+            hsm.transition(hsm.when(owned_future), hsm.target("../fired"), hsm.effect(record_fire)),
+            hsm.transition(hsm.on("cancel"), hsm.target("../cancelled")),
+        ),
+        hsm.state("fired"),
+        hsm.state("cancelled"),
+    )
+
+    ctx = hsm.context()
+    instance = OwnedFutureInstance()
+    await hsm.start(ctx, instance, model)
+
+    future = await asyncio.wait_for(instance.armed.get(), timeout=1)
+    entered_cancelled = hsm.AfterEntry(ctx, instance, "/WhenOwnedFuture/cancelled")
+    await hsm.dispatch(ctx, instance, hsm.event("cancel"))
+    await asyncio.wait_for(entered_cancelled, timeout=1)
+
+    assert future.cancelled() is False
+    assert future.done() is False
+    future.set_result(None)
+    await asyncio.sleep(0)
+
+    assert instance.state() == "/WhenOwnedFuture/cancelled"
+    assert instance.fired == 0
+    assert hsm.take_snapshot(ctx, instance).queue_len == 0
+
+    await hsm.stop(instance)
+
+
+def test_when_owned_future_is_not_cancelled_on_state_exit():
+    asyncio.run(_when_owned_future_is_not_cancelled_on_state_exit())

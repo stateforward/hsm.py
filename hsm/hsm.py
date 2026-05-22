@@ -200,12 +200,18 @@ async def _normalize_waitable(value: typing.Any) -> None:
     if isinstance(value, asyncio.Event):
         await value.wait()
         return
+    if isinstance(value, asyncio.Future):
+        await asyncio.shield(value)
+        return
     if inspect.isawaitable(value):
         await typing.cast(typing.Awaitable[typing.Any], value)
         return
     wait = getattr(value, "wait", None)
     if callable(wait):
         result = wait()
+        if isinstance(result, asyncio.Future):
+            await asyncio.shield(result)
+            return
         if inspect.isawaitable(result):
             await typing.cast(typing.Awaitable[typing.Any], result)
             return
