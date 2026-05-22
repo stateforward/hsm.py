@@ -1983,6 +1983,68 @@ def test_cancelled_start_cleans_up_registration_and_activities():
     asyncio.run(_cancelled_start_cleans_up_registration_and_activities())
 
 
+async def _cancelled_start_discards_queued_startup_events() -> None:
+    class QueuedStartupInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.entries: list[object] = []
+
+    entered_entry = asyncio.Event()
+    release_entry = asyncio.Event()
+
+    async def blocking_entry(ctx, inst: QueuedStartupInstance, event):
+        inst.entries.append(event.Data)
+        if event.Data == "first":
+            await hsm.Set(ctx, inst, "count", 5)
+            await hsm.Dispatch(ctx, inst, hsm.Event("queued"))
+        entered_entry.set()
+        await release_entry.wait()
+
+    model = hsm.Define(
+        "CancelledStartQueuedEvents",
+        hsm.Attribute("count", 0),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Entry(blocking_entry),
+            hsm.Transition(hsm.On("queued"), hsm.Target("../done")),
+        ),
+        hsm.State("done"),
+    )
+
+    instance = QueuedStartupInstance()
+    ctx = hsm.Context()
+    sm = hsm.New(instance, model)
+
+    start_task = asyncio.create_task(hsm.Start(ctx, sm, "first"))
+    await asyncio.wait_for(entered_entry.wait(), timeout=1)
+
+    start_task.cancel()
+    try:
+        await start_task
+    except asyncio.CancelledError:
+        pass
+
+    assert instance.state() == "/CancelledStartQueuedEvents"
+    assert ctx.machines() == []
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+    assert hsm.Get(ctx, sm, "count") == (0, True)
+
+    release_entry.set()
+    entered_entry.clear()
+    await hsm.Start(ctx, sm, "second")
+
+    assert instance.state() == "/CancelledStartQueuedEvents/idle"
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+    assert instance.entries == ["first", "second"]
+
+    await hsm.Stop(sm)
+
+
+def test_cancelled_start_discards_queued_startup_events():
+    asyncio.run(_cancelled_start_discards_queued_startup_events())
+
+
 async def _restart_preserves_context_registration() -> None:
     class RestartInstance(hsm.Instance):
         pass
