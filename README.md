@@ -185,6 +185,8 @@ Common built-ins:
 | `ErrorEvent` | Error event dispatched when behavior raises |
 | `AnyEvent` | Wildcard fallback event |
 
+Dispatch clones event metadata (`name`, `qualified_name`, `source`, `target`, `id`, `kind`, and `schema`) before processing, so callback mutations do not mutate the caller's `Event` or leak to sibling machines during `DispatchAll`, `DispatchTo`, or group dispatch. `Event.Data` is intentionally shared by reference; payload ownership belongs to the caller/application. Use immutable payloads or make an application-level copy when handlers must not share mutable data.
+
 ## Attributes
 
 Declare model attributes with `Attribute`. Read and write runtime values with `Get` and `Set`. `OnSet(name)` transitions fire when an attribute changes.
@@ -205,7 +207,7 @@ value, ok = hsm.Get(ctx, instance, "temperature")
 await hsm.Set(ctx, instance, "temperature", 72)
 ```
 
-Short names are accepted by `Get`, `Set`, `Attribute`, and `OnSet`. Snapshots use fully-qualified attribute names, for example `"/Thermostat/temperature"`.
+Short names are accepted by `Get`, `Set`, `Attribute`, and `OnSet`. Direct `Set` stores the provided value by reference. Group `Set` deep-copies the provided value once per member, so member handlers cannot mutate the caller's value or each other's stored value. Snapshots use fully-qualified attribute names, for example `"/Thermostat/temperature"`, and snapshot attribute values are deep-copied from runtime storage.
 
 ## Operations
 
@@ -335,6 +337,8 @@ await hsm.Stop(group)
 ```
 
 `DispatchAll(ctx, event)` dispatches to all started machines registered in the context. `DispatchTo(ctx, event, *patterns)` dispatches to matching machine IDs. Patterns use `Match` wildcard semantics.
+
+Group `Restart(data)` deep-copies `data` once per member before startup entry handlers receive it. Group `Call` and `Get` use the first member.
 
 ## Snapshots And Identity
 

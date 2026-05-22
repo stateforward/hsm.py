@@ -406,6 +406,70 @@ def test_broadcast_event_metadata_isolation_stress():
     asyncio.run(_broadcast_event_metadata_isolation_stress(machine_count=40, rounds=25))
 
 
+async def _event_data_payload_reference_contract_stress(machine_count: int, rounds: int) -> None:
+    class PayloadContractInstance(FuzzInstance):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+            self.payload_ids: list[int] = []
+
+    async def mutate_payload(ctx, inst: PayloadContractInstance, event: hsm.Event) -> None:
+        payload = event.Data
+        assert isinstance(payload, dict)
+        inst.payload_ids.append(id(payload))
+        payload["seen"].append(inst.index)
+        event.name = f"mutated-{inst.index}"
+        event.qualified_name = event.name
+
+    model = hsm.Define(
+        "EventDataReferenceContract",
+        hsm.Initial(hsm.Target("ready")),
+        hsm.State("ready", hsm.Transition(hsm.On("touch"), hsm.Effect(mutate_payload))),
+    )
+
+    ctx = hsm.Context()
+    instances = [PayloadContractInstance(index) for index in range(machine_count)]
+    for index, instance in enumerate(instances):
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"payload-contract-{index}"))
+
+    for round_index in range(rounds):
+        direct_payload: dict[str, list[int | str]] = {"seen": [f"direct-{round_index}"]}
+        direct_event = hsm.Event("touch", data=direct_payload)
+        await hsm.Dispatch(ctx, instances[0], direct_event)
+        assert direct_event.name == "touch"
+        assert direct_event.qualified_name == "touch"
+        assert direct_event.Data is direct_payload
+        assert direct_payload["seen"] == [f"direct-{round_index}", 0]
+        assert instances[0].payload_ids[-1] == id(direct_payload)
+
+        broadcast_payload: dict[str, list[int | str]] = {"seen": [f"broadcast-{round_index}"]}
+        broadcast_event = hsm.Event("touch", data=broadcast_payload)
+        await hsm.DispatchAll(ctx, broadcast_event)
+        assert broadcast_event.name == "touch"
+        assert broadcast_event.qualified_name == "touch"
+        assert broadcast_event.Data is broadcast_payload
+        assert broadcast_payload["seen"][0] == f"broadcast-{round_index}"
+        assert sorted(broadcast_payload["seen"][1:]) == list(range(machine_count))
+        assert all(instance.payload_ids[-1] == id(broadcast_payload) for instance in instances)
+
+        group_payload: dict[str, list[int | str]] = {"seen": [f"group-{round_index}"]}
+        group_event = hsm.Event("touch", data=group_payload)
+        await hsm.Dispatch(ctx, hsm.MakeGroup(*instances), group_event)
+        assert group_event.name == "touch"
+        assert group_event.qualified_name == "touch"
+        assert group_event.Data is group_payload
+        assert group_payload["seen"][0] == f"group-{round_index}"
+        assert sorted(group_payload["seen"][1:]) == list(range(machine_count))
+        assert all(instance.payload_ids[-1] == id(group_payload) for instance in instances)
+        assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
+
+    await hsm.Stop(hsm.MakeGroup(*instances))
+
+
+def test_event_data_payload_reference_contract_stress():
+    asyncio.run(_event_data_payload_reference_contract_stress(machine_count=30, rounds=20))
+
+
 async def _broadcast_self_stop_stress(machine_count: int, rounds: int) -> None:
     class BroadcastSelfStopInstance(FuzzInstance):
         def __init__(self) -> None:
