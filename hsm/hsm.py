@@ -69,6 +69,81 @@ async def _maybe_await(value: typing.Any) -> typing.Any:
     return value
 
 
+def _is_context_parameter(parameter: inspect.Parameter) -> bool:
+    if parameter.name in {"ctx", "context"}:
+        return True
+    annotation = parameter.annotation
+    return annotation is Context or annotation == "Context"
+
+
+def _is_instance_parameter(parameter: inspect.Parameter) -> bool:
+    if parameter.name in {"inst", "instance"}:
+        return True
+    annotation = parameter.annotation
+    if annotation is Instance or annotation == "Instance":
+        return True
+    return inspect.isclass(annotation) and issubclass(annotation, Instance)
+
+
+def _operation_argument_candidates(
+    callback: OperationImplementation,
+    ctx: "Context",
+    instance: "Instance",
+    args: tuple[typing.Any, ...],
+) -> list[tuple[typing.Any, ...]]:
+    base_candidates = [
+        (ctx, instance, *args),
+        (ctx, *args),
+        (instance, *args),
+        args,
+    ]
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return base_candidates
+    positional = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    if not positional:
+        return base_candidates
+    first = positional[0]
+    if _is_context_parameter(first):
+        return base_candidates
+    if _is_instance_parameter(first):
+        return [
+            (instance, *args),
+            (ctx, instance, *args),
+            args,
+            (ctx, *args),
+        ]
+    return base_candidates
+
+
+def _invoke_operation_callback(
+    callback: OperationImplementation,
+    ctx: "Context",
+    instance: "Instance",
+    args: tuple[typing.Any, ...],
+) -> typing.Any:
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return callback(*args)
+    for candidate in _operation_argument_candidates(callback, ctx, instance, args):
+        try:
+            signature.bind(*candidate)
+        except TypeError:
+            continue
+        return callback(*candidate)
+    return callback(*args)
+
+
 def _task_is_cancelling() -> bool:
     task = asyncio.current_task()
     return task is not None and task.cancelling() > 0
@@ -2200,14 +2275,6 @@ class HSM(Behavior[TInstance]):
             callback = getattr(self._instance, name, None)
         if callback is None:
             raise ValidationError(f'missing operation "{name}" for OnCall()')
-        result = callback
-        if inspect.ismethod(callback) or inspect.isfunction(callback):
-            signature = inspect.signature(callback)
-            parameters = list(signature.parameters.values())
-            if len(parameters) >= 2 and parameters[0].name == "ctx":
-                result = callback(self._runtime_context, self._instance, *args)
-            else:
-                result = callback(*args)
         event = Event(
             name=_oncall_event_name(name),
             qualified_name=_oncall_event_name(name),
@@ -2216,8 +2283,14 @@ class HSM(Behavior[TInstance]):
             schema=CallData,
         )
         self.model.set(event.qualified_name, event)
-        value = await _maybe_await(result)
         await self.dispatch(event)
+        result = _invoke_operation_callback(
+            callback,
+            self._runtime_context,
+            self._instance,
+            args,
+        )
+        value = await _maybe_await(result)
         return value
 
     def take_snapshot(self) -> Snapshot:

@@ -571,6 +571,108 @@ async def test_operation_oncall_and_call():
 
 
 @pytest.mark.asyncio
+async def test_operation_call_signature_variants_match_dsl_runtime():
+    class SignatureInstance(ParityInstance):
+        pass
+
+    instance = SignatureInstance()
+    calls: list[str] = []
+
+    async def ctx_inst(ctx: hsm.Context, inst: SignatureInstance, value: int) -> str:
+        assert isinstance(ctx, hsm.Context)
+        assert inst is instance
+        calls.append(f"ctx_inst:{value}")
+        return f"ctx_inst:{value}"
+
+    async def context_only(context: hsm.Context, value: int) -> str:
+        assert isinstance(context, hsm.Context)
+        calls.append(f"context_only:{value}")
+        return f"context_only:{value}"
+
+    async def inst_only(inst: SignatureInstance, value: int) -> str:
+        assert inst is instance
+        calls.append(f"inst_only:{value}")
+        return f"inst_only:{value}"
+
+    async def args_only(value: int) -> str:
+        calls.append(f"args_only:{value}")
+        return f"args_only:{value}"
+
+    async def record_call(ctx: hsm.Context, inst: SignatureInstance, event: hsm.Event) -> None:
+        assert isinstance(event.Data, hsm.CallData)
+        inst.log.append(event.Data.name)
+
+    model = hsm.Define(
+        "SignatureCallMachine",
+        hsm.Operation("ctx_inst", ctx_inst),
+        hsm.Operation("context_only", context_only),
+        hsm.Operation("inst_only", inst_only),
+        hsm.Operation("args_only", args_only),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.OnCall("ctx_inst"), hsm.Effect(record_call)),
+            hsm.Transition(hsm.OnCall("context_only"), hsm.Effect(record_call)),
+            hsm.Transition(hsm.OnCall("inst_only"), hsm.Effect(record_call)),
+            hsm.Transition(hsm.OnCall("args_only"), hsm.Effect(record_call)),
+        ),
+    )
+
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    assert await hsm.Call(ctx, instance, "ctx_inst", 1) == "ctx_inst:1"
+    assert await hsm.Call(ctx, instance, "context_only", 2) == "context_only:2"
+    assert await hsm.Call(ctx, instance, "inst_only", 3) == "inst_only:3"
+    assert await hsm.Call(ctx, instance, "args_only", 4) == "args_only:4"
+
+    assert calls == ["ctx_inst:1", "context_only:2", "inst_only:3", "args_only:4"]
+    assert instance.log == ["ctx_inst", "context_only", "inst_only", "args_only"]
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
+async def test_oncall_dispatches_before_operation_exception():
+    instance = ParityInstance()
+
+    async def fail(value: int) -> None:
+        raise RuntimeError(f"boom:{value}")
+
+    async def record_call(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+        assert isinstance(event.Data, hsm.CallData)
+        inst.log.append(f"oncall:{event.Data.args[0]}")
+
+    model = hsm.Define(
+        "FailingCallMachine",
+        hsm.Operation("fail", fail),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.OnCall("fail"),
+                hsm.Target("../called"),
+                hsm.Effect(record_call),
+            ),
+        ),
+        hsm.State("called"),
+    )
+
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    with pytest.raises(RuntimeError, match="boom:7"):
+        await hsm.Call(ctx, instance, "fail", 7)
+
+    assert instance.state() == "/FailingCallMachine/called"
+    assert instance.log == ["oncall:7"]
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
 async def test_observers_restart_and_shallow_history():
     instance = ParityInstance()
 
