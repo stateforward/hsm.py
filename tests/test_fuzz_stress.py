@@ -1427,7 +1427,12 @@ def test_cancelled_mutex_handoff_releases_lock():
 
 async def _group_event_mutations_preflight_members() -> None:
     class GroupPreflightInstance(hsm.Instance):
-        pass
+        def __init__(self):
+            super().__init__()
+            self.entries: list[object] = []
+
+    async def entry(ctx, inst: GroupPreflightInstance, event):
+        inst.entries.append(event.Data)
 
     model = hsm.Define(
         "GroupPreflight",
@@ -1435,6 +1440,7 @@ async def _group_event_mutations_preflight_members() -> None:
         hsm.Initial(hsm.Target("idle")),
         hsm.State(
             "idle",
+            hsm.Entry(entry),
             hsm.Transition(hsm.On("go"), hsm.Target("../done")),
             hsm.Transition(hsm.OnSet("flag"), hsm.Target("../changed")),
         ),
@@ -1458,6 +1464,7 @@ async def _group_event_mutations_preflight_members() -> None:
         for operation in (
             lambda group=group: hsm.Dispatch(ctx, group, hsm.Event("go")),
             lambda group=group: hsm.Set(ctx, group, "flag", True),
+            lambda group=group: hsm.Restart(group, "restarted"),
         ):
             try:
                 await operation()
@@ -1471,6 +1478,7 @@ async def _group_event_mutations_preflight_members() -> None:
             assert never_started.state() == ""
             assert hsm.Get(ctx, running, "flag") == (False, True)
             assert hsm.TakeSnapshot(ctx, running).QueueLen == 0
+            assert running.entries == [None]
 
     await hsm.Stop(running)
 
