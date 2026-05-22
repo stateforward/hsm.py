@@ -2168,8 +2168,9 @@ class Group:
     def _ensure_accepting_events(self) -> None:
         for instance in self.instances:
             machine = getattr(instance, "_Instance__hsm", None)
-            if isinstance(machine, HSM):
-                machine._ensure_accepting_events()
+            if not isinstance(machine, HSM):
+                raise ValidationError("missing hsm")
+            machine._ensure_accepting_events()
 
     async def dispatch(self, event: Event) -> None:
         self._ensure_accepting_events()

@@ -1445,27 +1445,32 @@ async def _group_event_mutations_preflight_members() -> None:
     ctx = hsm.Context()
     running = GroupPreflightInstance()
     stopped = GroupPreflightInstance()
+    never_started = GroupPreflightInstance()
     await hsm.Start(ctx, running, model)
     await hsm.Start(ctx, stopped, model)
     await hsm.Stop(stopped)
 
-    group = hsm.MakeGroup(running, stopped)
+    cases = (
+        (hsm.MakeGroup(running, stopped), "started HSM"),
+        (hsm.MakeGroup(running, never_started), "missing hsm"),
+    )
+    for group, expected_error in cases:
+        for operation in (
+            lambda group=group: hsm.Dispatch(ctx, group, hsm.Event("go")),
+            lambda group=group: hsm.Set(ctx, group, "flag", True),
+        ):
+            try:
+                await operation()
+            except hsm.ValidationError as error:
+                assert expected_error in str(error)
+            else:
+                raise AssertionError("group event mutation should fail before partial fan-out")
 
-    for operation in (
-        lambda: hsm.Dispatch(ctx, group, hsm.Event("go")),
-        lambda: hsm.Set(ctx, group, "flag", True),
-    ):
-        try:
-            await operation()
-        except hsm.ValidationError as error:
-            assert "started HSM" in str(error)
-        else:
-            raise AssertionError("group event mutation should fail before partial fan-out")
-
-        assert running.state() == "/GroupPreflight/idle"
-        assert stopped.state() == "/GroupPreflight"
-        assert hsm.Get(ctx, running, "flag") == (False, True)
-        assert hsm.TakeSnapshot(ctx, running).QueueLen == 0
+            assert running.state() == "/GroupPreflight/idle"
+            assert stopped.state() == "/GroupPreflight"
+            assert never_started.state() == ""
+            assert hsm.Get(ctx, running, "flag") == (False, True)
+            assert hsm.TakeSnapshot(ctx, running).QueueLen == 0
 
     await hsm.Stop(running)
 
