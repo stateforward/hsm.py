@@ -621,6 +621,81 @@ def test_group_set_attribute_value_isolation_stress():
     asyncio.run(_group_set_attribute_value_isolation_stress(rounds=50))
 
 
+async def _cancelled_group_set_awaiter_does_not_cancel_onset_processing() -> None:
+    class GroupSetCancelInstance(FuzzInstance):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+            self.effects = 0
+            self.values: list[object] = []
+
+    entered_effects: asyncio.Queue[int] = asyncio.Queue()
+    release_effect = asyncio.Event()
+
+    async def slow_onset_effect(ctx, inst: GroupSetCancelInstance, event: hsm.Event) -> None:
+        change = event.Data
+        assert isinstance(change, hsm.AttributeChange)
+        inst.effects += 1
+        inst.values.append(change.value)
+        await entered_effects.put(inst.index)
+        await release_effect.wait()
+
+    model = hsm.Define(
+        "CancelledGroupSetAwaiter",
+        hsm.Attribute("payload", None),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.OnSet("payload"),
+                hsm.Target("../changed"),
+                hsm.Effect(slow_onset_effect),
+            ),
+        ),
+        hsm.State("changed"),
+    )
+    ctx = hsm.Context()
+    instances = [GroupSetCancelInstance(index) for index in range(12)]
+    for index, instance in enumerate(instances):
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-set-cancel-{index}"))
+
+    group = hsm.MakeGroup(*instances)
+    set_task = asyncio.create_task(hsm.Set(ctx, group, "payload", {"round": 1}))
+    seen = {
+        await asyncio.wait_for(entered_effects.get(), timeout=1)
+        for _ in range(len(instances))
+    }
+    assert seen == set(range(len(instances)))
+
+    set_task.cancel()
+    try:
+        await set_task
+    except asyncio.CancelledError:
+        pass
+
+    changed_waiters = [
+        hsm.AfterEntry(ctx, instance, "/CancelledGroupSetAwaiter/changed")
+        for instance in instances
+    ]
+    release_effect.set()
+    await asyncio.gather(*(
+        asyncio.wait_for(waiter, timeout=1)
+        for waiter in changed_waiters
+    ))
+
+    assert all(instance.state() == "/CancelledGroupSetAwaiter/changed" for instance in instances)
+    assert all(instance.effects == 1 for instance in instances)
+    assert all(instance.values == [{"round": 1}] for instance in instances)
+    assert all(hsm.Get(ctx, instance, "payload") == ({"round": 1}, True) for instance in instances)
+    assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
+
+    await hsm.Stop(group)
+
+
+def test_cancelled_group_set_awaiter_does_not_cancel_onset_processing():
+    asyncio.run(_cancelled_group_set_awaiter_does_not_cancel_onset_processing())
+
+
 @given(st.lists(st.integers(min_value=-5, max_value=5), min_size=0, max_size=80))
 @settings(max_examples=80, deadline=None, derandomize=True)
 def test_attribute_set_event_fuzz(values: list[int]):
