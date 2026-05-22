@@ -1403,6 +1403,65 @@ def test_cancelled_dispatch_awaiter_does_not_cancel_processing_task():
     asyncio.run(_cancelled_dispatch_awaiter_does_not_cancel_processing_task())
 
 
+async def _cancelled_broadcast_awaiter_does_not_cancel_member_processing() -> None:
+    class BroadcastCancelInstance(FuzzInstance):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+            self.effects = 0
+
+    entered_effects: asyncio.Queue[int] = asyncio.Queue()
+    release_effect = asyncio.Event()
+
+    async def slow_effect(ctx, inst: BroadcastCancelInstance, event: hsm.Event) -> None:
+        inst.effects += 1
+        await entered_effects.put(inst.index)
+        await release_effect.wait()
+
+    model = hsm.Define(
+        "CancelledBroadcastAwaiter",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect)),
+        ),
+        hsm.State("done"),
+    )
+    ctx = hsm.Context()
+    instances = [BroadcastCancelInstance(index) for index in range(12)]
+    for index, instance in enumerate(instances):
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"broadcast-cancel-{index}"))
+
+    broadcast_task = asyncio.create_task(hsm.DispatchAll(ctx, hsm.Event("go")))
+    seen = {
+        await asyncio.wait_for(entered_effects.get(), timeout=1)
+        for _ in range(len(instances))
+    }
+    assert seen == set(range(len(instances)))
+
+    broadcast_task.cancel()
+    try:
+        await broadcast_task
+    except asyncio.CancelledError:
+        pass
+
+    release_effect.set()
+    await asyncio.gather(*(
+        asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/CancelledBroadcastAwaiter/done"), timeout=1)
+        for instance in instances
+    ))
+
+    assert all(instance.state() == "/CancelledBroadcastAwaiter/done" for instance in instances)
+    assert all(instance.effects == 1 for instance in instances)
+    assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
+
+    await hsm.Stop(hsm.MakeGroup(*instances))
+
+
+def test_cancelled_broadcast_awaiter_does_not_cancel_member_processing():
+    asyncio.run(_cancelled_broadcast_awaiter_does_not_cancel_member_processing())
+
+
 async def _awaited_nested_dispatch_from_effect_does_not_self_await() -> None:
     class NestedDispatchInstance(hsm.Instance):
         def __init__(self):
