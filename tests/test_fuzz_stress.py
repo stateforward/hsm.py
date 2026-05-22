@@ -2086,8 +2086,16 @@ async def _completed_activity_removes_active_record_without_exit() -> None:
     active_tasks = [active.task for active in sm._active.values()]
     assert len(active_tasks) == 1
 
+    executed_state = hsm.AfterExecuted(ctx, sm, "/CompletedActivityCleanup/active")
+    executed_behavior = hsm.AfterExecuted(
+        ctx,
+        sm,
+        "/CompletedActivityCleanup/active/activity/one_shot_activity/0",
+    )
     release_activity.set()
     await asyncio.wait_for(active_tasks[0], timeout=1)
+    await asyncio.wait_for(executed_state, timeout=1)
+    await asyncio.wait_for(executed_behavior, timeout=1)
 
     assert instance.state() == "/CompletedActivityCleanup/active"
     assert sm._active == {}
@@ -2102,6 +2110,42 @@ async def _completed_activity_removes_active_record_without_exit() -> None:
 
 def test_completed_activity_removes_active_record_without_exit():
     asyncio.run(_completed_activity_removes_active_record_without_exit())
+
+
+async def _after_executed_closes_when_activity_is_cancelled_on_stop() -> None:
+    class StoppedActivityInstance(hsm.Instance):
+        pass
+
+    activity_started = asyncio.Event()
+    activity_cancelled = asyncio.Event()
+
+    async def cancellable_activity(ctx, inst: StoppedActivityInstance, event):
+        activity_started.set()
+        try:
+            await ctx.wait_done()
+        finally:
+            activity_cancelled.set()
+
+    model = hsm.Define(
+        "StoppedActivityExecuted",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Activity(cancellable_activity)),
+    )
+    instance = StoppedActivityInstance()
+    ctx = hsm.Context()
+    sm = await hsm.Started(ctx, instance, model)
+    await asyncio.wait_for(activity_started.wait(), timeout=1)
+
+    executed_state = hsm.AfterExecuted(ctx, sm, "/StoppedActivityExecuted/active")
+    await hsm.Stop(sm)
+
+    await asyncio.wait_for(activity_cancelled.wait(), timeout=1)
+    await asyncio.wait_for(executed_state, timeout=1)
+    assert sm._active == {}
+
+
+def test_after_executed_closes_when_activity_is_cancelled_on_stop():
+    asyncio.run(_after_executed_closes_when_activity_is_cancelled_on_stop())
 
 
 async def _cancelled_start_cleans_up_registration_and_activities() -> None:

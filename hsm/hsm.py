@@ -1872,10 +1872,6 @@ class HSM(Behavior[TInstance]):
                 async def run_activity() -> None:
                     try:
                         await _maybe_await(behavior.operation(activity_ctx, self._instance, event))
-                        self._after._notify(
-                            self._after.executed,
-                            lambda expected: expected == behavior.owner(),
-                        )
                     except asyncio.CancelledError as error:
                         was_done = activity_ctx.is_done()
                         activity_ctx.cancel()
@@ -1888,6 +1884,7 @@ class HSM(Behavior[TInstance]):
                         activity_ctx.cancel()
                         self._dispatch_error(error)
                     finally:
+                        self._notify_executed(behavior)
                         if self._active.get(behavior.qualified_name) is active_behavior:
                             self._active.pop(behavior.qualified_name, None)
 
@@ -1896,6 +1893,7 @@ class HSM(Behavior[TInstance]):
                 self._active[behavior.qualified_name] = active_behavior
                 return
             await _maybe_await(behavior.operation(self._runtime_context, self._instance, event))
+            self._notify_executed(behavior)
         except asyncio.CancelledError as error:
             if _task_is_cancelling():
                 raise
@@ -1914,6 +1912,20 @@ class HSM(Behavior[TInstance]):
             self._dispatch_task(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
         except ValidationError:
             return
+
+    def _notify_executed(self, behavior: BehaviorNode[TInstance]) -> None:
+        names = {behavior.qualified_name}
+        owner = behavior.owner()
+        if owner:
+            names.add(owner)
+        current = owner
+        while current not in ("", ".", "/"):
+            element = self.model.get(current, StateNode)
+            if element is not None:
+                names.add(current)
+                break
+            current = posixpath.dirname(current)
+        self._after._notify(self._after.executed, lambda expected: expected in names)
 
     async def _terminate(self, behavior: BehaviorNode[TInstance]) -> None:
         active = self._active.pop(behavior.qualified_name, None)
