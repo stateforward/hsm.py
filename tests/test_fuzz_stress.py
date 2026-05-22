@@ -1230,6 +1230,38 @@ def test_stopped_hsm_start_resets_runtime_state():
     asyncio.run(_stopped_hsm_start_resets_runtime_state())
 
 
+async def _starting_new_hsm_in_new_context_clears_old_context_registration() -> None:
+    class MovedContextInstance(hsm.Instance):
+        pass
+
+    model = hsm.Define(
+        "MovedContext",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+    instance = MovedContextInstance()
+    sm = hsm.New(instance, model)
+    old_context = sm.context()
+    new_context = hsm.Context()
+
+    assert old_context.machines() == [sm]
+    assert new_context.machines() == []
+
+    await hsm.Start(new_context, sm)
+
+    assert old_context.machines() == []
+    assert new_context.machines() == [sm]
+
+    await hsm.Stop(sm)
+
+    assert old_context.machines() == []
+    assert new_context.machines() == []
+
+
+def test_starting_new_hsm_in_new_context_clears_old_context_registration():
+    asyncio.run(_starting_new_hsm_in_new_context_clears_old_context_registration())
+
+
 async def _stopped_machine_rejects_event_mutating_operations() -> None:
     class StoppedInstance(hsm.Instance):
         def __init__(self):

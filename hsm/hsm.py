@@ -2490,7 +2490,10 @@ async def Start(
         if sm._started:
             raise ValidationError("Start() called on an already started HSM")
         start_data = model
-        sm._root_context = ctx or Context()
+        root_context = ctx or Context()
+        if sm._root_context is not root_context:
+            sm._root_context.unregister(sm)
+        sm._root_context = root_context
         sm._reset_for_restart()
     else:
         if not isinstance(model, Model):
