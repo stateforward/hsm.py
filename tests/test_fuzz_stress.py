@@ -2482,3 +2482,164 @@ async def _stop_resets_dynamic_runtime_state() -> None:
 
 def test_stop_resets_dynamic_runtime_state():
     asyncio.run(_stop_resets_dynamic_runtime_state())
+
+
+@st.composite
+def named_operation_guard_specs(draw):
+    guard_count = draw(st.integers(min_value=1, max_value=8))
+    guards = tuple(draw(st.lists(st.booleans(), min_size=guard_count, max_size=guard_count)))
+    return guards
+
+
+async def _drive_named_operation_guard_spec(guards: tuple[bool, ...]) -> None:
+    class NamedOperationGuardInstance(FuzzInstance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.trace: list[str] = []
+
+    instance = NamedOperationGuardInstance()
+    operations = []
+    transitions = []
+    states = [hsm.State("s0")]
+
+    for index, guard_value in enumerate(guards):
+        guard_name = f"guard_{index}"
+        effect_name = f"effect_{index}"
+        target_name = f"s{index + 1}"
+
+        async def guard(ctx, inst: NamedOperationGuardInstance, event, *, value=guard_value, name=guard_name):
+            assert isinstance(ctx, hsm.Context)
+            assert event.Name == "go"
+            inst.trace.append(name)
+            return value
+
+        async def effect(ctx, inst: NamedOperationGuardInstance, event, *, name=effect_name):
+            assert isinstance(ctx, hsm.Context)
+            assert event.Name == "go"
+            inst.trace.append(name)
+
+        operations.append(hsm.operation(guard_name, guard))
+        operations.append(hsm.operation(effect_name, effect))
+        transitions.append(
+            hsm.transition(
+                hsm.on("go"),
+                hsm.guard(guard_name),
+                hsm.effect(effect_name),
+                hsm.target(f"../{target_name}"),
+            )
+        )
+        states.append(hsm.state(target_name))
+
+    model = hsm.define(
+        "NamedOperationGuardFuzz",
+        *operations,
+        hsm.initial(hsm.target("s0")),
+        hsm.state("s0", *transitions),
+        *states[1:],
+    )
+
+    ctx = hsm.context()
+    await hsm.start(ctx, instance, model)
+    await hsm.dispatch(ctx, instance, hsm.event("go"))
+
+    try:
+        accepted_index = guards.index(True)
+    except ValueError:
+        accepted_index = -1
+
+    if accepted_index == -1:
+        assert instance.state() == "/NamedOperationGuardFuzz/s0"
+        assert instance.trace == [f"guard_{index}" for index in range(len(guards))]
+    else:
+        assert instance.state() == f"/NamedOperationGuardFuzz/s{accepted_index + 1}"
+        assert instance.trace == [
+            *(f"guard_{index}" for index in range(accepted_index + 1)),
+            f"effect_{accepted_index}",
+        ]
+
+    assert hsm.take_snapshot(ctx, instance).queue_len == 0
+    await hsm.stop(instance)
+
+
+@given(named_operation_guard_specs())
+@settings(max_examples=80, deadline=None, derandomize=True)
+def test_named_operation_guard_and_effect_fuzz(guards: tuple[bool, ...]):
+    asyncio.run(_drive_named_operation_guard_spec(guards))
+
+
+async def _named_operation_activity_and_error_stress(rounds: int) -> None:
+    class NamedOperationRuntimeInstance(FuzzInstance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = 0
+            self.cancelled = 0
+            self.errors: list[str] = []
+            self.entries = 0
+            self.releases: asyncio.Queue[asyncio.Event] = asyncio.Queue()
+
+        async def run_activity(self, event) -> None:
+            self.started += 1
+            release = asyncio.Event()
+            await self.releases.put(release)
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                self.cancelled += 1
+                raise
+
+    async def fail_effect(ctx, inst: NamedOperationRuntimeInstance, event) -> None:
+        raise RuntimeError(f"named failure {event.Name}")
+
+    async def record_error(ctx, inst: NamedOperationRuntimeInstance, event) -> None:
+        inst.errors.append(str(event.Data))
+
+    async def enter_error(ctx, inst: NamedOperationRuntimeInstance, event) -> None:
+        inst.entries += 1
+
+    model = hsm.define(
+        "NamedOperationRuntimeStress",
+        hsm.operation("run_activity"),
+        hsm.operation("fail_effect", fail_effect),
+        hsm.operation("record_error", record_error),
+        hsm.operation("enter_error", enter_error),
+        hsm.initial(hsm.target("active")),
+        hsm.state(
+            "active",
+            hsm.activity("run_activity"),
+            hsm.transition(hsm.on("fail"), hsm.effect("fail_effect")),
+            hsm.transition(
+                hsm.on(hsm.ErrorEvent),
+                hsm.target("../error"),
+                hsm.effect("record_error"),
+            ),
+        ),
+        hsm.state("error", hsm.entry("enter_error"), hsm.transition(hsm.on("reset"), hsm.target("../active"))),
+    )
+
+    ctx = hsm.context()
+    instance = NamedOperationRuntimeInstance()
+    await hsm.start(ctx, instance, model)
+
+    for index in range(rounds):
+        release = await asyncio.wait_for(instance.releases.get(), timeout=1)
+        assert hsm.take_snapshot(ctx, instance).queue_len == 0
+        entered_error = hsm.AfterEntry(ctx, instance, "/NamedOperationRuntimeStress/error")
+        await hsm.dispatch(ctx, instance, hsm.event("fail"))
+        await asyncio.wait_for(entered_error, timeout=1)
+        assert instance.state() == "/NamedOperationRuntimeStress/error"
+        assert instance.errors[-1] == "named failure fail"
+        assert instance.entries == index + 1
+        assert instance.cancelled == index + 1
+        assert release.is_set() is False
+        assert hsm.take_snapshot(ctx, instance).queue_len == 0
+        await hsm.dispatch(ctx, instance, hsm.event("reset"))
+        assert instance.state() == "/NamedOperationRuntimeStress/active"
+
+    await hsm.stop(instance)
+    assert instance.started == rounds + 1
+    assert instance.cancelled == rounds + 1
+    assert hsm.take_snapshot(ctx, instance).queue_len == 0
+
+
+def test_named_operation_activity_and_error_stress():
+    asyncio.run(_named_operation_activity_and_error_stress(rounds=50))
