@@ -508,6 +508,62 @@ def test_concurrent_set_and_call_stress():
     asyncio.run(_set_call_concurrency_stress(rounds=200))
 
 
+async def _group_call_first_member_semantics_stress(rounds: int) -> None:
+    class GroupCallInstance(hsm.Instance):
+        def __init__(self, label: str) -> None:
+            super().__init__()
+            self.label = label
+            self.calls: list[int] = []
+            self.effects = 0
+
+    async def identify(ctx, inst: GroupCallInstance, value: int) -> tuple[str, int]:
+        inst.calls.append(value)
+        return inst.label, value
+
+    async def record_call(ctx, inst: GroupCallInstance, event: hsm.Event) -> None:
+        assert isinstance(event.Data, hsm.CallData)
+        inst.effects += 1
+
+    model = hsm.Define(
+        "GroupCallStress",
+        hsm.Operation("identify", identify),
+        hsm.Initial(hsm.Target("ready")),
+        hsm.State("ready", hsm.Transition(hsm.OnCall("identify"), hsm.Effect(record_call))),
+    )
+
+    ctx = hsm.Context()
+    first = GroupCallInstance("first")
+    stopped_second = GroupCallInstance("second")
+    never_started = GroupCallInstance("never")
+    await hsm.Start(ctx, first, model)
+    await hsm.Start(ctx, stopped_second, model)
+    await hsm.Stop(stopped_second)
+
+    group = hsm.MakeGroup(first, hsm.MakeGroup(stopped_second, never_started))
+    for index in range(rounds):
+        assert await hsm.Call(ctx, group, "identify", index) == ("first", index)
+        assert first.calls == list(range(index + 1))
+        assert stopped_second.calls == []
+        assert never_started.calls == []
+        assert first.effects == index + 1
+        assert stopped_second.effects == 0
+        assert never_started.effects == 0
+        assert hsm.TakeSnapshot(ctx, first).QueueLen == 0
+
+    try:
+        await hsm.Call(ctx, hsm.MakeGroup(), "identify", 0)
+    except hsm.ValidationError as error:
+        assert "missing hsm" in str(error)
+    else:
+        raise AssertionError("Call() on an empty group should fail")
+
+    await hsm.Stop(first)
+
+
+def test_group_call_first_member_semantics_stress():
+    asyncio.run(_group_call_first_member_semantics_stress(rounds=100))
+
+
 async def _cancelled_call_awaiter_does_not_cancel_oncall_processing() -> None:
     class CancelledCallInstance(hsm.Instance):
         def __init__(self) -> None:
