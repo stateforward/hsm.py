@@ -2075,9 +2075,16 @@ class HSM(Behavior[TInstance]):
         self._active.clear()
         self._after._cancel_all()
         self._runtime_context.cancel()
+        self._runtime_context = Context()
         self._queue = Queue()
+        self._attributes = _default_attribute_values(self.model)
+        self._history_shallow.clear()
+        self._history_deep.clear()
         self._state = self.model
         self._started = False
+        self._stop_requested = False
+        self._restart_requested = None
+        self._awaitable = _future_done()
         self._root_context.unregister(self)
 
     async def stop(self) -> None:

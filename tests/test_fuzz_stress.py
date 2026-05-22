@@ -1755,6 +1755,7 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
             await hsm.Stop(sm)
             expected_context = None
             expected_state = "/LifecycleScript"
+            expected_flag = 0
         elif action == "go":
             if sm._started:
                 await hsm.Dispatch(sm.context(), sm, hsm.Event("go"))
@@ -2302,3 +2303,59 @@ async def _history_reentry_stress(rounds: int) -> None:
 
 def test_shallow_and_deep_history_reentry_stress():
     asyncio.run(_history_reentry_stress(rounds=50))
+
+
+async def _stop_resets_dynamic_runtime_state() -> None:
+    instance = FuzzInstance()
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "StopReset",
+        hsm.Attribute("count", 0),
+        hsm.Initial(hsm.Target("parent")),
+        hsm.State(
+            "parent",
+            hsm.Initial(hsm.Target("a")),
+            hsm.ShallowHistory("shallow", hsm.Transition(hsm.Target("a"))),
+            hsm.DeepHistory("deep", hsm.Transition(hsm.Target("a"))),
+            hsm.State(
+                "a",
+                hsm.Initial(hsm.Target("a1")),
+                hsm.State("a1", hsm.Transition(hsm.On("next"), hsm.Target("../a2"))),
+                hsm.State("a2", hsm.Transition(hsm.On("leave"), hsm.Target("../../../outside"))),
+            ),
+        ),
+        hsm.State(
+            "outside",
+            hsm.Transition(hsm.On("shallow"), hsm.Target("../parent/shallow")),
+            hsm.Transition(hsm.On("deep"), hsm.Target("../parent/deep")),
+        ),
+    )
+    sm = await hsm.Started(ctx, instance, model)
+
+    await hsm.Set(ctx, sm, "count", 7)
+    await hsm.Dispatch(ctx, sm, hsm.Event("next"))
+    await hsm.Dispatch(ctx, sm, hsm.Event("leave"))
+    await hsm.Dispatch(ctx, sm, hsm.Event("deep"))
+
+    assert instance.state() == "/StopReset/parent/a/a2"
+    assert hsm.Get(ctx, sm, "count") == (7, True)
+    assert sm._history_shallow
+    assert sm._history_deep
+
+    await hsm.Stop(sm)
+
+    snapshot = hsm.TakeSnapshot(ctx, sm)
+    assert snapshot.State == "/StopReset"
+    assert snapshot.QueueLen == 0
+    assert snapshot.Attributes == {"/StopReset/count": 0}
+    assert hsm.Get(ctx, sm, "count") == (0, True)
+    assert sm._active == {}
+    assert sm._history_shallow == {}
+    assert sm._history_deep == {}
+    assert sm._runtime_context.done is False
+    assert sm._stop_requested is False
+    assert sm._restart_requested is None
+
+
+def test_stop_resets_dynamic_runtime_state():
+    asyncio.run(_stop_resets_dynamic_runtime_state())
