@@ -1309,6 +1309,41 @@ def test_cancelled_observer_waiters_do_not_accumulate():
     asyncio.run(_cancelled_observer_waiters_do_not_accumulate(rounds=100))
 
 
+async def _stop_cancels_pending_observer_waiters() -> None:
+    class ObserverStopInstance(hsm.Instance):
+        pass
+
+    model = hsm.Define(
+        "ObserverStop",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+    instance = ObserverStopInstance()
+    ctx = hsm.Context()
+    sm = await hsm.Start(ctx, instance, model)
+    futures = [
+        hsm.AfterEntry(ctx, instance, "/ObserverStop/missing"),
+        hsm.AfterExit(ctx, instance, "/ObserverStop/missing"),
+        hsm.AfterExecuted(ctx, instance, "/ObserverStop/missing"),
+        hsm.AfterDispatch(ctx, instance, hsm.Event("missing")),
+        hsm.AfterProcess(ctx, instance, hsm.Event("missing")),
+    ]
+
+    await hsm.Stop(instance)
+    await asyncio.sleep(0)
+
+    assert all(future.cancelled() for future in futures)
+    assert sm._after.entry == []
+    assert sm._after.exit == []
+    assert sm._after.executed == []
+    assert sm._after.dispatch == []
+    assert sm._after.process == []
+
+
+def test_stop_cancels_pending_observer_waiters():
+    asyncio.run(_stop_cancels_pending_observer_waiters())
+
+
 @given(
     st.lists(
         st.sampled_from(

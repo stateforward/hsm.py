@@ -1432,6 +1432,13 @@ class _AfterWaiters:
         self.exit: list[tuple[str, asyncio.Future[None]]] = []
         self.executed: list[tuple[str, asyncio.Future[None]]] = []
 
+    def _cancel_all(self) -> None:
+        for waiters in (self.dispatch, self.process, self.entry, self.exit, self.executed):
+            for _, future in waiters:
+                if not future.done():
+                    future.cancel()
+            waiters.clear()
+
     def _notify(
         self,
         waiters: list[tuple[typing.Any, asyncio.Future[None]]],
@@ -1677,6 +1684,7 @@ class HSM(Behavior[TInstance]):
                 continue
             active.task.cancel()
         self._active.clear()
+        self._after._cancel_all()
         self._runtime_context.cancel()
         self._state = self.model
         self._started = False
@@ -1979,6 +1987,7 @@ class HSM(Behavior[TInstance]):
         finally:
             self._stopping = False
         self._active.clear()
+        self._after._cancel_all()
         self._runtime_context.cancel()
         self._state = self.model
         self._started = False
