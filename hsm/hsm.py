@@ -416,12 +416,61 @@ clock = Clock
 default_clock = DefaultClock
 
 
-@dataclass
+@dataclass(init=False)
 class Config:
     ID: str = ""
     Name: str = ""
     Data: typing.Any = None
     Clock: Clock | None = None
+
+    def __init__(
+        self,
+        ID: str = "",
+        Name: str = "",
+        Data: typing.Any = None,
+        Clock: Clock | None = None,
+        *,
+        id: str | None = None,
+        name: str | None = None,
+        data: typing.Any = None,
+        clock: Clock | None = None,
+    ) -> None:
+        self.ID = ID if id is None else id
+        self.Name = Name if name is None else name
+        self.Data = Data if data is None else data
+        self.Clock = Clock if clock is None else clock
+
+    @property
+    def id(self) -> str:
+        return self.ID
+
+    @id.setter
+    def id(self, value: str) -> None:
+        self.ID = value
+
+    @property
+    def name(self) -> str:
+        return self.Name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self.Name = value
+
+    @property
+    def data(self) -> typing.Any:
+        return self.Data
+
+    @data.setter
+    def data(self, value: typing.Any) -> None:
+        self.Data = value
+
+    @property
+    def clock(self) -> Clock | None:
+        return self.Clock
+
+    @clock.setter
+    def clock(self, value: Clock | None) -> None:
+        self.Clock = value
 
 
 config = Config

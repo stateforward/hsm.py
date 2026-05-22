@@ -166,6 +166,35 @@ def test_snake_case_dsl_values_are_available():
         assert alias_name in hsm.__all__
 
 
+def test_config_supports_snake_case_fields():
+    clock = hsm.Clock()
+    config = hsm.Config(
+        id="machine-1",
+        name="/Alias",
+        data={"boot": True},
+        clock=clock,
+    )
+
+    assert config.ID == "machine-1"
+    assert config.Name == "/Alias"
+    assert config.Data == {"boot": True}
+    assert config.Clock is clock
+    assert config.id == "machine-1"
+    assert config.name == "/Alias"
+    assert config.data == {"boot": True}
+    assert config.clock is clock
+
+    config.id = "machine-2"
+    config.name = "/Renamed"
+    config.data = {"boot": False}
+    config.clock = None
+
+    assert config.ID == "machine-2"
+    assert config.Name == "/Renamed"
+    assert config.Data == {"boot": False}
+    assert config.Clock is None
+
+
 @pytest.mark.asyncio
 async def test_snake_case_dsl_aliases_build_and_run_model():
     instance = ParityInstance()
@@ -335,7 +364,7 @@ async def test_snapshot_identity_config_and_event_data_helpers():
         ctx,
         instance,
         model,
-        hsm.Config(ID="alpha", Name="/ConfiguredAlias", Data="boot"),
+        hsm.Config(id="alpha", name="/ConfiguredAlias", data="boot"),
     )
 
     event = hsm.Event(name="go").WithDataAndID({"value": 1}, "event-1")
