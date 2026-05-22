@@ -2626,15 +2626,39 @@ def OnCall(name: str) -> PartialOnCall:
     return PartialOnCall(qualified_name=name)
 
 
-def After(duration: Duration[TInstance]) -> PartialAfter[TInstance]:
+def _duration_attribute(name: str) -> Duration[typing.Any]:
+    async def duration(ctx: Context, instance: Instance, event: Event) -> timedelta:
+        value, _ = Get(ctx, instance, name)
+        return typing.cast(timedelta, value)
+
+    duration.__name__ = f"attribute_{name}"
+    return duration
+
+
+def _timepoint_attribute(name: str) -> Timepoint[typing.Any]:
+    async def timepoint(ctx: Context, instance: Instance, event: Event) -> datetime:
+        value, _ = Get(ctx, instance, name)
+        return typing.cast(datetime, value)
+
+    timepoint.__name__ = f"attribute_{name}"
+    return timepoint
+
+
+def After(duration: str | Duration[TInstance]) -> PartialAfter[TInstance]:
+    if isinstance(duration, str):
+        return PartialAfter(duration=_duration_attribute(duration), repeating=False)
     return PartialAfter(duration=duration, repeating=False)
 
 
-def At(timepoint: Timepoint[TInstance]) -> PartialAfter[TInstance]:
+def At(timepoint: str | Timepoint[TInstance]) -> PartialAfter[TInstance]:
+    if isinstance(timepoint, str):
+        return PartialAfter(timepoint=_timepoint_attribute(timepoint), repeating=False)
     return PartialAfter(timepoint=timepoint, repeating=False)
 
 
-def Every(duration: Duration[TInstance]) -> PartialAfter[TInstance]:
+def Every(duration: str | Duration[TInstance]) -> PartialAfter[TInstance]:
+    if isinstance(duration, str):
+        return PartialAfter(duration=_duration_attribute(duration), repeating=True)
     return PartialAfter(duration=duration, repeating=True)
 
 

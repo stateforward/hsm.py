@@ -567,6 +567,100 @@ async def test_config_clock_drives_at_transition():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("timer_factory", "attribute_value"), [
+    (hsm.After, timedelta(seconds=3)),
+    (hsm.Every, timedelta(seconds=4)),
+])
+async def test_attribute_duration_drives_after_and_every_transitions(timer_factory, attribute_value):
+    instance = ParityInstance()
+    sleeps: list[tuple[object, asyncio.Future[None]]] = []
+
+    async def manual_sleep(duration):
+        future = asyncio.get_running_loop().create_future()
+        sleeps.append((duration, future))
+        await future
+
+    model = hsm.Define(
+        "AttributeDurationMachine",
+        hsm.Attribute("delay", attribute_value),
+        hsm.Initial(hsm.Target("waiting")),
+        hsm.State(
+            "waiting",
+            hsm.Transition(
+                timer_factory("delay"),
+                hsm.Target("../done"),
+            ),
+        ),
+        hsm.State("done"),
+    )
+
+    ctx = hsm.Context()
+    await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
+
+    for _ in range(10):
+        if sleeps:
+            break
+        await asyncio.sleep(0)
+
+    assert len(sleeps) == 1
+    assert sleeps[0][0] == attribute_value
+    assert instance.state() == "/AttributeDurationMachine/waiting"
+
+    entered_done = hsm.AfterEntry(ctx, instance, "/AttributeDurationMachine/done")
+    sleeps[0][1].set_result(None)
+    await entered_done
+    assert instance.state() == "/AttributeDurationMachine/done"
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
+async def test_attribute_timepoint_drives_at_transition():
+    instance = ParityInstance()
+    sleeps: list[tuple[object, asyncio.Future[None]]] = []
+
+    async def manual_sleep(duration):
+        future = asyncio.get_running_loop().create_future()
+        sleeps.append((duration, future))
+        await future
+
+    deadline = datetime.now() + timedelta(hours=1)
+
+    model = hsm.Define(
+        "AttributeTimepointMachine",
+        hsm.Attribute("deadline", deadline),
+        hsm.Initial(hsm.Target("waiting")),
+        hsm.State(
+            "waiting",
+            hsm.Transition(
+                hsm.At("deadline"),
+                hsm.Target("../done"),
+            ),
+        ),
+        hsm.State("done"),
+    )
+
+    ctx = hsm.Context()
+    await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
+
+    for _ in range(10):
+        if sleeps:
+            break
+        await asyncio.sleep(0)
+
+    assert len(sleeps) == 1
+    assert timedelta(minutes=59) < sleeps[0][0] <= timedelta(hours=1)
+    assert instance.state() == "/AttributeTimepointMachine/waiting"
+
+    entered_done = hsm.AfterEntry(ctx, instance, "/AttributeTimepointMachine/done")
+    sleeps[0][1].set_result(None)
+    await entered_done
+    assert instance.state() == "/AttributeTimepointMachine/done"
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
 async def test_operation_oncall_and_call():
     instance = ParityInstance()
 
