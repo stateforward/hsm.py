@@ -1,6 +1,7 @@
 import asyncio
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -108,6 +109,27 @@ def test_public_pascal_case_exports_have_snake_case_aliases():
         if not name[:1].isupper():
             continue
         if name == "HSM":
+            continue
+        alias = _snake_case(name)
+        if not hasattr(hsm, alias):
+            missing.append((name, alias))
+            continue
+        assert getattr(hsm, alias) is getattr(hsm, name)
+        assert alias in hsm.__all__
+
+    assert missing == []
+
+
+def test_dsl_documented_hsm_apis_have_snake_case_aliases():
+    dsl_path = Path(__file__).resolve().parents[2] / "dsl.md"
+    documented = set(
+        re.findall(r"^### `hsm\.([A-Z][A-Za-z0-9_]*)", dsl_path.read_text(), re.MULTILINE)
+    )
+
+    missing = []
+    for name in sorted(documented):
+        if not hasattr(hsm, name):
+            missing.append((name, "<canonical>"))
             continue
         alias = _snake_case(name)
         if not hasattr(hsm, alias):

@@ -6,6 +6,7 @@ import copy
 import fnmatch
 import inspect
 import posixpath
+import re
 import sys
 import threading
 import typing
@@ -119,6 +120,12 @@ def Match(value: str, *patterns: str) -> bool:
 
 
 match = Match
+
+
+def _to_snake_case(name: str) -> str:
+    value = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    return value.lower()
 
 
 class ValidationError(RuntimeError):
@@ -3049,6 +3056,21 @@ def Name(hsm: typing.Union[HSM[TInstance], Instance, Group]) -> str:
 id = ID
 qualified_name = QualifiedName
 name = Name
+
+
+def _install_snake_case_aliases() -> None:
+    for exported_name in list(__all__):
+        if exported_name == "HSM" or not exported_name[:1].isupper():
+            continue
+        alias = _to_snake_case(exported_name)
+        if alias == exported_name:
+            continue
+        globals().setdefault(alias, globals()[exported_name])
+        if alias not in __all__:
+            __all__.append(alias)
+
+
+_install_snake_case_aliases()
 
 
 if __name__ == "__main__":
