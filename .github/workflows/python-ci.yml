@@ -126,7 +126,6 @@ jobs:
           PY
 
       - name: Run soak tests
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.soak == 'true')
         env:
           HSM_SOAK: "1"
         run: uv run pytest tests/test_soak.py -q -W error
