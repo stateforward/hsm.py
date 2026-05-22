@@ -2137,6 +2137,7 @@ class HSM(Behavior[TInstance]):
         local_events: collections.deque[Event] = collections.deque()
         event = await self._queue.pop()
         while event is not None:
+            event_qualified_name = event.qualified_name
             current_leaf = self._state
             qualified_name = current_leaf.qualified_name
             while qualified_name:
@@ -2151,7 +2152,6 @@ class HSM(Behavior[TInstance]):
                     deferred.append(event)
                     break
                 qualified_name = source.owner()
-            event_qualified_name = event.qualified_name
             self._after._notify(
                 self._after.process,
                 lambda expected: expected is None or expected == event_qualified_name,
@@ -2214,7 +2214,7 @@ class HSM(Behavior[TInstance]):
         return self._awaitable
 
     def dispatch(self, event: Event[typing.Any]) -> typing.Awaitable[None]:
-        return asyncio.shield(self._dispatch_task(event))
+        return asyncio.shield(self._dispatch_task(_clone_event(event)))
 
     async def _stop_locked(self) -> None:
         final_event = Event(name=FinalEvent.name, kind=Kinds.CompletionEvent)

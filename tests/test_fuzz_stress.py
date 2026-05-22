@@ -298,6 +298,57 @@ def test_dispatch_all_and_dispatch_to_stress():
     asyncio.run(_broadcast_stress(machine_count=50, rounds=25))
 
 
+async def _direct_dispatch_event_metadata_isolation_stress(rounds: int) -> None:
+    class DirectEventInstance(FuzzInstance):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: list[tuple[str, str, str]] = []
+
+    async def mutate_event(ctx, inst: DirectEventInstance, event: hsm.Event) -> None:
+        inst.seen.append((event.name, event.qualified_name, event.source))
+        event.name = "mutated"
+        event.qualified_name = "mutated"
+        event.source = "mutated"
+
+    model = hsm.Define(
+        "DirectEventIsolation",
+        hsm.Initial(hsm.Target("ready")),
+        hsm.State("ready", hsm.Transition(hsm.On("go"), hsm.Effect(mutate_event))),
+    )
+
+    ctx = hsm.Context()
+    instance = DirectEventInstance()
+    await hsm.Start(ctx, instance, model)
+
+    for index in range(rounds):
+        event = hsm.Event("go", source=f"top-{index}")
+        processed = hsm.AfterProcess(ctx, instance, hsm.Event("go"))
+        await hsm.Dispatch(ctx, instance, event)
+        await asyncio.wait_for(processed, timeout=1)
+        assert event.name == "go"
+        assert event.qualified_name == "go"
+        assert event.source == f"top-{index}"
+        assert instance.seen[-1] == ("go", "go", f"top-{index}")
+        assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    for index in range(rounds):
+        event = hsm.Event("go", source=f"method-{index}")
+        processed = hsm.AfterProcess(ctx, instance, hsm.Event("go"))
+        await instance.dispatch(event)
+        await asyncio.wait_for(processed, timeout=1)
+        assert event.name == "go"
+        assert event.qualified_name == "go"
+        assert event.source == f"method-{index}"
+        assert instance.seen[-1] == ("go", "go", f"method-{index}")
+        assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+
+
+def test_direct_dispatch_event_metadata_isolation_stress():
+    asyncio.run(_direct_dispatch_event_metadata_isolation_stress(rounds=100))
+
+
 async def _broadcast_event_metadata_isolation_stress(machine_count: int, rounds: int) -> None:
     class BroadcastEventInstance(FuzzInstance):
         def __init__(self, index: int) -> None:
