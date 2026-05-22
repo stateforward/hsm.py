@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import builtins
+
 length = 64
 id_length = 8
 depth_max = length // id_length
@@ -17,14 +21,14 @@ def _next_id() -> int:
     return id_
 
 
-def List(kind_value: int) -> list[int]:
+def List(kind_value: int) -> builtins.list[int]:
     return [_extract_id(kind_value, depth) for depth in range(1, depth_max)]
 
 
 list_kind = List
 
 
-def Bases(kind_value: int) -> list[int]:
+def Bases(kind_value: int) -> builtins.list[int]:
     return List(kind_value)
 
 
@@ -68,6 +72,7 @@ def IsKind(kind_value: int, *base_kinds: int) -> bool:
 
 
 is_kind = IsKind
+list = List
 
 
 __all__ = [
@@ -83,6 +88,7 @@ __all__ = [
     "is_kind",
     "kind",
     "length",
+    "list",
     "list_kind",
     "make",
     "make_kind",

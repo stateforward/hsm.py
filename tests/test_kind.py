@@ -1,4 +1,5 @@
 import hsm
+import hsm.kind as kind_module
 from hsm.kind import IsKind, List, Make, MakeKind, is_kind, kind, make, make_kind
 from hsm import Kinds
 
@@ -24,6 +25,8 @@ def test_snake_case_and_kind_aliases_match_pascal_case():
     assert make is MakeKind
     assert make_kind is MakeKind
     assert kind is MakeKind
+    assert kind_module.list is List
+    assert "list" in kind_module.__all__
     assert is_kind is IsKind
 
     base = MakeKind()
