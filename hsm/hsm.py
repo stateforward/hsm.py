@@ -2075,6 +2075,7 @@ class HSM(Behavior[TInstance]):
         self._active.clear()
         self._after._cancel_all()
         self._runtime_context.cancel()
+        self._queue = Queue()
         self._state = self.model
         self._started = False
         self._root_context.unregister(self)

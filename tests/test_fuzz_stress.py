@@ -496,6 +496,33 @@ def test_deferred_events_replay_without_extra_dispatch():
     asyncio.run(_deferred_event_replay_stress(rounds=100))
 
 
+async def _stop_discards_deferred_events() -> None:
+    instance = FuzzInstance()
+    ctx = hsm.Context()
+    model = hsm.Define(
+        "DeferredStop",
+        hsm.Initial(hsm.Target("holding")),
+        hsm.State(
+            "holding",
+            hsm.Defer(hsm.Event("work")),
+        ),
+    )
+    sm = await hsm.Start(ctx, instance, model)
+
+    await hsm.Dispatch(ctx, instance, hsm.Event("work"))
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 1
+
+    await hsm.Stop(instance)
+
+    assert instance.state() == "/DeferredStop"
+    assert ctx.machines() == []
+    assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
+
+
+def test_stop_discards_deferred_events():
+    asyncio.run(_stop_discards_deferred_events())
+
+
 @st.composite
 def deferred_traces(draw):
     return tuple(draw(st.lists(st.sampled_from(("work", "release", "reset")), min_size=0, max_size=80)))
