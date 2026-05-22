@@ -2444,7 +2444,11 @@ class Group:
 
     async def restart(self, data: typing.Any = None) -> None:
         self._ensure_accepting_events()
-        await asyncio.gather(*(instance.restart(data) for instance in self.instances if instance is not None))
+        await asyncio.gather(*(
+            instance.restart(copy.deepcopy(data))
+            for instance in self.instances
+            if instance is not None
+        ))
 
     def get(self, name: str) -> tuple[typing.Any, bool]:
         if not self.instances:

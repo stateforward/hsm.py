@@ -1578,6 +1578,52 @@ def test_restart_from_activity_does_not_await_current_activity_task():
     asyncio.run(_restart_from_activity_does_not_await_current_activity_task())
 
 
+async def _group_restart_data_isolation_stress(rounds: int) -> None:
+    class GroupRestartDataInstance(FuzzInstance):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+            self.entries: list[list[object]] = []
+
+    async def active_entry(ctx, inst: GroupRestartDataInstance, event: hsm.Event) -> None:
+        payload = event.Data
+        if payload is None:
+            return
+        payload["items"].append(f"member-{inst.index}")
+        inst.entries.append(list(payload["items"]))
+
+    model = hsm.Define(
+        "GroupRestartDataIsolation",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Entry(active_entry)),
+    )
+
+    ctx = hsm.Context()
+    instances = [GroupRestartDataInstance(index) for index in range(20)]
+    group = hsm.MakeGroup(*instances)
+    for index, instance in enumerate(instances):
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-restart-{index}"))
+
+    for round_index in range(rounds):
+        payload = {"items": [round_index]}
+        await hsm.Restart(group, payload)
+
+        assert payload == {"items": [round_index]}
+        for instance in instances:
+            assert instance.state() == "/GroupRestartDataIsolation/active"
+            assert instance.entries[-1] == [round_index, f"member-{instance.index}"]
+            assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+        instances[0].entries[-1].append("first-only")
+        assert instances[1].entries[-1] == [round_index, "member-1"]
+
+    await hsm.Stop(group)
+
+
+def test_group_restart_data_isolation_stress():
+    asyncio.run(_group_restart_data_isolation_stress(rounds=50))
+
+
 async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
     class BlockingInstance(hsm.Instance):
         pass
