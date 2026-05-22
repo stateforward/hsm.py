@@ -130,6 +130,8 @@ async def record_submit(ctx, inst, event) -> None:
     inst.submitted = True
 ```
 
+`Guard("operation_name")` and `Effect("operation_name")` resolve a declared `Operation` and pass the triggering event as the operation argument. This is the same DSL shape used by TypeScript, Go, and `dsl.md`.
+
 Transition kinds are inferred:
 
 | Shape | Runtime behavior |
@@ -151,6 +153,17 @@ hsm.State(
 ```
 
 `Activity` callbacks run concurrently while the state is active. They are canceled on state exit or machine stop.
+
+`Entry`, `Exit`, and `Activity` also accept operation names:
+
+```python
+hsm.Define(
+    "Worker",
+    hsm.Operation("enter_running", enter_running),
+    hsm.Initial(hsm.Target("running")),
+    hsm.State("running", hsm.Entry("enter_running")),
+)
+```
 
 ## Events
 
@@ -217,7 +230,7 @@ model = hsm.Define(
 result = await hsm.Call(ctx, instance, "approve", "req-7")
 ```
 
-If no callback is supplied to `Operation`, `Call` looks for a method with the same name on the instance.
+If no callback is supplied to `Operation`, `Call` and named-operation behaviors look for a method with the same name on the instance.
 
 ## Timers And Clock
 
@@ -378,7 +391,7 @@ hsm.Transition(
 
 ## Python Aliases
 
-Lowercase and snake_case aliases are exported for Python ergonomics. Builder and runtime function aliases include `define`, `state`, `transition`, `on`, `on_set`, `on_call`, `target`, `operation`, `start`, `started`, `dispatch`, `dispatch_all`, `take_snapshot`, `after_entry`, `after_dispatch`, `is_ancestor`, `make_kind`, `make_group`, `expression`, `id`, `name`, and `qualified_name`.
+Lowercase and snake_case aliases are exported for Python ergonomics. Builder and runtime function aliases include `define`, `state`, `transition`, `source`, `target`, `entry`, `exit`, `activity`, `effect`, `guard`, `on`, `on_set`, `on_call`, `after`, `at`, `every`, `when`, `defer`, `choice`, `final`, `attribute`, `operation`, `start`, `started`, `stop`, `restart`, `dispatch`, `dispatch_all`, `dispatch_to`, `get`, `set`, `call`, `take_snapshot`, `after_entry`, `after_dispatch`, `after_process`, `after_exit`, `after_executed`, `is_ancestor`, `make_kind`, `make_group`, `expression`, `id`, `name`, and `qualified_name`.
 
 DSL values and types also have direct Python aliases: `event` maps to `Event`, `completion_event` maps to `CompletionEvent`, `snapshot` maps to `Snapshot`, `event_snapshot` maps to `EventSnapshot`, `clock` maps to `Clock`, `config` maps to `Config`, `context` maps to `Context`, `default_clock` maps to `DefaultClock`, lifecycle events expose `initial_event`, `error_event`, `any_event`, and `final_event`, and kind constants expose names such as `state_kind`, `transition_kind`, `event_kind`, and `final_state_kind`. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; `Config` accepts and exposes `id`, `name`, `data`, and `clock` alongside `ID`, `Name`, `Data`, and `Clock`; snapshots expose both PascalCase fields such as `QueueLen` and snake_case properties such as `queue_len`. These aliases map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
 

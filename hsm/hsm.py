@@ -27,10 +27,12 @@ OperationCallback = typing.Callable[
     ["Context", TInstance, "Event"],
     typing.Awaitable[None] | None,
 ]
+BehaviorArgument = OperationCallback[TInstance] | str
 Expression = typing.Callable[
     ["Context", TInstance, "Event"],
     typing.Awaitable[bool] | bool,
 ]
+ExpressionArgument = Expression[TInstance] | str
 expression = Expression
 Duration = typing.Callable[
     ["Context", TInstance, "Event"],
@@ -142,6 +144,49 @@ def _invoke_operation_callback(
             continue
         return callback(*candidate)
     return callback(*args)
+
+
+def _operation_callback(
+    model: "Model",
+    instance: "Instance",
+    name: str,
+) -> OperationImplementation:
+    operation = model.operations.get(name)
+    if operation is None:
+        raise ValidationError(f'missing operation "{name}"')
+    callback = operation.callback
+    if callback is None:
+        callback = getattr(instance, name, None)
+    if callback is None:
+        raise ValidationError(f'missing operation "{name}"')
+    return callback
+
+
+def _operation_behavior_reference(
+    model: "Model",
+    name: str,
+) -> OperationCallback[typing.Any]:
+    async def operation_reference(ctx: "Context", instance: "Instance", event: "Event") -> None:
+        callback = _operation_callback(model, instance, name)
+        result = _invoke_operation_callback(callback, ctx, instance, (event,))
+        await _maybe_await(result)
+
+    operation_reference.__name__ = name
+    return operation_reference
+
+
+def _operation_guard_reference(
+    model: "Model",
+    name: str,
+) -> Expression[typing.Any]:
+    async def operation_reference(ctx: "Context", instance: "Instance", event: "Event") -> bool:
+        callback = _operation_callback(model, instance, name)
+        result = _invoke_operation_callback(callback, ctx, instance, (event,))
+        value = await _maybe_await(result)
+        return bool(value)
+
+    operation_reference.__name__ = name
+    return operation_reference
 
 
 def _task_is_cancelling() -> bool:
@@ -566,6 +611,7 @@ class Model(State):
     transition_map: dict[str, dict[str, list[typing.Any]]] = field(default_factory=dict)
     deferred_map: dict[str, dict[str, bool]] = field(default_factory=dict)
     pending_oncall: typing.Set[str] = field(default_factory=set)
+    pending_operations: typing.Set[str] = field(default_factory=set)
 
     def add(self, partial: PartialElement) -> None:
         self.owned_elements.append(partial)
@@ -1127,7 +1173,7 @@ class PartialTarget(PartialElement):
 
 @dataclass
 class PartialBehaviors(typing.Generic[TInstance], PartialElement):
-    operations: list[OperationCallback[TInstance]] = field(default_factory=list)
+    operations: list[BehaviorArgument[TInstance]] = field(default_factory=list)
     type: typing.Type[NamedElement] = field(default=NamedElement)
     concurrent: bool = False
 
@@ -1142,12 +1188,19 @@ class PartialBehaviors(typing.Generic[TInstance], PartialElement):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: {element.qualified_name} has no {self.qualified_name}"
             )
-        for callback in self.operations:
+        for operation in self.operations:
+            if isinstance(operation, str):
+                model.pending_operations.add(operation)
+                callback = _operation_behavior_reference(model, operation)
+                operation_name = operation
+            else:
+                callback = operation
+                operation_name = getattr(operation, "__name__", "anonymous")
             behavior = BehaviorNode(
                 qualified_name=join(
                     element.qualified_name,
                     self.qualified_name,
-                    getattr(callback, "__name__", "anonymous"),
+                    operation_name,
                     str(len(behaviors)),
                 ),
                 operation=callback,
@@ -1173,7 +1226,7 @@ GuardNode = Guard
 
 @dataclass
 class PartialGuard(typing.Generic[TInstance], PartialElement):
-    expression: Expression[TInstance] = field(default=noop_expression)
+    expression: ExpressionArgument[TInstance] = field(default=noop_expression)
 
     def apply(self, model: Model, stack: list[NamedElement]) -> None:
         transition = find(stack, TransitionNode)
@@ -1181,9 +1234,13 @@ class PartialGuard(typing.Generic[TInstance], PartialElement):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: guard must be called within a Transition"
             )
+        expression = self.expression
+        if isinstance(expression, str):
+            model.pending_operations.add(expression)
+            expression = _operation_guard_reference(model, expression)
         guard = GuardNode(
             qualified_name=join(transition.qualified_name, self.qualified_name),
-            expression=self.expression,
+            expression=expression,
         )
         model.set(guard.qualified_name, guard)
         transition.guard = guard.qualified_name
@@ -2483,6 +2540,9 @@ def _finalize_model(model: Model) -> None:
     for name in model.pending_oncall:
         if name not in model.operations:
             raise ValidationError(f'missing operation "{name}" for OnCall()')
+    for name in model.pending_operations:
+        if name not in model.operations:
+            raise ValidationError(f'missing operation "{name}" for behavior or guard')
     _build_transition_table(model)
     _build_deferred_table(model)
 
@@ -2589,15 +2649,15 @@ def Target(name_or_element: str | NamedElement) -> PartialTarget:
     return PartialTarget(owned_elements=[name_or_element])
 
 
-def Entry(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TInstance]:
+def Entry(*operations: BehaviorArgument[TInstance]) -> PartialBehaviors[TInstance]:
     return PartialBehaviors(operations=list(operations), type=StateNode, qualified_name="entry")
 
 
-def Exit(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TInstance]:
+def Exit(*operations: BehaviorArgument[TInstance]) -> PartialBehaviors[TInstance]:
     return PartialBehaviors(operations=list(operations), type=StateNode, qualified_name="exit")
 
 
-def Activity(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TInstance]:
+def Activity(*operations: BehaviorArgument[TInstance]) -> PartialBehaviors[TInstance]:
     return PartialBehaviors(
         operations=list(operations),
         type=StateNode,
@@ -2606,12 +2666,15 @@ def Activity(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TIns
     )
 
 
-def Effect(*operations: OperationCallback[TInstance]) -> PartialBehaviors[TInstance]:
+def Effect(*operations: BehaviorArgument[TInstance]) -> PartialBehaviors[TInstance]:
     return PartialBehaviors(operations=list(operations), type=TransitionNode, qualified_name="effect")
 
 
-def Guard(expression: Expression[TInstance]) -> PartialGuard[TInstance]:
-    return PartialGuard(qualified_name=getattr(expression, "__name__", "guard"), expression=expression)
+def Guard(expression: ExpressionArgument[TInstance]) -> PartialGuard[TInstance]:
+    return PartialGuard(
+        qualified_name=expression if isinstance(expression, str) else getattr(expression, "__name__", "guard"),
+        expression=expression,
+    )
 
 
 def On(*events: str | Event) -> PartialTrigger:

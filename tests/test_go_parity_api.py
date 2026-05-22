@@ -695,6 +695,91 @@ async def test_operation_oncall_and_call():
 
 
 @pytest.mark.asyncio
+async def test_snake_case_named_operation_dsl_builds_and_runs_model():
+    class NamedOperationInstance(ParityInstance):
+        async def enter_idle(self, event: hsm.Event) -> None:
+            self.log.append(f"enter_idle:{event.Name}")
+
+    instance = NamedOperationInstance()
+
+    async def allow(ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event) -> bool:
+        assert isinstance(ctx, hsm.Context)
+        assert inst is instance
+        inst.log.append(f"guard:{event.Name}")
+        return True
+
+    async def leave_idle(ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event) -> None:
+        inst.log.append(f"exit:{event.Name}")
+
+    async def effect(ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event) -> None:
+        inst.log.append(f"effect:{event.Name}")
+
+    async def enter_done(ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event) -> None:
+        inst.log.append(f"enter_done:{event.Name}")
+
+    model = hsm.define(
+        "NamedOperationDslMachine",
+        hsm.operation("enter_idle"),
+        hsm.operation("allow", allow),
+        hsm.operation("leave_idle", leave_idle),
+        hsm.operation("effect", effect),
+        hsm.operation("enter_done", enter_done),
+        hsm.initial(hsm.target("idle")),
+        hsm.state(
+            "idle",
+            hsm.entry("enter_idle"),
+            hsm.exit("leave_idle"),
+            hsm.transition(
+                hsm.on("go"),
+                hsm.guard("allow"),
+                hsm.effect("effect"),
+                hsm.target("../done"),
+            ),
+        ),
+        hsm.state("done", hsm.entry("enter_done")),
+    )
+
+    ctx = hsm.context()
+    await hsm.start(ctx, instance, model)
+    await hsm.dispatch(ctx, instance, hsm.event("go"))
+
+    assert instance.state() == "/NamedOperationDslMachine/done"
+    assert instance.log == [
+        "enter_idle:hsm_initial",
+        "guard:go",
+        "exit:go",
+        "effect:go",
+        "enter_done:go",
+    ]
+
+    await hsm.stop(instance)
+
+
+def test_named_operation_dsl_rejects_missing_operation_references():
+    with pytest.raises(hsm.ValidationError, match='missing operation "missing" for behavior or guard'):
+        hsm.Define(
+            "MissingNamedOperationMachine",
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State("idle", hsm.Entry("missing")),
+        )
+
+    with pytest.raises(hsm.ValidationError, match='missing operation "missing" for behavior or guard'):
+        hsm.Define(
+            "MissingNamedGuardMachine",
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State(
+                "idle",
+                hsm.Transition(
+                    hsm.On("go"),
+                    hsm.Guard("missing"),
+                    hsm.Target("../done"),
+                ),
+            ),
+            hsm.State("done"),
+        )
+
+
+@pytest.mark.asyncio
 async def test_operation_call_signature_variants_match_dsl_runtime():
     class SignatureInstance(ParityInstance):
         pass
