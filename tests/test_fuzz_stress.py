@@ -6,6 +6,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import hsm
+from hsm import hsm as core
 
 
 class FuzzInstance(hsm.Instance):
@@ -1370,6 +1371,58 @@ async def _cancelled_context_waiter_does_not_poison_future() -> None:
 
 def test_cancelled_context_waiter_does_not_poison_future():
     asyncio.run(_cancelled_context_waiter_does_not_poison_future())
+
+
+async def _mixed_context_waiter_cancellation_stress() -> None:
+    ctx = hsm.Context()
+    waiters = [asyncio.create_task(ctx.wait_done()) for _ in range(100)]
+    await asyncio.sleep(0)
+
+    cancelled = waiters[::3]
+    live = [waiter for waiter in waiters if waiter not in cancelled]
+    for waiter in cancelled:
+        waiter.cancel()
+
+    results = await asyncio.gather(*cancelled, return_exceptions=True)
+    assert all(isinstance(result, asyncio.CancelledError) for result in results)
+    assert ctx.done is False
+    assert ctx._done_future is not None
+    assert ctx._done_future.cancelled() is False
+    assert all(waiter.done() is False for waiter in live)
+
+    ctx.cancel()
+    await asyncio.wait_for(asyncio.gather(*live), timeout=1)
+    await ctx.wait_done()
+
+
+def test_mixed_context_waiter_cancellation_stress():
+    asyncio.run(_mixed_context_waiter_cancellation_stress())
+
+
+async def _cancelled_mutex_handoff_releases_lock() -> None:
+    mutex = core.Mutex()
+
+    for _ in range(100):
+        await mutex.acquire()
+        waiter = asyncio.create_task(mutex.acquire())
+        await asyncio.sleep(0)
+
+        mutex.release()
+        waiter.cancel()
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            pass
+
+        await asyncio.wait_for(mutex.acquire(), timeout=1)
+        assert mutex.locked() is True
+        assert len(mutex._waiters) == 0
+        mutex.release()
+        assert mutex.locked() is False
+
+
+def test_cancelled_mutex_handoff_releases_lock():
+    asyncio.run(_cancelled_mutex_handoff_releases_lock())
 
 
 @given(
