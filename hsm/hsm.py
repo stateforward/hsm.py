@@ -2165,7 +2165,14 @@ class Group:
             return None
         return self.instances[0].context()
 
+    def _ensure_accepting_events(self) -> None:
+        for instance in self.instances:
+            machine = getattr(instance, "_Instance__hsm", None)
+            if isinstance(machine, HSM):
+                machine._ensure_accepting_events()
+
     async def dispatch(self, event: Event) -> None:
+        self._ensure_accepting_events()
         await asyncio.gather(*(instance.dispatch(event) for instance in self.instances if instance is not None))
 
     async def stop(self) -> None:
@@ -2180,6 +2187,7 @@ class Group:
         return Get(self.context(), self.instances[0], name)
 
     async def set(self, ctx: Context | None, name: str, value: typing.Any) -> None:
+        self._ensure_accepting_events()
         await asyncio.gather(*(Set(ctx, instance, name, value) for instance in self.instances if instance is not None))
 
     async def call(self, ctx: Context | None, name: str, *args: typing.Any) -> typing.Any:

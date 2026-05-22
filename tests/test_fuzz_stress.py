@@ -1425,6 +1425,55 @@ def test_cancelled_mutex_handoff_releases_lock():
     asyncio.run(_cancelled_mutex_handoff_releases_lock())
 
 
+async def _group_event_mutations_preflight_members() -> None:
+    class GroupPreflightInstance(hsm.Instance):
+        pass
+
+    model = hsm.Define(
+        "GroupPreflight",
+        hsm.Attribute("flag", False),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
+            hsm.Transition(hsm.OnSet("flag"), hsm.Target("../changed")),
+        ),
+        hsm.State("done"),
+        hsm.State("changed"),
+    )
+
+    ctx = hsm.Context()
+    running = GroupPreflightInstance()
+    stopped = GroupPreflightInstance()
+    await hsm.Start(ctx, running, model)
+    await hsm.Start(ctx, stopped, model)
+    await hsm.Stop(stopped)
+
+    group = hsm.MakeGroup(running, stopped)
+
+    for operation in (
+        lambda: hsm.Dispatch(ctx, group, hsm.Event("go")),
+        lambda: hsm.Set(ctx, group, "flag", True),
+    ):
+        try:
+            await operation()
+        except hsm.ValidationError as error:
+            assert "started HSM" in str(error)
+        else:
+            raise AssertionError("group event mutation should fail before partial fan-out")
+
+        assert running.state() == "/GroupPreflight/idle"
+        assert stopped.state() == "/GroupPreflight"
+        assert hsm.Get(ctx, running, "flag") == (False, True)
+        assert hsm.TakeSnapshot(ctx, running).QueueLen == 0
+
+    await hsm.Stop(running)
+
+
+def test_group_event_mutations_preflight_members():
+    asyncio.run(_group_event_mutations_preflight_members())
+
+
 @given(
     st.lists(
         st.sampled_from(
