@@ -507,6 +507,56 @@ def test_snapshot_attribute_aliasing_stress():
     asyncio.run(_snapshot_attribute_aliasing_stress(rounds=100))
 
 
+async def _group_set_attribute_value_isolation_stress(rounds: int) -> None:
+    class GroupSetIsolationInstance(FuzzInstance):
+        def __init__(self, index: int) -> None:
+            super().__init__()
+            self.index = index
+            self.seen_lengths: list[int] = []
+
+    async def mutate_set_value(ctx, inst: GroupSetIsolationInstance, event: hsm.Event) -> None:
+        change = event.Data
+        assert isinstance(change, hsm.AttributeChange)
+        change.value["items"].append(f"member-{inst.index}")
+        inst.seen_lengths.append(len(change.value["items"]))
+
+    model = hsm.Define(
+        "GroupSetIsolation",
+        hsm.Attribute("payload", {"items": []}),
+        hsm.Initial(hsm.Target("ready")),
+        hsm.State("ready", hsm.Transition(hsm.OnSet("payload"), hsm.Effect(mutate_set_value))),
+    )
+
+    ctx = hsm.Context()
+    instances = [GroupSetIsolationInstance(index) for index in range(20)]
+    for index, instance in enumerate(instances):
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-set-{index}"))
+
+    group = hsm.MakeGroup(*instances)
+    for round_index in range(rounds):
+        value = {"items": [round_index]}
+        await hsm.Set(ctx, group, "payload", value)
+
+        assert value == {"items": [round_index]}
+        for instance in instances:
+            runtime_value, ok = hsm.Get(ctx, instance, "payload")
+            assert ok is True
+            assert runtime_value == {"items": [round_index, f"member-{instance.index}"]}
+            assert instance.seen_lengths[-1] == 2
+            assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+        first_value, _ = hsm.Get(ctx, instances[0], "payload")
+        second_value, _ = hsm.Get(ctx, instances[1], "payload")
+        first_value["items"].append("first-only")
+        assert second_value == {"items": [round_index, "member-1"]}
+
+    await hsm.Stop(group)
+
+
+def test_group_set_attribute_value_isolation_stress():
+    asyncio.run(_group_set_attribute_value_isolation_stress(rounds=50))
+
+
 @given(st.lists(st.integers(min_value=-5, max_value=5), min_size=0, max_size=80))
 @settings(max_examples=80, deadline=None, derandomize=True)
 def test_attribute_set_event_fuzz(values: list[int]):

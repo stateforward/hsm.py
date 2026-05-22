@@ -2453,7 +2453,11 @@ class Group:
 
     async def set(self, ctx: Context | None, name: str, value: typing.Any) -> None:
         self._ensure_accepting_events()
-        await asyncio.gather(*(Set(ctx, instance, name, value) for instance in self.instances if instance is not None))
+        await asyncio.gather(*(
+            Set(ctx, instance, name, copy.deepcopy(value))
+            for instance in self.instances
+            if instance is not None
+        ))
 
     async def call(self, ctx: Context | None, name: str, *args: typing.Any) -> typing.Any:
         if not self.instances:
