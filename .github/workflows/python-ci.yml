@@ -99,6 +99,32 @@ jobs:
           assert "hsm/py.typed" in names
           PY
 
+      - name: Verify source distribution contents
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import tarfile
+
+          [sdist] = glob.glob("dist/*.tar.gz")
+          with tarfile.open(sdist) as archive:
+              names = set(archive.getnames())
+          root = next(name for name in names if name.endswith("/PKG-INFO")).rsplit("/", 1)[0]
+          required = {
+              f"{root}/README.md",
+              f"{root}/RELEASE.md",
+              f"{root}/SECURITY.md",
+              f"{root}/hsm/__init__.py",
+              f"{root}/hsm/hsm.py",
+              f"{root}/hsm/kind.py",
+              f"{root}/hsm/py.typed",
+              f"{root}/hsm/version.py",
+              f"{root}/pyproject.toml",
+          }
+          missing = required - names
+          assert not missing, sorted(missing)
+          PY
+
       - name: Run soak tests
         if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.soak == 'true')
         env:

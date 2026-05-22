@@ -23,6 +23,36 @@ uv build
 uvx twine check dist/stateforward_hsm-<version>*
 ```
 
+Confirm the wheel and source distribution contain the typed marker and release
+docs before upload:
+
+```bash
+python3 - <<'PY'
+import glob
+import tarfile
+import zipfile
+
+[wheel] = glob.glob("dist/*.whl")
+with zipfile.ZipFile(wheel) as archive:
+    wheel_names = set(archive.namelist())
+assert "hsm/py.typed" in wheel_names
+
+[sdist] = glob.glob("dist/*.tar.gz")
+with tarfile.open(sdist) as archive:
+    sdist_names = set(archive.getnames())
+root = next(name for name in sdist_names if name.endswith("/PKG-INFO")).rsplit("/", 1)[0]
+required = {
+    f"{root}/README.md",
+    f"{root}/RELEASE.md",
+    f"{root}/SECURITY.md",
+    f"{root}/hsm/py.typed",
+    f"{root}/pyproject.toml",
+}
+missing = required - sdist_names
+assert not missing, sorted(missing)
+PY
+```
+
 Run a local wheel smoke test before upload:
 
 ```bash
