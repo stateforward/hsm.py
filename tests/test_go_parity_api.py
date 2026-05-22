@@ -398,6 +398,36 @@ async def test_attribute_onset_get_set_and_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_when_string_is_onset_attribute_trigger():
+    instance = ParityInstance()
+
+    model = hsm.Define(
+        "WhenAttributeMachine",
+        hsm.Attribute("flag", False),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.When("flag"),
+                hsm.Target("../changed"),
+            ),
+        ),
+        hsm.State("changed"),
+    )
+
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    await hsm.Set(ctx, instance, "flag", True)
+
+    assert instance.state() == "/WhenAttributeMachine/changed"
+    assert hsm.Get(ctx, instance, "flag") == (True, True)
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
 async def test_snapshot_identity_config_and_event_data_helpers():
     instance = ParityInstance()
     seen: list[object] = []

@@ -84,6 +84,7 @@ def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
     assert isinstance(core.Source(core.State("idle")), core.PartialSource)
     assert isinstance(core.Target(core.State("idle")), core.PartialTarget)
     assert isinstance(core.When(lambda *_: None), core.PartialWhen)
+    assert isinstance(core.When("count"), core.PartialOnSet)
     assert isinstance(core.Defer(core.Event(name="later")), core.PartialDefer)
     assert isinstance(
         core.ShallowHistory(core.Transition(core.Target("idle"))),

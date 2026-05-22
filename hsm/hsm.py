@@ -2638,7 +2638,9 @@ def Every(duration: Duration[TInstance]) -> PartialAfter[TInstance]:
     return PartialAfter(duration=duration, repeating=True)
 
 
-def When(expression: WhenExpression[TInstance]) -> PartialWhen[TInstance]:
+def When(expression: str | WhenExpression[TInstance]) -> PartialOnSet | PartialWhen[TInstance]:
+    if isinstance(expression, str):
+        return OnSet(expression)
     return PartialWhen(expression=expression)
 
 
