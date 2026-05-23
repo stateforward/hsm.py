@@ -1796,29 +1796,41 @@ class Mutex:
 
 
 class Queue:
-    def __init__(self) -> None:
+    def __init__(self, fifo: "Queue | None" = None) -> None:
         self._lock = threading.Lock()
+        self._fifo = fifo
         self._completion_events: collections.deque[Event] = collections.deque()
         self._regular_events: collections.deque[Event] = collections.deque()
 
     def push(self, event: Event) -> None:
-        with self._lock:
-            if is_kind(event.kind, Kinds.CompletionEvent):
+        if is_kind(event.kind, Kinds.CompletionEvent):
+            with self._lock:
                 self._completion_events.appendleft(event)
-            else:
-                self._regular_events.append(event)
+            return
+        if self._fifo is not None:
+            self._fifo.push(event)
+            return
+        with self._lock:
+            self._regular_events.append(event)
 
     async def pop(self) -> Event | None:
         with self._lock:
             if self._completion_events:
                 return self._completion_events.popleft()
+        if self._fifo is not None:
+            return await self._fifo.pop()
+        with self._lock:
             if self._regular_events:
                 return self._regular_events.popleft()
             return None
 
     def len(self) -> int:
         with self._lock:
-            return len(self._completion_events) + len(self._regular_events)
+            completion_len = len(self._completion_events)
+            regular_len = 0 if self._fifo is not None else len(self._regular_events)
+        if self._fifo is not None:
+            regular_len = self._fifo.len()
+        return completion_len + regular_len
 
 
 @dataclass
@@ -1895,7 +1907,7 @@ class HSM(Behavior[TInstance]):
         self._root_context = ctx or Context()
         self._runtime_context = Context()
         self._processing = Mutex()
-        self._queue = config.Queue or Queue()
+        self._queue = Queue(config.Queue) if config.Queue is not None else Queue()
         self._active: dict[str, ActiveBehavior] = {}
         self._after = _AfterWaiters()
         self._state: VertexNode = model
@@ -1971,7 +1983,7 @@ class HSM(Behavior[TInstance]):
         self._after._cancel_all()
         self._runtime_context.cancel()
         self._runtime_context = Context()
-        self._queue = self._config.Queue or Queue()
+        self._queue = Queue(self._config.Queue) if self._config.Queue is not None else Queue()
         self._active.clear()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
@@ -2314,7 +2326,7 @@ class HSM(Behavior[TInstance]):
         self._after._cancel_all()
         self._runtime_context.cancel()
         self._runtime_context = Context()
-        self._queue = self._config.Queue or Queue()
+        self._queue = Queue(self._config.Queue) if self._config.Queue is not None else Queue()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()
         self._history_deep.clear()
@@ -2345,7 +2357,7 @@ class HSM(Behavior[TInstance]):
 
     def _reset_for_restart(self) -> None:
         self._runtime_context = Context()
-        self._queue = self._config.Queue or Queue()
+        self._queue = Queue(self._config.Queue) if self._config.Queue is not None else Queue()
         self._active.clear()
         self._attributes = _default_attribute_values(self.model)
         self._history_shallow.clear()

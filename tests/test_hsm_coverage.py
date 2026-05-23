@@ -187,6 +187,25 @@ async def test_context_waitable_queue_and_instance_branches():
     assert (await queue.pop()).name == "regular"
     assert await queue.pop() is None
 
+    class RecordingQueue(core.Queue):
+        def __init__(self):
+            super().__init__()
+            self.pushed: list[str] = []
+
+        def push(self, event: core.Event) -> None:
+            self.pushed.append(event.name)
+            super().push(event)
+
+    regular_queue = RecordingQueue()
+    queue = core.Queue(regular_queue)
+    queue.push(core.Event(name="regular"))
+    queue.push(core.Event(name="complete", kind=core.Kinds.CompletionEvent))
+    assert regular_queue.pushed == ["regular"]
+    assert queue.len() == 2
+    assert (await queue.pop()).name == "complete"
+    assert (await queue.pop()).name == "regular"
+    assert await queue.pop() is None
+
     machine_free = CoverageInstance()
     with pytest.raises(core.ValidationError, match="missing hsm"):
         machine_free.dispatch(core.Event(name="noop"))
