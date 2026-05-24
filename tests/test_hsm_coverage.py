@@ -1,4 +1,5 @@
 import asyncio
+import re
 import subprocess
 import sys
 from datetime import timedelta
@@ -206,6 +207,23 @@ async def test_context_waitable_queue_and_instance_branches():
     assert (await queue.pop()).name == "regular"
     assert await queue.pop() is None
 
+    with pytest.raises(TypeError, match="complete Push/Pop/Len"):
+        core.Queue(Push=lambda event: None)
+
+    hook_items: list[core.Event] = []
+
+    async def hook_pop() -> core.Event | None:
+        return hook_items.pop(0) if hook_items else None
+
+    hook_queue = core.Queue(
+        Push=lambda event: hook_items.append(event),
+        Pop=hook_pop,
+        Len=lambda: len(hook_items),
+    )
+    hook_queue.push(core.Event(name="hooked"))
+    assert hook_queue.len() == 1
+    assert (await hook_queue.pop()).name == "hooked"
+
     class FailingPushQueue(core.Queue):
         def __init__(self, error: RuntimeError):
             super().__init__()
@@ -321,6 +339,69 @@ def test_direct_validation_branches():
 
     with pytest.raises(core.ValidationError, match="within a nested State"):
         core.ShallowHistory("memory").apply(model, [model])
+
+    with pytest.raises(core.ValidationError, match='model name "Bad/Model" cannot contain "/"'):
+        core.Define("Bad/Model")
+
+    slash_name_cases = [
+        (
+            core.State("bad/state"),
+            [model],
+            'state name "bad/state" cannot contain "/"',
+        ),
+        (
+            core.Final("bad/final"),
+            [model],
+            'final name "bad/final" cannot contain "/"',
+        ),
+        (
+            core.ShallowHistory("bad/history", core.Transition(core.Target("idle"))),
+            [model, state],
+            'ShallowHistory name "bad/history" cannot contain "/"',
+        ),
+        (
+            core.DeepHistory("bad/history", core.Transition(core.Target("idle"))),
+            [model, state],
+            'DeepHistory name "bad/history" cannot contain "/"',
+        ),
+        (
+            core.Attribute("bad/attribute"),
+            [model],
+            'attribute name "bad/attribute" cannot contain "/"',
+        ),
+        (
+            core.Operation("bad/operation"),
+            [model],
+            'operation name "bad/operation" cannot contain "/"',
+        ),
+    ]
+    for partial, stack, message in slash_name_cases:
+        with pytest.raises(core.ValidationError, match=re.escape(message)):
+            partial.apply(model, stack)
+
+    with pytest.raises(core.ValidationError, match="ShallowHistory requires a default transition"):
+        core.Define(
+            "MissingShallowHistoryDefault",
+            core.Initial(core.Target("parent/idle")),
+            core.State(
+                "parent",
+                core.Initial(core.Target("idle")),
+                core.State("idle"),
+                core.ShallowHistory("memory"),
+            ),
+        )
+
+    with pytest.raises(core.ValidationError, match="DeepHistory requires a default transition"):
+        core.Define(
+            "MissingDeepHistoryDefault",
+            core.Initial(core.Target("parent/idle")),
+            core.State(
+                "parent",
+                core.Initial(core.Target("idle")),
+                core.State("idle"),
+                core.DeepHistory("memory"),
+            ),
+        )
 
     with pytest.raises(core.ValidationError, match="Top level transitions"):
         core.ResolvePaths(
@@ -525,6 +606,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     model = core.Define(
         "RuntimeCoverage",
         core.Attribute("count", 1),
+        core.Attribute("bag", {"items": []}),
         core.Operation("double"),
         core.Operation("missing_method"),
         core.Initial(core.Target("idle")),
@@ -556,6 +638,13 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
 
     missing, ok = core.Get(ctx, first, "missing")
     assert (missing, ok) == (None, False)
+
+    bag, ok = core.Get(ctx, first, "bag")
+    assert ok is True
+    bag["items"].append("mutated")
+    fresh_bag, ok = core.Get(ctx, first, "bag")
+    assert ok is True
+    assert fresh_bag == {"items": []}
 
     await core.Set(ctx, first, "count", 1)
     assert first.state() == "/RuntimeCoverage/idle"
@@ -589,7 +678,14 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     group = core.NewGroup(first, core.NewGroup(second), None)
     assert group.state() == "/RuntimeCoverage/idle"
     assert group.context() is ctx
-    assert core.TakeSnapshot(None, group).QualifiedName == ""
+    group_snapshot = core.TakeSnapshot(None, group)
+    assert group_snapshot.ID != ""
+    assert group_snapshot.QualifiedName == "/RuntimeCoverage,/RuntimeCoverage"
+    assert group_snapshot.State == "/RuntimeCoverage/idle | /RuntimeCoverage/idle"
+    assert group_snapshot.QueueLen == 0
+
+    identified_group = core.MakeGroup("coverage-group", first, second)
+    assert core.TakeSnapshot(None, identified_group).ID == "coverage-group"
 
     await core.Dispatch(None, group, core.Event(name="go"))
     assert first.state() == "/RuntimeCoverage/done"
@@ -630,3 +726,27 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
 
     with pytest.raises(core.ValidationError, match="missing hsm"):
         core.TakeSnapshot(None, CoverageInstance())
+
+
+@pytest.mark.asyncio
+async def test_dispatch_event_schema_is_copied_from_caller():
+    def mutate_schema(ctx: core.Context, instance: CoverageInstance, event: core.Event) -> None:
+        event.schema["mutated"] = True
+
+    model = core.Define(
+        "SchemaOwnership",
+        core.Initial(core.Target("idle")),
+        core.State(
+            "idle",
+            core.Transition(core.On("touch"), core.Effect(mutate_schema)),
+        ),
+    )
+    ctx = core.Context()
+    instance = CoverageInstance()
+    await core.Started(ctx, instance, model)
+
+    schema = {"mutated": False}
+    event = core.Event(name="touch", schema=schema)
+    await core.Dispatch(ctx, instance, event)
+
+    assert schema == {"mutated": False}

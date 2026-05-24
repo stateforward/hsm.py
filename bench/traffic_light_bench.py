@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+import hsm
+import time
+import asyncio
+import os
+import json
+import resource
+import sys
+
+TimerEvent = hsm.Event("TimerEvent")
+CarArrival = hsm.Event("CarArrival")
+MaintenanceSwitch = hsm.Event("MaintenanceSwitch")
+PedestrianButton = hsm.Event("PedestrianButton")
+Tick = hsm.Event("Tick")
+
+WARMUP_MS = max(1, int(os.environ.get("HSM_BENCH_WARMUP_MS", "250")))
+DURATION_MS = max(1, int(os.environ.get("HSM_BENCH_DURATION_MS", "2000")))
+TARGET_BATCH_MS = 10.0
+
+class TrafficLight(hsm.Instance):
+    def __init__(self):
+        super().__init__()
+        self.maintenance_mode = False
+        self.cars_waiting = 0
+        self.timer = 0
+
+    @staticmethod
+    async def reset_cars(ctx, inst, event):
+        inst.cars_waiting = 0
+
+    @staticmethod
+    async def add_car(ctx, inst, event):
+        inst.cars_waiting += 1
+
+    @staticmethod
+    async def no_cars_waiting(ctx, inst, event):
+        return inst.cars_waiting == 0
+
+    @staticmethod
+    async def is_maintenance(ctx, inst, event):
+        return inst.maintenance_mode == True
+
+    @staticmethod
+    async def is_not_maintenance(ctx, inst, event):
+        return inst.maintenance_mode == False
+
+    @staticmethod
+    async def check_cars_for_choice(ctx, inst, event):
+        return inst.cars_waiting > 10
+
+    @staticmethod
+    async def set_timer_extended(ctx, inst, event):
+        inst.timer = 60
+
+    @staticmethod
+    async def set_timer_standard(ctx, inst, event):
+        inst.timer = 40
+
+    model = hsm.define("TrafficLight",
+        hsm.initial(hsm.target("operational")),
+        
+        hsm.state("operational",
+            hsm.transition(
+                hsm.on(MaintenanceSwitch),
+                hsm.guard(is_maintenance),
+                hsm.target("../maintenance")
+            ),
+            hsm.initial(hsm.target("red")),
+
+            hsm.state("red",
+                hsm.transition(
+                    hsm.on(TimerEvent),
+                    hsm.guard(check_cars_for_choice),
+                    hsm.effect(set_timer_extended),
+                    hsm.target("../green")
+                ),
+                hsm.transition(
+                    hsm.on(TimerEvent),
+                    hsm.effect(set_timer_standard),
+                    hsm.target("../green")
+                ),
+                hsm.transition(
+                    hsm.on(CarArrival),
+                    hsm.effect(add_car)
+                )
+            ),
+
+            hsm.state("green",
+                hsm.transition(
+                    hsm.on(TimerEvent),
+                    hsm.target("../yellow")
+                ),
+                hsm.transition(
+                    hsm.on(PedestrianButton),
+                    hsm.guard(no_cars_waiting),
+                    hsm.target("../yellow")
+                )
+            ),
+
+            hsm.state("yellow",
+                hsm.defer(CarArrival),
+                hsm.transition(
+                    hsm.on(TimerEvent),
+                    hsm.target("../red")
+                )
+            )
+        ),
+
+        hsm.state("maintenance",
+            hsm.entry(reset_cars),
+            hsm.transition(
+                hsm.on(Tick),
+                # Effect lambda in Python needs to be async or we can just ignore effect here 
+                # since we mainly want to test throughput. But let's add a sync effect if possible or async wrapper.
+            ),
+            hsm.transition(
+                hsm.on(MaintenanceSwitch),
+                hsm.guard(is_not_maintenance),
+                hsm.target("../operational")
+            )
+        )
+    )
+
+async def run_benchmark():
+    async def dispatch_batch(light, cycles):
+        for _ in range(cycles):
+            await light.dispatch(CarArrival)
+            await light.dispatch(TimerEvent)
+            await light.dispatch(TimerEvent)
+            await light.dispatch(TimerEvent)
+
+    async def calibrate_batch(light):
+        cycles = 1
+        while True:
+            start_time = time.perf_counter()
+            await dispatch_batch(light, cycles)
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            if elapsed_ms >= TARGET_BATCH_MS or cycles >= (1 << 20):
+                return cycles
+            cycles *= 2
+
+    async def run_for(light, duration_ms, batch_cycles):
+        start_time = time.perf_counter()
+        deadline = start_time + (duration_ms / 1000)
+        cycles = 0
+        while time.perf_counter() < deadline:
+            await dispatch_batch(light, batch_cycles)
+            cycles += batch_cycles
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        return cycles, elapsed_ms
+
+    warmup_light = TrafficLight()
+    await hsm.start(None, warmup_light, TrafficLight.model)
+    batch_cycles = await calibrate_batch(warmup_light)
+    await run_for(warmup_light, WARMUP_MS, batch_cycles)
+    await warmup_light.stop()
+
+    light_bench = TrafficLight()
+    await hsm.start(None, light_bench, TrafficLight.model)
+    completed_cycles, duration_ms = await run_for(light_bench, DURATION_MS, batch_cycles)
+    await light_bench.stop()
+
+    duration_s = duration_ms / 1000
+    total_dispatches = completed_cycles * 4
+    
+    ops_per_sec = int(total_dispatches / duration_s) if duration_s > 0 else 0
+    
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    if sys.platform == "darwin":
+        memory_mb = usage.ru_maxrss / (1024 * 1024)
+    else:
+        memory_mb = usage.ru_maxrss / 1024
+    
+    print(json.dumps({
+        "language": "Python",
+        "iterations": total_dispatches,
+        "duration_ms": round(duration_ms),
+        "memory_mb": round(memory_mb, 2),
+        "throughput_ops_per_sec": ops_per_sec
+    }))
+
+if __name__ == "__main__":
+    asyncio.run(run_benchmark())

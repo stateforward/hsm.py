@@ -420,6 +420,46 @@ async def test_attribute_onset_get_set_and_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_contents_are_read_only_and_point_in_time():
+    instance = ParityInstance()
+    go = hsm.Event(name="go", schema={"fields": ["payload"]})
+
+    model = hsm.Define(
+        "SnapshotReadOnly",
+        hsm.Attribute("payload", {"items": []}),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.On(go), hsm.Target("../done"))),
+        hsm.State("done"),
+    )
+
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, model)
+
+    runtime_payload = {"items": [{"nested": ["initial"]}]}
+    await hsm.Set(ctx, instance, "payload", runtime_payload)
+    snapshot = hsm.TakeSnapshot(ctx, instance)
+
+    runtime_payload["items"][0]["nested"].append("mutated-after-snapshot")
+
+    snapshot_payload = snapshot.Attributes["/SnapshotReadOnly/payload"]
+    assert snapshot_payload["items"][0]["nested"] == ("initial",)
+    assert isinstance(snapshot.Events, tuple)
+
+    with pytest.raises(TypeError):
+        snapshot.Attributes["/SnapshotReadOnly/payload"] = {"items": []}
+    with pytest.raises(AttributeError):
+        snapshot_payload["items"][0]["nested"].append("snapshot-mutated")
+    with pytest.raises(AttributeError):
+        snapshot.Events.append(hsm.EventSnapshot("extra", hsm.EventKind, "", False, None))
+    with pytest.raises(AttributeError):
+        snapshot.Events[0].Name = "changed"
+    with pytest.raises(AttributeError):
+        snapshot.Events[0].Schema["fields"].append("changed")
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
 async def test_when_string_is_onset_attribute_trigger():
     instance = ParityInstance()
 
@@ -987,6 +1027,8 @@ async def test_group_dispatch_all_and_dispatch_to():
     group = hsm.NewGroup(first, second)
     group_snapshot = hsm.TakeSnapshot(ctx, group)
     assert group_snapshot.ID != ""
-    assert group_snapshot.QualifiedName == ""
+    assert group_snapshot.QualifiedName == "/GroupMachine,/GroupMachine"
+    assert group_snapshot.State == "/GroupMachine/done | /GroupMachine/done"
+    assert group_snapshot.QueueLen == 0
 
     await hsm.Stop(group)

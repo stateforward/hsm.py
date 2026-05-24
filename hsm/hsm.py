@@ -14,6 +14,7 @@ import weakref
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import IntEnum
+from types import MappingProxyType, SimpleNamespace
 
 from .kind import IsKind, MakeKind, is_kind, make_kind
 
@@ -237,6 +238,13 @@ def _qualify_model_name(model_qualified_name: str, name: str) -> str:
             return qualified
         return join(model_qualified_name, qualified.lstrip("/"))
     return join(model_qualified_name, name)
+
+
+def _validate_slashless_name(kind: str, name: str, traceback_info: tuple[str, int] | None = None) -> None:
+    if "/" not in name:
+        return
+    location = "" if traceback_info is None else f"{traceback_info[0]}:{traceback_info[1]}: "
+    raise ValidationError(f'{location}{kind} name "{name}" cannot contain "/"')
 
 
 def Match(value: str, *patterns: str) -> bool:
@@ -522,6 +530,7 @@ class AttributeDef(NamedElement):
     kind: int = Kinds.Attribute
     declared_name: str = ""
     default: typing.Any = None
+    value_type: type[typing.Any] | None = None
     implicit: bool = False
 
 
@@ -808,13 +817,36 @@ class AttributeChange:
     old_value: typing.Any
 
 
-@dataclass
+def _readonly_snapshot_value(value: typing.Any) -> typing.Any:
+    # Built-in containers are frozen recursively; arbitrary leaf objects are
+    # deep-copied but may still expose their own mutating APIs.
+    if isinstance(value, collections.abc.Mapping):
+        return MappingProxyType({
+            copy.deepcopy(key): _readonly_snapshot_value(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, tuple):
+        return tuple(_readonly_snapshot_value(item) for item in value)
+    if isinstance(value, list):
+        return tuple(_readonly_snapshot_value(item) for item in value)
+    if isinstance(value, collections.abc.Set):
+        return frozenset(_readonly_snapshot_value(item) for item in value)
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
+
+
+@dataclass(frozen=True)
 class EventSnapshot:
     Name: str
     Kind: int
     Target: str
     Guard: bool
     Schema: typing.Any
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "Schema", _readonly_snapshot_value(self.Schema))
 
     @property
     def name(self) -> str:
@@ -837,14 +869,25 @@ class EventSnapshot:
         return self.Schema
 
 
-@dataclass
+@dataclass(frozen=True)
 class Snapshot:
     ID: str = ""
     QualifiedName: str = ""
     State: str = ""
-    Attributes: dict[str, typing.Any] | None = None
+    Attributes: typing.Mapping[str, typing.Any] | None = None
     QueueLen: int = 0
-    Events: list[EventSnapshot] = field(default_factory=list)
+    Events: tuple[EventSnapshot, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        attributes = (
+            None if self.Attributes is None else _readonly_snapshot_value(self.Attributes)
+        )
+        events = tuple(
+            event if isinstance(event, EventSnapshot) else EventSnapshot(*event)
+            for event in self.Events
+        )
+        object.__setattr__(self, "Attributes", attributes)
+        object.__setattr__(self, "Events", events)
 
     @property
     def id(self) -> str:
@@ -859,7 +902,7 @@ class Snapshot:
         return self.State
 
     @property
-    def attributes(self) -> dict[str, typing.Any] | None:
+    def attributes(self) -> typing.Mapping[str, typing.Any] | None:
         return self.Attributes
 
     @property
@@ -867,7 +910,7 @@ class Snapshot:
         return self.QueueLen
 
     @property
-    def events(self) -> list[EventSnapshot]:
+    def events(self) -> tuple[EventSnapshot, ...]:
         return self.Events
 
 
@@ -967,6 +1010,7 @@ class SortTransitions(PartialElement):
 @dataclass
 class PartialState(PartialElement):
     def apply(self, model: Model, stack: list[NamedElement]) -> StateNode:
+        _validate_slashless_name("state", self.qualified_name, self.traceback)
         namespace = find(stack, StateNode)
         if namespace is None:
             raise ValidationError(
@@ -1027,11 +1071,16 @@ class PartialHistory(PartialElement):
     history_type: typing.Type[PseudostateNode] = ShallowHistoryNode
 
     def apply(self, model: Model, stack: list[NamedElement]) -> PseudostateNode:
+        history_name = self.history_type.__name__.replace("Vertex", "")
+        _validate_slashless_name(history_name, self.qualified_name, self.traceback)
         owner_state = find(stack, StateNode)
         if owner_state is None or owner_state is model:
-            name = self.history_type.__name__.replace("Vertex", "")
             raise ValidationError(
-                f"{self.traceback[0]}:{self.traceback[1]}: you must call {name}() within a nested State"
+                f"{self.traceback[0]}:{self.traceback[1]}: you must call {history_name}() within a nested State"
+            )
+        if not self.owned_elements:
+            raise ValidationError(
+                f"{self.traceback[0]}:{self.traceback[1]}: {history_name} requires a default transition"
             )
         history = self.history_type(
             qualified_name=join(owner_state.qualified_name, self.qualified_name)
@@ -1423,6 +1472,7 @@ class ValidateFinalState(PartialElement):
 @dataclass
 class PartialFinal(PartialElement):
     def apply(self, model: Model, stack: list[NamedElement]) -> None:
+        _validate_slashless_name("final", self.qualified_name, self.traceback)
         namespace = find(stack, StateNode)
         if namespace is None:
             raise ValidationError(
@@ -1438,9 +1488,11 @@ class PartialFinal(PartialElement):
 @dataclass
 class PartialAttribute(PartialElement):
     default: typing.Any = None
+    value_type: type[typing.Any] | None = None
     implicit: bool = False
 
     def apply(self, model: Model, stack: list[NamedElement]) -> AttributeDef:
+        _validate_slashless_name("attribute", self.qualified_name, self.traceback)
         if self.qualified_name == "":
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: attribute name cannot be empty"
@@ -1457,6 +1509,7 @@ class PartialAttribute(PartialElement):
             qualified_name=qualified_name,
             declared_name=qualified_name,
             default=self.default,
+            value_type=self.value_type,
             implicit=self.implicit,
         )
         model.set(attribute.qualified_name, attribute)
@@ -1468,6 +1521,7 @@ class PartialOperationDeclaration(PartialElement):
     callback: OperationImplementation | None = None
 
     def apply(self, model: Model, stack: list[NamedElement]) -> OperationDef:
+        _validate_slashless_name("operation", self.qualified_name, self.traceback)
         if self.qualified_name == "":
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: operation name cannot be empty"
@@ -1741,6 +1795,21 @@ def _default_attribute_values(model: Model) -> dict[str, typing.Any]:
     return values
 
 
+def _attribute_value_type(attribute: AttributeDef) -> type[typing.Any] | None:
+    if attribute.value_type is not None:
+        return attribute.value_type
+    if attribute.default is not None:
+        return type(attribute.default)
+    return None
+
+
+def _attribute_accepts_value(attribute: AttributeDef, value: typing.Any) -> bool:
+    value_type = _attribute_value_type(attribute)
+    if value_type is None:
+        return True
+    return type(value) is value_type
+
+
 def _segments_between(owner: str, target: str) -> list[str]:
     if owner == target:
         return []
@@ -1796,11 +1865,56 @@ class Mutex:
 
 
 class Queue:
-    def __init__(self, fifo: "Queue | None" = None) -> None:
+    def __init__(
+        self,
+        fifo: "Queue | None" = None,
+        *,
+        Push: typing.Callable[[Event], BaseException | None] | None = None,
+        Pop: typing.Callable[[], typing.Awaitable[Event | BaseException | None] | Event | BaseException | None] | None = None,
+        Len: typing.Callable[[], int | BaseException] | None = None,
+        push: typing.Callable[[Event], BaseException | None] | None = None,
+        pop: typing.Callable[[], typing.Awaitable[Event | BaseException | None] | Event | BaseException | None] | None = None,
+        len: typing.Callable[[], int | BaseException] | None = None,
+    ) -> None:
         self._lock = threading.Lock()
-        self._fifo = fifo
+        self._fifo = self._make_fifo(fifo, Push, Pop, Len, push, pop, len)
         self._completion_events: collections.deque[Event] = collections.deque()
         self._regular_events: collections.deque[Event] = collections.deque()
+
+    @staticmethod
+    def _make_fifo(
+        fifo: "Queue | None",
+        Push: typing.Callable[[Event], BaseException | None] | None,
+        Pop: typing.Callable[[], typing.Awaitable[Event | BaseException | None] | Event | BaseException | None] | None,
+        Len: typing.Callable[[], int | BaseException] | None,
+        push: typing.Callable[[Event], BaseException | None] | None,
+        pop: typing.Callable[[], typing.Awaitable[Event | BaseException | None] | Event | BaseException | None] | None,
+        len: typing.Callable[[], int | BaseException] | None,
+    ) -> typing.Any:
+        canonical = (Push, Pop, Len)
+        native = (push, pop, len)
+        has_canonical = any(hook is not None for hook in canonical)
+        has_native = any(hook is not None for hook in native)
+        if fifo is not None and (has_canonical or has_native):
+            raise TypeError("Queue accepts either fifo or Push/Pop/Len hooks, not both")
+        if has_canonical and has_native:
+            raise TypeError("Queue accepts either Push/Pop/Len or push/pop/len hooks, not both")
+        if has_canonical:
+            if not all(hook is not None for hook in canonical):
+                raise TypeError("Queue requires complete Push/Pop/Len or push/pop/len hooks")
+            return SimpleNamespace(push=Push, pop=Pop, len=Len)
+        if has_native:
+            if not all(hook is not None for hook in native):
+                raise TypeError("Queue requires complete Push/Pop/Len or push/pop/len hooks")
+            return SimpleNamespace(push=push, pop=pop, len=len)
+        if fifo is not None:
+            missing = [
+                name for name in ("push", "pop", "len")
+                if not callable(getattr(fifo, name, None))
+            ]
+            if missing:
+                raise TypeError("Queue requires complete Push/Pop/Len or push/pop/len hooks")
+        return fifo
 
     def push(self, event: Event) -> BaseException | None:
         if is_kind(event.kind, Kinds.CompletionEvent):
@@ -1823,7 +1937,9 @@ class Queue:
                 return self._completion_events.popleft()
         if self._fifo is not None:
             try:
-                maybe_event = await self._fifo.pop()
+                maybe_event = self._fifo.pop()
+                if inspect.isawaitable(maybe_event):
+                    maybe_event = await maybe_event
             except BaseException as error:
                 return error
             return maybe_event
@@ -1883,6 +1999,16 @@ class Instance(Element):
             return DefaultClock.with_defaults()
         return self.__hsm.clock()
 
+    def get(self, name: str) -> tuple[typing.Any, bool]:
+        if self.__hsm is None:
+            return None, False
+        return self.__hsm.get(name)
+
+    async def set(self, name: str, value: typing.Any) -> None:
+        if self.__hsm is None:
+            raise ValidationError("missing hsm")
+        await self.__hsm.set(name, value)
+
     async def stop(self) -> None:
         if self.__hsm is not None:
             await self.__hsm.stop()
@@ -1896,6 +2022,8 @@ class Instance(Element):
     State = state
     Context = context
     Clock = clock
+    Get = get
+    Set = set
     Stop = stop
     Restart = restart
 
@@ -2157,7 +2285,7 @@ class HSM(Behavior[TInstance]):
         if self._stopping:
             return
         try:
-            self._dispatch_task(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
+            self._dispatch_task(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent), observe_result=False)
         except ValidationError:
             return
 
@@ -2321,7 +2449,7 @@ class HSM(Behavior[TInstance]):
         target = self.model.get(transition.target, VertexNode)
         return current if target is None else target
 
-    def _dispatch_task(self, event: Event[typing.Any]) -> typing.Awaitable[None]:
+    def _dispatch_task(self, event: Event[typing.Any], observe_result: bool = True) -> typing.Awaitable[None]:
         self._ensure_accepting_events()
         self._queue_push(event)
         self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
@@ -2329,6 +2457,8 @@ class HSM(Behavior[TInstance]):
             self._awaitable = asyncio.create_task(self._process())
         elif asyncio.current_task() is self._awaitable:
             return _future_done()
+        if not observe_result:
+            return self._awaitable
         return self._awaitable
 
     def dispatch(self, event: Event[typing.Any]) -> typing.Awaitable[None]:
@@ -2419,24 +2549,26 @@ class HSM(Behavior[TInstance]):
     def get(self, name: str) -> tuple[typing.Any, bool]:
         qualified_name = _qualify_model_name(self.model.qualified_name, name)
         if qualified_name in self._attributes:
-            return self._attributes[qualified_name], True
+            return copy.deepcopy(self._attributes[qualified_name]), True
         return None, False
 
     async def set(self, name: str, value: typing.Any) -> None:
         self._ensure_accepting_events()
         qualified_name = _qualify_model_name(self.model.qualified_name, name)
-        old_value = self._attributes.get(qualified_name)
-        existed = qualified_name in self._attributes
-        self._attributes[qualified_name] = value
-        if existed and old_value == value:
-            return
-        if qualified_name not in self.model.attributes:
-            self.model.attributes[qualified_name] = AttributeDef(
-                qualified_name=qualified_name,
-                declared_name=qualified_name,
-                default=None,
-                implicit=True,
+        attribute = self.model.attributes.get(qualified_name)
+        if attribute is None:
+            raise ValidationError(f'missing attribute "{name}"')
+        if not _attribute_accepts_value(attribute, value):
+            value_type = _attribute_value_type(attribute)
+            expected = "unknown" if value_type is None else value_type.__name__
+            actual = type(value).__name__
+            raise ValidationError(
+                f'attribute "{name}" requires value of type {expected}, got {actual}'
             )
+        old_value = self._attributes.get(qualified_name)
+        self._attributes[qualified_name] = value
+        if old_value == value:
+            return None
         event = Event(
             name=qualified_name,
             qualified_name=qualified_name,
@@ -2447,6 +2579,7 @@ class HSM(Behavior[TInstance]):
         )
         self.model.set(event.qualified_name, event)
         await self.dispatch(event)
+        return None
 
     async def call(self, name: str, *args: typing.Any) -> typing.Any:
         self._ensure_accepting_events()
@@ -2516,8 +2649,12 @@ class HSM(Behavior[TInstance]):
 
 
 class Group:
-    def __init__(self, *instances: typing.Union[Instance, "Group", None]):
+    def __init__(self, *instances: typing.Union[str, Instance, "Group", None]):
         self.instances: list[Instance] = []
+        self.id = _next_id()
+        if instances and isinstance(instances[0], str):
+            self.id = instances[0]
+            instances = instances[1:]
         for instance in instances:
             if instance is None:
                 continue
@@ -2525,7 +2662,6 @@ class Group:
                 self.instances.extend(instance.instances)
             else:
                 self.instances.append(instance)
-        self.id = _next_id()
 
     def Instances(self) -> list[Instance]:
         return list(self.instances)
@@ -2587,10 +2723,29 @@ class Group:
         return await Call(ctx, self.instances[0], name, *args)
 
     def take_snapshot(self) -> Snapshot:
-        return Snapshot(ID=self.id, QualifiedName="", State="", Attributes=None, QueueLen=0, Events=[])
+        snapshots = [TakeSnapshot(None, instance) for instance in self.instances]
+        events: list[EventSnapshot] = []
+        queue_len = 0
+        ids: list[str] = []
+        qualified_names: list[str] = []
+        states: list[str] = []
+        for snapshot in snapshots:
+            ids.append(snapshot.ID)
+            qualified_names.append(snapshot.QualifiedName)
+            states.append(snapshot.State)
+            queue_len += snapshot.QueueLen
+            events.extend(snapshot.Events)
+        return Snapshot(
+            ID=self.id if self.id else ",".join(ids),
+            QualifiedName=",".join(qualified_names),
+            State=" | ".join(states),
+            Attributes={},
+            QueueLen=queue_len,
+            Events=tuple(events),
+        )
 
 
-def NewGroup(*instances: typing.Union[Instance, Group, None]) -> Group:
+def NewGroup(*instances: typing.Union[str, Instance, Group, None]) -> Group:
     return Group(*instances)
 
 
@@ -2679,7 +2834,7 @@ def _clone_event(event: Event[TData]) -> Event[TData]:
         source=event.source,
         target=event.target,
         qualified_name=event.qualified_name,
-        schema=event.schema,
+        schema=copy.deepcopy(event.schema),
     )
 
 
@@ -2754,6 +2909,7 @@ def _build_deferred_table(model: Model) -> None:
 
 
 def Define(name: str, *elements: NamedElement) -> Model:
+    _validate_slashless_name("model", name)
     qualified_name = join("/", name)
     model = Model(qualified_name=qualified_name)
     model.set(qualified_name, model)
@@ -2884,8 +3040,8 @@ def When(expression: str | WhenExpression[TInstance]) -> PartialOnSet | PartialW
     return PartialWhen(expression=expression)
 
 
-def Defer(*events: Event) -> PartialDefer:
-    return PartialDefer(events=list(events))
+def Defer(*events: str | Event) -> PartialDefer:
+    return PartialDefer(events=[_event_from_name(event) for event in events])
 
 
 def Choice(
@@ -2941,8 +3097,30 @@ def Final(name_or_element: str | NamedElement) -> PartialFinal:
     return PartialFinal(owned_elements=[name_or_element])
 
 
-def Attribute(name: str, maybe_default: typing.Any = None) -> PartialAttribute:
-    return PartialAttribute(qualified_name=name, default=maybe_default)
+_ATTRIBUTE_DEFAULT_UNSET = object()
+
+
+def Attribute(
+    name: str,
+    maybe_type_or_default: typing.Any = _ATTRIBUTE_DEFAULT_UNSET,
+    maybe_default: typing.Any = _ATTRIBUTE_DEFAULT_UNSET,
+) -> PartialAttribute:
+    if maybe_default is not _ATTRIBUTE_DEFAULT_UNSET:
+        value_type = maybe_type_or_default if isinstance(maybe_type_or_default, type) else None
+        return PartialAttribute(
+            qualified_name=name,
+            default=maybe_default,
+            value_type=value_type,
+        )
+    if isinstance(maybe_type_or_default, type):
+        return PartialAttribute(
+            qualified_name=name,
+            default=None,
+            value_type=maybe_type_or_default,
+        )
+    default = None if maybe_type_or_default is _ATTRIBUTE_DEFAULT_UNSET else maybe_type_or_default
+    value_type = None if default is None else type(default)
+    return PartialAttribute(qualified_name=name, default=default, value_type=value_type)
 
 
 def New(instance: TInstance, model: Model, maybe_config: Config | None = None) -> HSM[TInstance]:
@@ -3014,27 +3192,30 @@ async def Dispatch(
 ) -> None:
     if isinstance(hsm, Group):
         await hsm.dispatch(event)
-        return
+        return None
     machine = _resolve_machine(hsm)
     await machine.dispatch(event)
+    return None
 
 
 async def DispatchAll(ctx: Context | None, event: Event) -> None:
     if ctx is None or ctx.done:
-        return
+        return None
     machines = [machine for machine in ctx.machines() if machine._started]
     await asyncio.gather(*(machine.dispatch(_clone_event(event)) for machine in machines))
+    return None
 
 
 async def DispatchTo(ctx: Context | None, event: Event, *maybe_ids: str) -> None:
     if ctx is None or ctx.done:
-        return
+        return None
     selected = [
         machine
         for machine in ctx.machines()
         if machine._started and (not maybe_ids or Match(machine.take_snapshot().ID, *maybe_ids))
     ]
     await asyncio.gather(*(machine.dispatch(_clone_event(event)) for machine in selected))
+    return None
 
 
 def Get(
@@ -3056,9 +3237,10 @@ async def Set(
 ) -> None:
     if isinstance(hsm, Group):
         await hsm.set(ctx, name, value)
-        return
+        return None
     machine = _resolve_machine(hsm)
     await machine.set(name, value)
+    return None
 
 
 async def Call(

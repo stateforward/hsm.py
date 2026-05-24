@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import timedelta
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -548,8 +549,10 @@ async def _snapshot_attribute_aliasing_stress(rounds: int) -> None:
 
         snapshot = hsm.TakeSnapshot(ctx, instance)
         snapshot_payload = snapshot.Attributes["/SnapshotIsolation/payload"]
-        snapshot_payload["items"][1]["nested"].append("snapshot-mutated")
-        snapshot.Attributes["/SnapshotIsolation/payload"] = {"items": ["replaced"]}
+        with pytest.raises(AttributeError):
+            snapshot_payload["items"][1]["nested"].append("snapshot-mutated")
+        with pytest.raises(TypeError):
+            snapshot.Attributes["/SnapshotIsolation/payload"] = {"items": ["replaced"]}
 
         runtime_value, ok = hsm.Get(ctx, instance, "payload")
         assert ok is True
@@ -561,7 +564,9 @@ async def _snapshot_attribute_aliasing_stress(rounds: int) -> None:
         assert runtime_value == {"items": [index, {"nested": [index, "caller-mutated"]}]}
 
         fresh_snapshot = hsm.TakeSnapshot(ctx, instance)
-        assert fresh_snapshot.Attributes["/SnapshotIsolation/payload"] == runtime_value
+        fresh_payload = fresh_snapshot.Attributes["/SnapshotIsolation/payload"]
+        assert fresh_payload["items"][0] == index
+        assert fresh_payload["items"][1]["nested"] == (index, "caller-mutated")
         assert fresh_snapshot.QueueLen == 0
 
     await hsm.Stop(instance)
