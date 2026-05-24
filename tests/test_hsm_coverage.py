@@ -206,6 +206,49 @@ async def test_context_waitable_queue_and_instance_branches():
     assert (await queue.pop()).name == "regular"
     assert await queue.pop() is None
 
+    class FailingPushQueue(core.Queue):
+        def __init__(self, error: RuntimeError):
+            super().__init__()
+            self.error = error
+
+        def push(self, event: core.Event) -> BaseException | None:
+            return self.error
+
+    class QueueErrorInstance(core.Instance):
+        def __init__(self):
+            super().__init__()
+            self.error: BaseException | None = None
+
+    async def record_queue_error(ctx, inst: QueueErrorInstance, event: core.Event):
+        inst.error = event.data
+
+    queue_error = RuntimeError("queue push failed")
+    error_model = core.Define(
+        "QueuePushError",
+        core.Initial(core.Target("idle")),
+        core.State(
+            "idle",
+            core.Transition(
+                core.On(core.ErrorEvent),
+                core.Target("../failed"),
+                core.Effect(record_queue_error),
+            ),
+        ),
+        core.State("failed"),
+    )
+    queue_error_instance = QueueErrorInstance()
+    error_ctx = core.Context()
+    queue_error_sm = core.HSM(
+        instance=queue_error_instance,
+        model=error_model,
+        ctx=error_ctx,
+        config=core.Config(Queue=FailingPushQueue(queue_error)),
+    )
+    await core.Start(error_ctx, queue_error_sm)
+    await queue_error_instance.dispatch(core.Event("go"))
+    assert queue_error_instance.state() == "/QueuePushError/failed"
+    assert queue_error_instance.error is queue_error
+
     machine_free = CoverageInstance()
     with pytest.raises(core.ValidationError, match="missing hsm"):
         machine_free.dispatch(core.Event(name="noop"))

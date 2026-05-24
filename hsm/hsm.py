@@ -1802,34 +1802,48 @@ class Queue:
         self._completion_events: collections.deque[Event] = collections.deque()
         self._regular_events: collections.deque[Event] = collections.deque()
 
-    def push(self, event: Event) -> None:
+    def push(self, event: Event) -> BaseException | None:
         if is_kind(event.kind, Kinds.CompletionEvent):
             with self._lock:
                 self._completion_events.appendleft(event)
-            return
+            return None
         if self._fifo is not None:
-            self._fifo.push(event)
-            return
+            try:
+                maybe_error = self._fifo.push(event)
+            except BaseException as error:
+                return error
+            return maybe_error if isinstance(maybe_error, BaseException) else None
         with self._lock:
             self._regular_events.append(event)
+        return None
 
-    async def pop(self) -> Event | None:
+    async def pop(self) -> Event | BaseException | None:
         with self._lock:
             if self._completion_events:
                 return self._completion_events.popleft()
         if self._fifo is not None:
-            return await self._fifo.pop()
+            try:
+                maybe_event = await self._fifo.pop()
+            except BaseException as error:
+                return error
+            return maybe_event
         with self._lock:
             if self._regular_events:
                 return self._regular_events.popleft()
             return None
 
-    def len(self) -> int:
+    def len(self) -> int | BaseException:
         with self._lock:
             completion_len = len(self._completion_events)
             regular_len = 0 if self._fifo is not None else len(self._regular_events)
         if self._fifo is not None:
-            regular_len = self._fifo.len()
+            try:
+                maybe_len = self._fifo.len()
+            except BaseException as error:
+                return error
+            if isinstance(maybe_len, BaseException):
+                return maybe_len
+            regular_len = maybe_len
         return completion_len + regular_len
 
 
@@ -1932,7 +1946,7 @@ class HSM(Behavior[TInstance]):
                 await self._drain_queue(startup_deferred)
             finally:
                 for deferred_event in startup_deferred:
-                    self._queue.push(deferred_event)
+                    self._queue_push(deferred_event)
 
         self.operation = operation
 
@@ -2204,7 +2218,7 @@ class HSM(Behavior[TInstance]):
             await self._drain_queue(deferred)
         finally:
             for deferred_event in deferred:
-                self._queue.push(deferred_event)
+                self._queue_push(deferred_event)
             try:
                 while self._restart_requested is not None or self._stop_requested:
                     if self._restart_requested is not None:
@@ -2218,9 +2232,28 @@ class HSM(Behavior[TInstance]):
             finally:
                 self._processing.release()
 
+    def _queue_push(self, event: Event) -> None:
+        error = self._queue.push(event)
+        if error is not None and not is_kind(event.kind, Kinds.ErrorEvent):
+            self._queue.push(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
+
+    async def _queue_pop(self) -> Event | None:
+        while True:
+            event_or_error = await self._queue.pop()
+            if not isinstance(event_or_error, BaseException):
+                return event_or_error
+            self._queue.push(Event(name=ErrorEvent.name, data=event_or_error, kind=Kinds.ErrorEvent))
+
+    def _queue_len(self) -> int:
+        len_or_error = self._queue.len()
+        if isinstance(len_or_error, BaseException):
+            self._queue.push(Event(name=ErrorEvent.name, data=len_or_error, kind=Kinds.ErrorEvent))
+            return 0
+        return len_or_error
+
     async def _drain_queue(self, deferred: list[Event]) -> None:
         local_events: collections.deque[Event] = collections.deque()
-        event = await self._queue.pop()
+        event = await self._queue_pop()
         while event is not None:
             event_qualified_name = event.qualified_name
             current_leaf = self._state
@@ -2244,7 +2277,7 @@ class HSM(Behavior[TInstance]):
             if local_events:
                 event = local_events.popleft()
             else:
-                event = await self._queue.pop()
+                event = await self._queue_pop()
             if event is None and deferred:
                 retry: list[Event] = []
                 still_deferred: list[Event] = []
@@ -2258,7 +2291,7 @@ class HSM(Behavior[TInstance]):
                     local_events.extend(retry[1:])
                     event = retry[0]
         for deferred_event in deferred:
-            self._queue.push(deferred_event)
+            self._queue_push(deferred_event)
         deferred.clear()
 
     async def _transition(self, current_leaf: VertexNode, transition: TransitionNode, event: Event) -> VertexNode:
@@ -2290,7 +2323,7 @@ class HSM(Behavior[TInstance]):
 
     def _dispatch_task(self, event: Event[typing.Any]) -> typing.Awaitable[None]:
         self._ensure_accepting_events()
-        self._queue.push(event)
+        self._queue_push(event)
         self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
         if self._processing.try_acquire():
             self._awaitable = asyncio.create_task(self._process())
@@ -2381,7 +2414,7 @@ class HSM(Behavior[TInstance]):
             await self._drain_queue(startup_deferred)
         finally:
             for deferred_event in startup_deferred:
-                self._queue.push(deferred_event)
+                self._queue_push(deferred_event)
 
     def get(self, name: str) -> tuple[typing.Any, bool]:
         qualified_name = _qualify_model_name(self.model.qualified_name, name)
@@ -2467,7 +2500,7 @@ class HSM(Behavior[TInstance]):
             QualifiedName=self._qualified_name,
             State=self._state.qualified_name,
             Attributes=copy.deepcopy(self._attributes),
-            QueueLen=self._queue.len(),
+            QueueLen=self._queue_len(),
             Events=events,
         )
 
