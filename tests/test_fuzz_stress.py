@@ -665,7 +665,7 @@ async def _cancelled_group_set_awaiter_does_not_cancel_onset_processing() -> Non
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-set-cancel-{index}"))
 
     group = hsm.MakeGroup(*instances)
-    set_task = asyncio.create_task(hsm.Set(ctx, group, "payload", {"round": 1}))
+    set_task = asyncio.ensure_future(hsm.Set(ctx, group, "payload", {"round": 1}))
     seen = {
         await asyncio.wait_for(entered_effects.get(), timeout=1)
         for _ in range(len(instances))
@@ -897,7 +897,7 @@ async def _cancelled_call_awaiter_does_not_cancel_oncall_processing() -> None:
     instance = CancelledCallInstance()
     await hsm.Start(ctx, instance, model)
 
-    call_task = asyncio.create_task(hsm.Call(ctx, instance, "work", 1))
+    call_task = asyncio.ensure_future(hsm.Call(ctx, instance, "work", 1))
     await asyncio.wait_for(entered_effect.wait(), timeout=1)
     call_task.cancel()
     try:
@@ -1378,10 +1378,10 @@ async def _stop_during_inflight_dispatch_does_not_block_loop() -> None:
     ctx = hsm.Context()
     await hsm.Start(ctx, instance, model)
 
-    dispatch_task = asyncio.create_task(hsm.Dispatch(ctx, instance, hsm.Event("go")))
+    dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event("go")))
     await asyncio.wait_for(entered_effect.wait(), timeout=1)
 
-    stop_task = asyncio.create_task(hsm.Stop(instance))
+    stop_task = asyncio.ensure_future(hsm.Stop(instance))
     await asyncio.sleep(0)
     assert not stop_task.done()
 
@@ -1418,10 +1418,10 @@ async def _cancelled_stop_waiter_releases_processing_mutex() -> None:
     ctx = hsm.Context()
     await hsm.Start(ctx, instance, model)
 
-    dispatch_task = asyncio.create_task(hsm.Dispatch(ctx, instance, hsm.Event("go")))
+    dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event("go")))
     await asyncio.wait_for(entered_effect.wait(), timeout=1)
 
-    cancelled_stop = asyncio.create_task(hsm.Stop(instance))
+    cancelled_stop = asyncio.ensure_future(hsm.Stop(instance))
     await asyncio.sleep(0)
     cancelled_stop.cancel()
     try:
@@ -1464,7 +1464,7 @@ async def _concurrent_stop_awaiters_share_one_stop_sequence() -> None:
     ctx = hsm.Context()
     await hsm.Start(ctx, instance, model)
 
-    stop_tasks = [asyncio.create_task(hsm.Stop(instance)) for _ in range(20)]
+    stop_tasks = [asyncio.ensure_future(hsm.Stop(instance)) for _ in range(20)]
     await asyncio.wait_for(entered_exit.wait(), timeout=1)
     assert instance.exits == 1
     assert all(not task.done() for task in stop_tasks)
@@ -1507,7 +1507,7 @@ async def _cancelled_dispatch_awaiter_does_not_cancel_processing_task() -> None:
     ctx = hsm.Context()
     await hsm.Start(ctx, instance, model)
 
-    dispatch_task = asyncio.create_task(hsm.Dispatch(ctx, instance, hsm.Event("go")))
+    dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event("go")))
     await asyncio.wait_for(entered_effect.wait(), timeout=1)
 
     dispatch_task.cancel()
@@ -1557,7 +1557,7 @@ async def _cancelled_broadcast_awaiter_does_not_cancel_member_processing() -> No
     for index, instance in enumerate(instances):
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"broadcast-cancel-{index}"))
 
-    broadcast_task = asyncio.create_task(hsm.DispatchAll(ctx, hsm.Event("go")))
+    broadcast_task = asyncio.ensure_future(hsm.DispatchAll(ctx, hsm.Event("go")))
     seen = {
         await asyncio.wait_for(entered_effects.get(), timeout=1)
         for _ in range(len(instances))
@@ -1620,7 +1620,7 @@ async def _cancelled_dispatch_to_awaiter_does_not_cancel_selected_processing() -
     selected = [instance for instance in instances if instance.index % 2 == 0]
     skipped = [instance for instance in instances if instance.index % 2 == 1]
 
-    dispatch_task = asyncio.create_task(hsm.DispatchTo(ctx, hsm.Event("go"), "target-*"))
+    dispatch_task = asyncio.ensure_future(hsm.DispatchTo(ctx, hsm.Event("go"), "target-*"))
     seen = {
         await asyncio.wait_for(entered_effects.get(), timeout=1)
         for _ in range(len(selected))
@@ -1686,7 +1686,7 @@ async def _cancelled_group_dispatch_awaiter_does_not_cancel_member_processing() 
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-cancel-{index}"))
 
     group = hsm.MakeGroup(*instances)
-    dispatch_task = asyncio.create_task(hsm.Dispatch(ctx, group, hsm.Event("go")))
+    dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, group, hsm.Event("go")))
     seen = {
         await asyncio.wait_for(entered_effects.get(), timeout=1)
         for _ in range(len(instances))
@@ -2026,7 +2026,7 @@ async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
     ctx = hsm.Context()
     await hsm.Start(ctx, instance, model)
 
-    cancelled_stop = asyncio.create_task(hsm.Stop(instance))
+    cancelled_stop = asyncio.ensure_future(hsm.Stop(instance))
     await asyncio.wait_for(entered_exit.wait(), timeout=1)
     cancelled_stop.cancel()
     try:
@@ -2038,7 +2038,7 @@ async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
     first_release.set()
 
     entered_exit.clear()
-    second_stop = asyncio.create_task(hsm.Stop(instance))
+    second_stop = asyncio.ensure_future(hsm.Stop(instance))
     await asyncio.wait_for(entered_exit.wait(), timeout=1)
     second_release = await asyncio.wait_for(release_exits.get(), timeout=1)
     second_release.set()
@@ -2079,7 +2079,7 @@ async def _cancelled_restart_after_stop_acquire_remains_recoverable() -> None:
     ctx = hsm.Context()
     sm = await hsm.Start(ctx, instance, model)
 
-    cancelled_restart = asyncio.create_task(hsm.Restart(instance, "cancelled"))
+    cancelled_restart = asyncio.ensure_future(hsm.Restart(instance, "cancelled"))
     await asyncio.wait_for(entered_exit.wait(), timeout=1)
     cancelled_restart.cancel()
     try:
@@ -2092,7 +2092,7 @@ async def _cancelled_restart_after_stop_acquire_remains_recoverable() -> None:
     await asyncio.sleep(0)
 
     entered_exit.clear()
-    recovered_restart = asyncio.create_task(hsm.Restart(instance, "recovered"))
+    recovered_restart = asyncio.ensure_future(hsm.Restart(instance, "recovered"))
     await asyncio.wait_for(entered_exit.wait(), timeout=1)
     second_release = await asyncio.wait_for(release_exits.get(), timeout=1)
     second_release.set()
@@ -2104,7 +2104,7 @@ async def _cancelled_restart_after_stop_acquire_remains_recoverable() -> None:
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
 
     entered_exit.clear()
-    final_stop = asyncio.create_task(hsm.Stop(instance))
+    final_stop = asyncio.ensure_future(hsm.Stop(instance))
     await asyncio.wait_for(entered_exit.wait(), timeout=1)
     final_release = await asyncio.wait_for(release_exits.get(), timeout=1)
     final_release.set()
@@ -2145,7 +2145,7 @@ async def _concurrent_restart_awaiters_remain_consistent() -> None:
 
     restart_count = 12
     restart_tasks = [
-        asyncio.create_task(hsm.Restart(instance, index))
+        asyncio.ensure_future(hsm.Restart(instance, index))
         for index in range(restart_count)
     ]
     remaining = set(restart_tasks)
@@ -2166,7 +2166,7 @@ async def _concurrent_restart_awaiters_remain_consistent() -> None:
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     assert instance.exits >= 1
 
-    final_stop = asyncio.create_task(hsm.Stop(instance))
+    final_stop = asyncio.ensure_future(hsm.Stop(instance))
     final_release = await asyncio.wait_for(release_exits.get(), timeout=1)
     final_release.set()
     await asyncio.wait_for(final_stop, timeout=1)
@@ -2209,7 +2209,7 @@ async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> N
     ]
     group = hsm.MakeGroup(*instances)
 
-    cancelled_restart = asyncio.create_task(hsm.Restart(group, "cancelled"))
+    cancelled_restart = asyncio.ensure_future(hsm.Restart(group, "cancelled"))
     seen_cancelled = {
         await asyncio.wait_for(entered_exits.get(), timeout=1)
         for _ in range(len(instances))
@@ -2229,7 +2229,7 @@ async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> N
     assert all(instance.state() == "/CancelledGroupRestart/active" for instance in instances)
     assert {id(machine) for machine in ctx.machines()} == {id(machine) for machine in machines}
 
-    recovered_restart = asyncio.create_task(hsm.Restart(group, "recovered"))
+    recovered_restart = asyncio.ensure_future(hsm.Restart(group, "recovered"))
     seen_recovered = {
         await asyncio.wait_for(entered_exits.get(), timeout=1)
         for _ in range(len(instances))
@@ -2245,7 +2245,7 @@ async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> N
     assert {id(machine) for machine in ctx.machines()} == {id(machine) for machine in machines}
     assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
 
-    final_stop = asyncio.create_task(hsm.Stop(group))
+    final_stop = asyncio.ensure_future(hsm.Stop(group))
     seen_final = {
         await asyncio.wait_for(entered_exits.get(), timeout=1)
         for _ in range(len(instances))
@@ -2386,7 +2386,7 @@ async def _concurrent_start_attempts_do_not_double_bind_instance() -> None:
     )
     instance = ConcurrentStartInstance()
 
-    first_start = asyncio.create_task(hsm.Start(ctx, instance, model))
+    first_start = asyncio.ensure_future(hsm.Start(ctx, instance, model))
     await asyncio.wait_for(entered_entry.wait(), timeout=1)
 
     try:
@@ -2436,7 +2436,7 @@ async def _concurrent_hsm_start_attempts_reject_in_progress_start() -> None:
     instance = ConcurrentHSMStartInstance()
     sm = hsm.New(instance, model)
 
-    first_start = asyncio.create_task(hsm.Start(ctx, sm, "first"))
+    first_start = asyncio.ensure_future(hsm.Start(ctx, sm, "first"))
     await asyncio.wait_for(entered_entry.wait(), timeout=1)
 
     try:
@@ -2992,12 +2992,12 @@ async def _stopped_machine_rejects_event_mutating_operations() -> None:
     assert ctx.machines() == []
 
     for operation in (
-        hsm.Dispatch(ctx, instance, hsm.Event("go")),
-        hsm.Set(ctx, instance, "flag", True),
-        hsm.Call(ctx, instance, "work"),
+        lambda: hsm.Dispatch(ctx, instance, hsm.Event("go")),
+        lambda: hsm.Set(ctx, instance, "flag", True),
+        lambda: hsm.Call(ctx, instance, "work"),
     ):
         try:
-            await operation
+            await operation()
         except hsm.ValidationError as error:
             assert "started HSM" in str(error)
         else:
@@ -3322,7 +3322,7 @@ async def _cancelled_start_cleans_up_registration_and_activities() -> None:
 
     instance = CancelledStartInstance()
     ctx = hsm.Context()
-    start_task = asyncio.create_task(hsm.Start(ctx, instance, model))
+    start_task = asyncio.ensure_future(hsm.Start(ctx, instance, model))
     await asyncio.wait_for(activity_started.wait(), timeout=1)
     await asyncio.wait_for(entered_entry.wait(), timeout=1)
 
@@ -3381,7 +3381,7 @@ async def _cancelled_start_discards_queued_startup_events() -> None:
     ctx = hsm.Context()
     sm = hsm.New(instance, model)
 
-    start_task = asyncio.create_task(hsm.Start(ctx, sm, "first"))
+    start_task = asyncio.ensure_future(hsm.Start(ctx, sm, "first"))
     await asyncio.wait_for(entered_entry.wait(), timeout=1)
 
     start_task.cancel()

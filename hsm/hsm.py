@@ -80,6 +80,14 @@ async def _maybe_await(value: typing.Any) -> typing.Any:
     return value
 
 
+async def _completed_none() -> None:
+    return None
+
+
+async def _await_all(awaitables: collections.abc.Iterable[typing.Awaitable[typing.Any]]) -> None:
+    await asyncio.gather(*awaitables)
+
+
 def _raise_async_required(value: typing.Any = None) -> typing.NoReturn:
     _close_awaitable(value)
     raise _AsyncRequired()
@@ -2039,19 +2047,20 @@ class Instance(Element):
             return None, False
         return self.__hsm.get(name)
 
-    async def set(self, name: str, value: typing.Any) -> None:
+    def set(self, name: str, value: typing.Any) -> typing.Awaitable[None]:
         if self.__hsm is None:
             raise ValidationError("missing hsm")
-        await self.__hsm.set(name, value)
+        return self.__hsm.set(name, value)
 
-    async def stop(self) -> None:
-        if self.__hsm is not None:
-            await self.__hsm.stop()
+    def stop(self) -> typing.Awaitable[None]:
+        if self.__hsm is None:
+            return _completed_none()
+        return self.__hsm.stop()
 
-    async def restart(self, data: typing.Any = None) -> None:
+    def restart(self, data: typing.Any = None) -> typing.Awaitable[None]:
         if self.__hsm is None:
             raise ValidationError("missing hsm")
-        await self.__hsm.restart(data)
+        return self.__hsm.restart(data)
 
     Dispatch = dispatch
     State = state
@@ -2981,44 +2990,44 @@ class Group:
                 raise ValidationError("missing hsm")
             machine._ensure_accepting_events()
 
-    async def dispatch(self, event: Event) -> None:
+    def dispatch(self, event: Event) -> typing.Awaitable[None]:
         self._ensure_accepting_events()
-        await asyncio.gather(*(
+        return _await_all(
             instance.dispatch(_clone_event(event))
             for instance in self.instances
             if instance is not None
-        ))
+        )
 
-    async def stop(self) -> None:
+    def stop(self) -> typing.Awaitable[None]:
         if self.instances:
             self._ensure_accepting_events()
-        await asyncio.gather(*(instance.stop() for instance in self.instances if instance is not None))
+        return _await_all(instance.stop() for instance in self.instances if instance is not None)
 
-    async def restart(self, data: typing.Any = None) -> None:
+    def restart(self, data: typing.Any = None) -> typing.Awaitable[None]:
         self._ensure_accepting_events()
-        await asyncio.gather(*(
+        return _await_all(
             instance.restart(copy.deepcopy(data))
             for instance in self.instances
             if instance is not None
-        ))
+        )
 
     def get(self, name: str) -> tuple[typing.Any, bool]:
         if not self.instances:
             return None, False
         return Get(self.context(), self.instances[0], name)
 
-    async def set(self, ctx: Context | None, name: str, value: typing.Any) -> None:
+    def set(self, ctx: Context | None, name: str, value: typing.Any) -> typing.Awaitable[None]:
         self._ensure_accepting_events()
-        await asyncio.gather(*(
+        return _await_all(
             Set(ctx, instance, name, copy.deepcopy(value))
             for instance in self.instances
             if instance is not None
-        ))
+        )
 
-    async def call(self, ctx: Context | None, name: str, *args: typing.Any) -> typing.Any:
+    def call(self, ctx: Context | None, name: str, *args: typing.Any) -> typing.Awaitable[typing.Any]:
         if not self.instances:
             raise ValidationError("missing hsm")
-        return await Call(ctx, self.instances[0], name, *args)
+        return Call(ctx, self.instances[0], name, *args)
 
     def take_snapshot(self) -> Snapshot:
         snapshots = [TakeSnapshot(None, instance) for instance in self.instances]
@@ -3520,7 +3529,7 @@ def New(instance: TInstance, model: Model, maybe_config: Config | None = None) -
     return HSM(instance=instance, model=model, config=maybe_config)
 
 
-async def Start(
+async def _start_public(
     ctx: Context | None,
     instance: TInstance | HSM[TInstance],
     model: Model | typing.Any | None = None,
@@ -3548,7 +3557,16 @@ async def Start(
     return sm
 
 
-async def Started(
+def Start(
+    ctx: Context | None,
+    instance: TInstance | HSM[TInstance],
+    model: Model | typing.Any | None = None,
+    data: typing.Any = None,
+) -> typing.Awaitable[HSM[TInstance]]:
+    return _start_public(ctx, instance, model, data)
+
+
+async def _started_public(
     ctx: Context | None,
     instance: TInstance,
     model: Model,
@@ -3559,56 +3577,59 @@ async def Started(
     return await Start(ctx, sm, data)
 
 
-async def Stop(sm: typing.Union[HSM[TInstance], Instance, Group]) -> None:
+def Started(
+    ctx: Context | None,
+    instance: TInstance,
+    model: Model,
+    maybe_config: Config | None = None,
+) -> typing.Awaitable[HSM[TInstance]]:
+    return _started_public(ctx, instance, model, maybe_config)
+
+
+def Stop(sm: typing.Union[HSM[TInstance], Instance, Group]) -> typing.Awaitable[None]:
     if isinstance(sm, Group):
-        await sm.stop()
-        return
+        return sm.stop()
     machine = _resolve_machine(sm)
-    await machine.stop()
+    return machine.stop()
 
 
-async def Restart(
+def Restart(
     sm: typing.Union[HSM[TInstance], Instance, Group],
     data: typing.Any = None,
-) -> None:
+) -> typing.Awaitable[None]:
     if isinstance(sm, Group):
-        await sm.restart(data)
-        return
+        return sm.restart(data)
     machine = _resolve_machine(sm)
-    await machine.restart(data)
+    return machine.restart(data)
 
 
-async def Dispatch(
+def Dispatch(
     ctx: Context | None,
     hsm: typing.Union[HSM[TInstance], Instance, Group],
     event: Event,
-) -> None:
+) -> typing.Awaitable[None]:
     if isinstance(hsm, Group):
-        await hsm.dispatch(event)
-        return None
+        return hsm.dispatch(event)
     machine = _resolve_machine(hsm)
-    await machine.dispatch(event)
-    return None
+    return machine.dispatch(event)
 
 
-async def DispatchAll(ctx: Context | None, event: Event) -> None:
+def DispatchAll(ctx: Context | None, event: Event) -> typing.Awaitable[None]:
     if ctx is None or ctx.done:
-        return None
+        return _completed_none()
     machines = [machine for machine in ctx.machines() if machine._started]
-    await asyncio.gather(*(machine.dispatch(_clone_event(event)) for machine in machines))
-    return None
+    return _await_all(machine.dispatch(_clone_event(event)) for machine in machines)
 
 
-async def DispatchTo(ctx: Context | None, event: Event, *maybe_ids: str) -> None:
+def DispatchTo(ctx: Context | None, event: Event, *maybe_ids: str) -> typing.Awaitable[None]:
     if ctx is None or ctx.done:
-        return None
+        return _completed_none()
     selected = [
         machine
         for machine in ctx.machines()
         if machine._started and (not maybe_ids or Match(machine.take_snapshot().ID, *maybe_ids))
     ]
-    await asyncio.gather(*(machine.dispatch(_clone_event(event)) for machine in selected))
-    return None
+    return _await_all(machine.dispatch(_clone_event(event)) for machine in selected)
 
 
 def Get(
@@ -3622,30 +3643,28 @@ def Get(
     return machine.get(name)
 
 
-async def Set(
+def Set(
     ctx: Context | None,
     hsm: typing.Union[HSM[TInstance], Instance, Group],
     name: str,
     value: typing.Any,
-) -> None:
+) -> typing.Awaitable[None]:
     if isinstance(hsm, Group):
-        await hsm.set(ctx, name, value)
-        return None
+        return hsm.set(ctx, name, value)
     machine = _resolve_machine(hsm)
-    await machine.set(name, value)
-    return None
+    return machine.set(name, value)
 
 
-async def Call(
+def Call(
     ctx: Context | None,
     hsm: typing.Union[HSM[TInstance], Instance, Group],
     name: str,
     *args: typing.Any,
-) -> typing.Any:
+) -> typing.Awaitable[typing.Any]:
     if isinstance(hsm, Group):
-        return await hsm.call(ctx, name, *args)
+        return hsm.call(ctx, name, *args)
     machine = _resolve_machine(hsm)
-    return await machine.call(name, *args)
+    return machine.call(name, *args)
 
 
 def TakeSnapshot(

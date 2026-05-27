@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 
 import pytest
 
@@ -81,6 +82,18 @@ def test_set_result_constants_are_not_public():
     assert not hasattr(hsm, "Deferred")
 
 
+def test_top_level_runtime_helpers_are_not_coroutine_functions():
+    assert not inspect.iscoroutinefunction(hsm.Start)
+    assert not inspect.iscoroutinefunction(hsm.Started)
+    assert not inspect.iscoroutinefunction(hsm.Stop)
+    assert not inspect.iscoroutinefunction(hsm.Restart)
+    assert not inspect.iscoroutinefunction(hsm.Dispatch)
+    assert not inspect.iscoroutinefunction(hsm.DispatchAll)
+    assert not inspect.iscoroutinefunction(hsm.DispatchTo)
+    assert not inspect.iscoroutinefunction(hsm.Set)
+    assert not inspect.iscoroutinefunction(hsm.Call)
+
+
 @pytest.mark.asyncio
 async def test_top_level_dispatch_resolves_none_on_success():
     instance = ResultInstance()
@@ -90,6 +103,21 @@ async def test_top_level_dispatch_resolves_none_on_success():
     result = await hsm.Dispatch(ctx, instance, hsm.Event("go"))
 
     assert result is None
+    assert instance.state() == "/ResultMachine/done"
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
+async def test_top_level_dispatch_returns_machine_completion_handle():
+    instance = ResultInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, _result_model())
+
+    completion = hsm.Dispatch(ctx, instance, hsm.Event("go"))
+
+    assert isinstance(completion, asyncio.Future)
+    assert await completion is None
     assert instance.state() == "/ResultMachine/done"
 
     await hsm.Stop(instance)
