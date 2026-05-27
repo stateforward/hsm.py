@@ -6,6 +6,7 @@ import os
 import json
 import resource
 import sys
+import inspect
 
 TimerEvent = hsm.Event("TimerEvent")
 CarArrival = hsm.Event("CarArrival")
@@ -15,6 +16,7 @@ Tick = hsm.Event("Tick")
 
 WARMUP_MS = max(1, int(os.environ.get("HSM_BENCH_WARMUP_MS", "250")))
 DURATION_MS = max(1, int(os.environ.get("HSM_BENCH_DURATION_MS", "2000")))
+VALIDATE = os.environ.get("HSM_BENCH_VALIDATE", "0") not in ("", "0", "false", "False")
 TARGET_BATCH_MS = 10.0
 
 class TrafficLight(hsm.Instance):
@@ -25,35 +27,35 @@ class TrafficLight(hsm.Instance):
         self.timer = 0
 
     @staticmethod
-    async def reset_cars(ctx, inst, event):
+    def reset_cars(ctx, inst, event):
         inst.cars_waiting = 0
 
     @staticmethod
-    async def add_car(ctx, inst, event):
+    def add_car(ctx, inst, event):
         inst.cars_waiting += 1
 
     @staticmethod
-    async def no_cars_waiting(ctx, inst, event):
+    def no_cars_waiting(ctx, inst, event):
         return inst.cars_waiting == 0
 
     @staticmethod
-    async def is_maintenance(ctx, inst, event):
+    def is_maintenance(ctx, inst, event):
         return inst.maintenance_mode == True
 
     @staticmethod
-    async def is_not_maintenance(ctx, inst, event):
+    def is_not_maintenance(ctx, inst, event):
         return inst.maintenance_mode == False
 
     @staticmethod
-    async def check_cars_for_choice(ctx, inst, event):
+    def check_cars_for_choice(ctx, inst, event):
         return inst.cars_waiting > 10
 
     @staticmethod
-    async def set_timer_extended(ctx, inst, event):
+    def set_timer_extended(ctx, inst, event):
         inst.timer = 60
 
     @staticmethod
-    async def set_timer_standard(ctx, inst, event):
+    def set_timer_standard(ctx, inst, event):
         inst.timer = 40
 
     model = hsm.define("TrafficLight",
@@ -121,6 +123,37 @@ class TrafficLight(hsm.Instance):
         )
     )
 
+def assert_traffic_light(light, state, cars_waiting, timer, step):
+    actual_state = light.state()
+    if actual_state != state:
+        raise AssertionError(f"{step}: state {actual_state!r}, expected {state!r}")
+    if light.cars_waiting != cars_waiting:
+        raise AssertionError(f"{step}: cars_waiting {light.cars_waiting}, expected {cars_waiting}")
+    if light.timer != timer:
+        raise AssertionError(f"{step}: timer {light.timer}, expected {timer}")
+
+async def validate_traffic_light():
+    light = TrafficLight()
+    await hsm.start(None, light, TrafficLight.model)
+    assert_traffic_light(light, "/TrafficLight/operational/red", 0, 0, "initial")
+
+    completion = light.dispatch(CarArrival)
+    if not inspect.isawaitable(completion):
+        raise AssertionError("dispatch did not return an awaitable completion")
+    await completion
+    assert_traffic_light(light, "/TrafficLight/operational/red", 1, 0, "after CarArrival")
+
+    await light.dispatch(TimerEvent)
+    assert_traffic_light(light, "/TrafficLight/operational/green", 1, 40, "after first TimerEvent")
+
+    await light.dispatch(TimerEvent)
+    assert_traffic_light(light, "/TrafficLight/operational/yellow", 1, 40, "after second TimerEvent")
+
+    await light.dispatch(TimerEvent)
+    assert_traffic_light(light, "/TrafficLight/operational/red", 1, 40, "after third TimerEvent")
+
+    await light.stop()
+
 async def run_benchmark():
     async def dispatch_batch(light, cycles):
         for _ in range(cycles):
@@ -148,6 +181,9 @@ async def run_benchmark():
             cycles += batch_cycles
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         return cycles, elapsed_ms
+
+    if VALIDATE:
+        await validate_traffic_light()
 
     warmup_light = TrafficLight()
     await hsm.start(None, warmup_light, TrafficLight.model)

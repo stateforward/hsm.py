@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import collections
+import collections.abc
 import copy
 import fnmatch
+import functools
 import inspect
 import posixpath
 import re
@@ -60,6 +63,11 @@ def join(path: str, *paths: str) -> str:
     return posixpath.normpath(posixpath.join(path, *paths))
 
 
+@functools.lru_cache(maxsize=None)
+def _parent_path(path: str) -> str:
+    return posixpath.dirname(path)
+
+
 def _future_done() -> asyncio.Future[None]:
     future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     future.set_result(None)
@@ -70,6 +78,17 @@ async def _maybe_await(value: typing.Any) -> typing.Any:
     if inspect.isawaitable(value):
         return await typing.cast(typing.Awaitable[typing.Any], value)
     return value
+
+
+def _raise_async_required(value: typing.Any = None) -> typing.NoReturn:
+    _close_awaitable(value)
+    raise _AsyncRequired()
+
+
+def _close_awaitable(value: typing.Any) -> None:
+    close = getattr(value, "close", None)
+    if callable(close):
+        close()
 
 
 def _is_context_parameter(parameter: inspect.Parameter) -> bool:
@@ -455,7 +474,7 @@ class NamedElement(Element):
     def owner(self) -> str:
         if self.qualified_name in ("", "/"):
             return ""
-        return posixpath.dirname(self.qualified_name)
+        return _parent_path(self.qualified_name)
 
     def name(self) -> str:
         return posixpath.basename(self.qualified_name)
@@ -649,8 +668,15 @@ class Model(State):
         element = self.members.get(name)
         if element is None:
             return None
+        if not kinds:
+            return typing.cast(TElement, element)
+        if len(kinds) == 1:
+            base = getattr(kinds[0], "__origin__", kinds[0])
+            if not isinstance(element, base):
+                return None
+            return typing.cast(TElement, element)
         bases = tuple(getattr(kind_value, "__origin__", kind_value) for kind_value in kinds)
-        if bases and not isinstance(element, bases):
+        if not isinstance(element, bases):
             return None
         return typing.cast(TElement, element)
 
@@ -882,10 +908,7 @@ class Snapshot:
         attributes = (
             None if self.Attributes is None else _readonly_snapshot_value(self.Attributes)
         )
-        events = tuple(
-            event if isinstance(event, EventSnapshot) else EventSnapshot(*event)
-            for event in self.Events
-        )
+        events = tuple(self.Events)
         object.__setattr__(self, "Attributes", attributes)
         object.__setattr__(self, "Events", events)
 
@@ -966,6 +989,7 @@ class FinalState(State):
 class TransitionPaths:
     enter: list[str] = field(default_factory=list)
     exit: list[str] = field(default_factory=list)
+    synchronous: bool = False
 
 
 @dataclass
@@ -1057,7 +1081,7 @@ class PartialInitial(PartialElement):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: initial state is required for state machine"
             )
-        if not is_ancestor(state.qualified_name, initial_transition.target) and state.qualified_name != posixpath.dirname(initial_transition.target):
+        if not is_ancestor(state.qualified_name, initial_transition.target) and state.qualified_name != _parent_path(initial_transition.target):
             raise ValidationError(
                 f"{self.traceback[0]}:{self.traceback[1]}: Initial transition {initial_transition.qualified_name} must target a nested state not {initial_transition.target}"
             )
@@ -1113,12 +1137,12 @@ class ResolvePaths(PartialElement):
         lca = LCA(self.transition.source, self.transition.target)
         while entering not in ("", "/", lca):
             enter.insert(0, entering)
-            entering = posixpath.dirname(entering)
+            entering = _parent_path(entering)
         if self.transition.kind == Kinds.Self:
             enter.append(self.transition.source)
         source_element = model.get(self.transition.source, VertexNode)
         if isinstance(source_element, InitialNode):
-            self.transition.paths[posixpath.dirname(self.transition.source)] = TransitionPaths(enter=enter, exit=[])
+            self.transition.paths[_parent_path(self.transition.source)] = TransitionPaths(enter=enter, exit=[])
             return
         if self.transition.source == "/" and self.transition.target:
             raise ValidationError(
@@ -1138,24 +1162,24 @@ class ResolvePaths(PartialElement):
                 exiting = qualified_name
                 while exiting not in ("", lca):
                     exit_path.append(exiting)
-                    exiting = posixpath.dirname(exiting)
+                    exiting = _parent_path(exiting)
             self.transition.paths[qualified_name] = TransitionPaths(enter=enter, exit=exit_path)
 
 
 def LCA(a: str, b: str) -> str:
     if a == b:
-        return posixpath.dirname(a)
+        return _parent_path(a)
     if not a:
         return b
     if not b:
         return a
-    if posixpath.dirname(a) == posixpath.dirname(b):
-        return posixpath.dirname(a)
+    if _parent_path(a) == _parent_path(b):
+        return _parent_path(a)
     if IsAncestor(a, b):
         return a
     if IsAncestor(b, a):
         return b
-    return LCA(posixpath.dirname(a), posixpath.dirname(b))
+    return LCA(_parent_path(a), _parent_path(b))
 
 
 def least_common_ancestor(source: str, target: str) -> str:
@@ -1169,11 +1193,11 @@ def IsAncestor(current: str, target: str) -> bool:
         return False
     if current_norm == "/":
         return True
-    parent = posixpath.dirname(target_norm)
+    parent = _parent_path(target_norm)
     while parent not in ("", ".", "/"):
         if parent == current_norm:
             return True
-        parent = posixpath.dirname(parent)
+        parent = _parent_path(parent)
     return parent == current_norm
 
 
@@ -1817,7 +1841,7 @@ def _segments_between(owner: str, target: str) -> list[str]:
     segments: list[str] = []
     while current not in ("", owner):
         segments.insert(0, current)
-        current = posixpath.dirname(current)
+        current = _parent_path(current)
     return segments
 
 
@@ -1870,10 +1894,10 @@ class Queue:
         fifo: "Queue | None" = None,
         *,
         Push: typing.Callable[[Event], BaseException | None] | None = None,
-        Pop: typing.Callable[[], typing.Awaitable[Event | BaseException | None] | Event | BaseException | None] | None = None,
+        Pop: typing.Callable[[], Event | BaseException | None] | None = None,
         Len: typing.Callable[[], int | BaseException] | None = None,
         push: typing.Callable[[Event], BaseException | None] | None = None,
-        pop: typing.Callable[[], typing.Awaitable[Event | BaseException | None] | Event | BaseException | None] | None = None,
+        pop: typing.Callable[[], Event | BaseException | None] | None = None,
         len: typing.Callable[[], int | BaseException] | None = None,
     ) -> None:
         self._lock = threading.Lock()
@@ -1885,10 +1909,10 @@ class Queue:
     def _make_fifo(
         fifo: "Queue | None",
         Push: typing.Callable[[Event], BaseException | None] | None,
-        Pop: typing.Callable[[], typing.Awaitable[Event | BaseException | None] | Event | BaseException | None] | None,
+        Pop: typing.Callable[[], Event | BaseException | None] | None,
         Len: typing.Callable[[], int | BaseException] | None,
         push: typing.Callable[[Event], BaseException | None] | None,
-        pop: typing.Callable[[], typing.Awaitable[Event | BaseException | None] | Event | BaseException | None] | None,
+        pop: typing.Callable[[], Event | BaseException | None] | None,
         len: typing.Callable[[], int | BaseException] | None,
     ) -> typing.Any:
         canonical = (Push, Pop, Len)
@@ -1916,7 +1940,7 @@ class Queue:
                 raise TypeError("Queue requires complete Push/Pop/Len or push/pop/len hooks")
         return fifo
 
-    def push(self, event: Event) -> BaseException | None:
+    def push(self, event: Event[typing.Any]) -> BaseException | None:
         if is_kind(event.kind, Kinds.CompletionEvent):
             with self._lock:
                 self._completion_events.appendleft(event)
@@ -1926,22 +1950,26 @@ class Queue:
                 maybe_error = self._fifo.push(event)
             except BaseException as error:
                 return error
+            if inspect.isawaitable(maybe_error):
+                _close_awaitable(maybe_error)
+                return TypeError("Queue Push must return synchronously")
             return maybe_error if isinstance(maybe_error, BaseException) else None
         with self._lock:
             self._regular_events.append(event)
         return None
 
-    async def pop(self) -> Event | BaseException | None:
+    def pop(self) -> Event | BaseException | None:
         with self._lock:
             if self._completion_events:
                 return self._completion_events.popleft()
         if self._fifo is not None:
             try:
                 maybe_event = self._fifo.pop()
-                if inspect.isawaitable(maybe_event):
-                    maybe_event = await maybe_event
             except BaseException as error:
                 return error
+            if inspect.isawaitable(maybe_event):
+                _close_awaitable(maybe_event)
+                return TypeError("Queue Pop must return synchronously")
             return maybe_event
         with self._lock:
             if self._regular_events:
@@ -1957,6 +1985,9 @@ class Queue:
                 maybe_len = self._fifo.len()
             except BaseException as error:
                 return error
+            if inspect.isawaitable(maybe_len):
+                _close_awaitable(maybe_len)
+                return TypeError("Queue Len must return synchronously")
             if isinstance(maybe_len, BaseException):
                 return maybe_len
             regular_len = maybe_len
@@ -1967,6 +1998,10 @@ class Queue:
 class ActiveBehavior:
     context: Context
     task: asyncio.Task[None]
+
+
+class _AsyncRequired(Exception):
+    pass
 
 
 def _clock_for_instance(instance: typing.Any) -> Clock:
@@ -2054,6 +2089,7 @@ class HSM(Behavior[TInstance]):
         self._after = _AfterWaiters()
         self._state: VertexNode = model
         self._awaitable: typing.Awaitable[None] = _future_done()
+        self._dispatch_completions: list[asyncio.Future[None]] = []
         self._attributes = _default_attribute_values(model)
         self._history_shallow: dict[str, str] = {}
         self._history_deep: dict[str, str] = {}
@@ -2136,25 +2172,30 @@ class HSM(Behavior[TInstance]):
         self._stop_requested = False
         self._restart_requested = None
         self._awaitable = _future_done()
+        self._dispatch_completions.clear()
         self._root_context.unregister(self)
 
     def _remember_history(self, leaf_name: str) -> None:
         current = leaf_name
         while current not in ("", "/", self.model.qualified_name):
-            parent = posixpath.dirname(current)
+            parent = _parent_path(current)
             if parent in ("", ".", "/") or parent == current:
                 break
             self._history_shallow[parent] = current
             current = parent
         current = leaf_name
         while current not in ("", ".", "/"):
-            parent = posixpath.dirname(current)
+            parent = _parent_path(current)
             if parent in ("", ".", "/") or parent == current:
                 break
             self._history_deep[parent] = leaf_name
             if parent == self.model.qualified_name:
                 break
             current = parent
+
+    def _queue_final_completion(self, vertex: VertexNode) -> None:
+        if isinstance(vertex, FinalStateNode):
+            self._queue_push(Event(name=FinalEvent.name, kind=Kinds.CompletionEvent))
 
     async def _follow_from_owner(self, owner_name: str, target_name: str, event: Event) -> VertexNode:
         current: VertexNode = self.model.get(owner_name, VertexNode) or self.model
@@ -2202,12 +2243,14 @@ class HSM(Behavior[TInstance]):
                 behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
                 if behavior is not None:
                     await self._execute(behavior, event)
-            self._after._notify(self._after.entry, lambda expected: expected == vertex.qualified_name)
+            if self._after.entry:
+                self._after._notify(self._after.entry, lambda expected: expected == vertex.qualified_name)
             for behavior_name in vertex.activity:
                 behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
                 if behavior is not None:
                     await self._execute(behavior, event)
             if not default_entry or vertex.initial == "":
+                self._queue_final_completion(vertex)
                 return vertex
             initial = self.model.get(vertex.initial, VertexNode)
             if isinstance(initial, VertexNode) and initial.transitions:
@@ -2226,7 +2269,8 @@ class HSM(Behavior[TInstance]):
                 behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
                 if behavior is not None:
                     await self._execute(behavior, event)
-            self._after._notify(self._after.exit, lambda expected: expected == vertex.qualified_name)
+            if self._after.exit:
+                self._after._notify(self._after.exit, lambda expected: expected == vertex.qualified_name)
         return vertex
 
     async def _evaluate(self, guard: GuardNode[TInstance], event: Event) -> bool:
@@ -2290,6 +2334,8 @@ class HSM(Behavior[TInstance]):
             return
 
     def _notify_executed(self, behavior: BehaviorNode[TInstance]) -> None:
+        if not self._after.executed:
+            return
         names = {behavior.qualified_name}
         owner = behavior.owner()
         if owner:
@@ -2300,7 +2346,7 @@ class HSM(Behavior[TInstance]):
             if element is not None:
                 names.add(current)
                 break
-            current = posixpath.dirname(current)
+            current = _parent_path(current)
         self._after._notify(self._after.executed, lambda expected: expected in names)
 
     async def _terminate(self, behavior: BehaviorNode[TInstance]) -> None:
@@ -2340,24 +2386,34 @@ class HSM(Behavior[TInstance]):
             qualified_name = source.owner()
         return True
 
-    async def _process(self) -> None:
+    async def _process(self, first_event: Event | None = None) -> None:
         deferred: list[Event] = []
+        error: BaseException | None = None
         try:
-            await self._drain_queue(deferred)
+            await self._drain_queue(deferred, first_event)
+        except BaseException as exc:
+            error = exc
+            raise
         finally:
-            for deferred_event in deferred:
-                self._queue_push(deferred_event)
             try:
-                while self._restart_requested is not None or self._stop_requested:
-                    if self._restart_requested is not None:
-                        (restart_data,) = self._restart_requested
-                        self._restart_requested = None
+                for deferred_event in deferred:
+                    self._queue_push(deferred_event)
+                try:
+                    while self._restart_requested is not None or self._stop_requested:
+                        if self._restart_requested is not None:
+                            (restart_data,) = self._restart_requested
+                            self._restart_requested = None
+                            self._stop_requested = False
+                            await self._restart_locked(restart_data)
+                            continue
                         self._stop_requested = False
-                        await self._restart_locked(restart_data)
-                        continue
-                    self._stop_requested = False
-                    await self._stop_locked()
+                        await self._stop_locked()
+                except BaseException as exc:
+                    if error is None:
+                        error = exc
+                    raise
             finally:
+                self._complete_dispatches(error)
                 self._processing.release()
 
     def _queue_push(self, event: Event) -> None:
@@ -2365,9 +2421,9 @@ class HSM(Behavior[TInstance]):
         if error is not None and not is_kind(event.kind, Kinds.ErrorEvent):
             self._queue.push(Event(name=ErrorEvent.name, data=error, kind=Kinds.ErrorEvent))
 
-    async def _queue_pop(self) -> Event | None:
+    def _queue_pop(self) -> Event | None:
         while True:
-            event_or_error = await self._queue.pop()
+            event_or_error = self._queue.pop()
             if not isinstance(event_or_error, BaseException):
                 return event_or_error
             self._queue.push(Event(name=ErrorEvent.name, data=event_or_error, kind=Kinds.ErrorEvent))
@@ -2379,9 +2435,9 @@ class HSM(Behavior[TInstance]):
             return 0
         return len_or_error
 
-    async def _drain_queue(self, deferred: list[Event]) -> None:
+    async def _drain_queue(self, deferred: list[Event], first_event: Event | None = None) -> None:
         local_events: collections.deque[Event] = collections.deque()
-        event = await self._queue_pop()
+        event = first_event if first_event is not None else self._queue_pop()
         while event is not None:
             event_qualified_name = event.qualified_name
             current_leaf = self._state
@@ -2398,14 +2454,15 @@ class HSM(Behavior[TInstance]):
                     deferred.append(event)
                     break
                 qualified_name = source.owner()
-            self._after._notify(
-                self._after.process,
-                lambda expected: expected is None or expected == event_qualified_name,
-            )
+            if self._after.process:
+                self._after._notify(
+                    self._after.process,
+                    lambda expected: expected is None or expected == event_qualified_name,
+                )
             if local_events:
                 event = local_events.popleft()
             else:
-                event = await self._queue_pop()
+                event = self._queue_pop()
             if event is None and deferred:
                 retry: list[Event] = []
                 still_deferred: list[Event] = []
@@ -2421,6 +2478,224 @@ class HSM(Behavior[TInstance]):
         for deferred_event in deferred:
             self._queue_push(deferred_event)
         deferred.clear()
+
+    def _evaluate_sync(self, guard: GuardNode[TInstance], event: Event) -> bool:
+        try:
+            result = guard.expression(self._runtime_context, self._instance, event)
+            if inspect.isawaitable(result):
+                _raise_async_required(result)
+            return bool(result)
+        except _AsyncRequired:
+            raise
+        except Exception:
+            return False
+
+    def _execute_sync(self, behavior: BehaviorNode[TInstance], event: Event) -> None:
+        try:
+            if behavior.kind == Kinds.Concurrent:
+                activity_ctx = Context()
+
+                async def run_activity() -> None:
+                    try:
+                        await _maybe_await(behavior.operation(activity_ctx, self._instance, event))
+                    except asyncio.CancelledError as error:
+                        was_done = activity_ctx.is_done()
+                        activity_ctx.cancel()
+                        if _task_is_cancelling() or was_done:
+                            return
+                        self._dispatch_error(error)
+                    except Exception as error:
+                        if activity_ctx.is_done():
+                            return
+                        activity_ctx.cancel()
+                        self._dispatch_error(error)
+                    finally:
+                        self._notify_executed(behavior)
+                        if self._active.get(behavior.qualified_name) is active_behavior:
+                            self._active.pop(behavior.qualified_name, None)
+
+                task = asyncio.create_task(run_activity(), name=behavior.qualified_name)
+                active_behavior = ActiveBehavior(context=activity_ctx, task=task)
+                self._active[behavior.qualified_name] = active_behavior
+                return
+            result = behavior.operation(self._runtime_context, self._instance, event)
+            if inspect.isawaitable(result):
+                _raise_async_required(result)
+            self._notify_executed(behavior)
+        except _AsyncRequired:
+            raise
+        except Exception as error:
+            if is_kind(event.kind, Kinds.ErrorEvent):
+                return
+            self._dispatch_error(error)
+
+    def _enter_sync(self, vertex: VertexNode, event: Event, default_entry: bool) -> VertexNode:
+        if isinstance(vertex, (ShallowHistoryNode, DeepHistoryNode)):
+            raise _AsyncRequired()
+        if isinstance(vertex, ChoiceNode):
+            for transition_name in vertex.transitions:
+                transition = self.model.get(transition_name, TransitionNode)
+                if transition is None:
+                    continue
+                guard = self.model.get(transition.guard or "", GuardNode[TInstance])
+                if guard is not None and not self._evaluate_sync(guard, event):
+                    continue
+                return self._transition_sync(vertex, transition, event)
+            return self._state
+        if isinstance(vertex, StateNode):
+            for behavior_name in vertex.entry:
+                behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
+                if behavior is not None:
+                    self._execute_sync(behavior, event)
+            if self._after.entry:
+                self._after._notify(self._after.entry, lambda expected: expected == vertex.qualified_name)
+            for behavior_name in vertex.activity:
+                behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
+                if behavior is not None:
+                    self._execute_sync(behavior, event)
+            if not default_entry or vertex.initial == "":
+                self._queue_final_completion(vertex)
+                return vertex
+            initial = self.model.get(vertex.initial, VertexNode)
+            if isinstance(initial, VertexNode) and initial.transitions:
+                transition = self.model.get(initial.transitions[0], TransitionNode)
+                if transition is not None:
+                    return self._transition_sync(vertex, transition, event)
+        return vertex
+
+    def _exit_sync(self, vertex: VertexNode, event: Event) -> VertexNode:
+        if isinstance(vertex, StateNode):
+            for behavior_name in vertex.activity:
+                behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
+                if behavior is not None:
+                    self._terminate_sync(behavior)
+            for behavior_name in vertex.exit:
+                behavior = self.model.get(behavior_name, BehaviorNode[TInstance])
+                if behavior is not None:
+                    self._execute_sync(behavior, event)
+            if self._after.exit:
+                self._after._notify(self._after.exit, lambda expected: expected == vertex.qualified_name)
+        return vertex
+
+    def _terminate_sync(self, behavior: BehaviorNode[TInstance]) -> None:
+        active = self._active.pop(behavior.qualified_name, None)
+        if active is None:
+            return
+        active.context.cancel()
+        if active.task is not asyncio.current_task():
+            active.task.cancel()
+
+    def _enabled_sync(self, source: StateNode, event: Event) -> TransitionNode | None:
+        source_transitions = self.model.transition_map.get(source.qualified_name, {})
+        ordered = [*source_transitions.get(event.qualified_name, []), *source_transitions.get(AnyEvent.qualified_name, [])]
+        for transition in ordered:
+            maybe_guard = self.model.get(transition.guard or "", GuardNode[TInstance])
+            if maybe_guard is None:
+                return transition
+            if self._evaluate_sync(maybe_guard, event):
+                return transition
+        return None
+
+    def _transition_sync(self, current_leaf: VertexNode, transition: TransitionNode, event: Event) -> VertexNode:
+        path = transition.paths.get(current_leaf.qualified_name)
+        if path is None:
+            return current_leaf
+        if not path.synchronous:
+            raise _AsyncRequired()
+        if self._path_touches_activity(path):
+            raise _AsyncRequired()
+        if transition.kind != Kinds.Internal:
+            self._remember_history(current_leaf.qualified_name)
+        for exiting in path.exit:
+            vertex = self.model.get(exiting, VertexNode)
+            if vertex is not None:
+                self._exit_sync(vertex, event)
+        for effect_name in transition.effect:
+            effect = self.model.get(effect_name, BehaviorNode[TInstance])
+            if effect is not None:
+                self._execute_sync(effect, event)
+        if transition.kind == Kinds.Internal:
+            return current_leaf
+        current: VertexNode = current_leaf
+        for entering in path.enter:
+            vertex = self.model.get(entering, VertexNode)
+            if vertex is None:
+                continue
+            current = self._enter_sync(vertex, event, entering == transition.target)
+            if entering == transition.target:
+                return current
+        target = self.model.get(transition.target, VertexNode)
+        return current if target is None else target
+
+    def _path_touches_activity(self, path: TransitionPaths) -> bool:
+        for name in (*path.exit, *path.enter):
+            vertex = self.model.get(name, StateNode)
+            if vertex is not None and vertex.activity:
+                return True
+        return False
+
+    def _event_can_process_sync(self, event: Event) -> bool:
+        qualified_name = self._state.qualified_name
+        while qualified_name:
+            source = self.model.get(qualified_name, StateNode)
+            if source is None:
+                break
+            source_transitions = self.model.transition_map.get(source.qualified_name, {})
+            ordered = [*source_transitions.get(event.qualified_name, []), *source_transitions.get(AnyEvent.qualified_name, [])]
+            for transition in ordered:
+                path = transition.paths.get(self._state.qualified_name)
+                if path is None or not path.synchronous or self._path_touches_activity(path):
+                    return False
+            if self.model.deferred_map.get(qualified_name, {}).get(event.qualified_name, False):
+                return False
+            qualified_name = source.owner()
+        return True
+
+    def _process_event_sync(self, event: Event) -> None:
+        event_qualified_name = event.qualified_name
+        current_leaf = self._state
+        qualified_name = current_leaf.qualified_name
+        while qualified_name:
+            source = self.model.get(qualified_name, StateNode)
+            if source is None:
+                break
+            transition = self._enabled_sync(source, event)
+            if transition is not None:
+                self._state = self._transition_sync(current_leaf, transition, event)
+                break
+            qualified_name = source.owner()
+        if self._after.process:
+            self._after._notify(
+                self._after.process,
+                lambda expected: expected is None or expected == event_qualified_name,
+            )
+
+    def _process_sync_or_task(self) -> typing.Awaitable[None]:
+        error: BaseException | None = None
+        try:
+            event = self._queue_pop()
+            while event is not None:
+                if not self._event_can_process_sync(event):
+                    return asyncio.create_task(self._process(event))
+                self._process_event_sync(event)
+                if self._restart_requested is not None or self._stop_requested:
+                    return asyncio.create_task(self._process())
+                event = self._queue_pop()
+            self._complete_dispatches(None)
+            self._processing.release()
+            return _future_done()
+        except _AsyncRequired:
+            error = RuntimeError("transition path marked synchronous returned awaitable")
+            self._complete_dispatches(error)
+            self._processing.release()
+            future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            future.set_exception(error)
+            return future
+        except BaseException as exc:
+            error = exc
+            self._complete_dispatches(error)
+            self._processing.release()
+            raise
 
     async def _transition(self, current_leaf: VertexNode, transition: TransitionNode, event: Event) -> VertexNode:
         path = transition.paths.get(current_leaf.qualified_name)
@@ -2449,20 +2724,39 @@ class HSM(Behavior[TInstance]):
         target = self.model.get(transition.target, VertexNode)
         return current if target is None else target
 
+    def _complete_dispatches(self, error: BaseException | None = None) -> None:
+        completions = self._dispatch_completions
+        self._dispatch_completions = []
+        for completion in completions:
+            if completion.done():
+                continue
+            if error is None:
+                completion.set_result(None)
+            else:
+                completion.set_exception(error)
+
     def _dispatch_task(self, event: Event[typing.Any], observe_result: bool = True) -> typing.Awaitable[None]:
         self._ensure_accepting_events()
         self._queue_push(event)
-        self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
-        if self._processing.try_acquire():
-            self._awaitable = asyncio.create_task(self._process())
-        elif asyncio.current_task() is self._awaitable:
+        if self._after.dispatch:
+            self._after._notify(self._after.dispatch, lambda expected: expected == event.qualified_name)
+        acquired = self._processing.try_acquire()
+        if not acquired and asyncio.current_task() is self._awaitable:
             return _future_done()
+        if not acquired and isinstance(self._awaitable, asyncio.Future) and self._awaitable.done():
+            return _future_done()
+        completion: asyncio.Future[None] | None = None
+        if observe_result:
+            completion = asyncio.get_running_loop().create_future()
+            self._dispatch_completions.append(completion)
+        if acquired:
+            self._awaitable = self._process_sync_or_task()
         if not observe_result:
             return self._awaitable
-        return self._awaitable
+        return typing.cast(asyncio.Future[None], completion)
 
     def dispatch(self, event: Event[typing.Any]) -> typing.Awaitable[None]:
-        return asyncio.shield(self._dispatch_task(_clone_event(event)))
+        return self._dispatch_task(_clone_event(event))
 
     async def _stop_locked(self) -> None:
         final_event = Event(name=FinalEvent.name, kind=Kinds.CompletionEvent)
@@ -2470,7 +2764,7 @@ class HSM(Behavior[TInstance]):
         try:
             while self._state.qualified_name != self.model.qualified_name:
                 await self._exit(self._state, final_event)
-                parent = self.model.get(posixpath.dirname(self._state.qualified_name), VertexNode)
+                parent = self.model.get(_parent_path(self._state.qualified_name), VertexNode)
                 if parent is None:
                     break
                 self._state = parent
@@ -2634,7 +2928,7 @@ class HSM(Behavior[TInstance]):
             State=self._state.qualified_name,
             Attributes=copy.deepcopy(self._attributes),
             QueueLen=self._queue_len(),
-            Events=events,
+            Events=tuple(events),
         )
 
     State = state
@@ -2660,7 +2954,7 @@ class Group:
                 continue
             if isinstance(instance, Group):
                 self.instances.extend(instance.instances)
-            else:
+            elif isinstance(instance, Instance):
                 self.instances.append(instance)
 
     def Instances(self) -> list[Instance]:
@@ -2826,6 +3120,7 @@ def _event_from_name(event_or_name: str | Event, kind_value: int = Kinds.Event) 
 
 
 def _clone_event(event: Event[TData]) -> Event[TData]:
+    schema = None if event.schema is None else copy.deepcopy(event.schema)
     return Event(
         name=event.name,
         data=event.data,
@@ -2834,7 +3129,7 @@ def _clone_event(event: Event[TData]) -> Event[TData]:
         source=event.source,
         target=event.target,
         qualified_name=event.qualified_name,
-        schema=copy.deepcopy(event.schema),
+        schema=schema,
     )
 
 
@@ -2853,6 +3148,7 @@ def _finalize_model(model: Model) -> None:
             raise ValidationError(f'missing operation "{name}" for behavior or guard')
     _build_transition_table(model)
     _build_deferred_table(model)
+    _mark_synchronous_transition_paths(model)
 
 
 def _build_transition_table(model: Model) -> None:
@@ -2875,14 +3171,107 @@ def _build_transition_table(model: Model) -> None:
                         transitions_by_event.setdefault(event_name, []).append((transition, depth, index))
             if current_path in ("", "/", model.qualified_name):
                 if current_path == model.qualified_name:
-                    current_path = posixpath.dirname(current_path)
+                    current_path = _parent_path(current_path)
                 else:
                     break
-            current_path = posixpath.dirname(current_path)
+            current_path = _parent_path(current_path)
             depth += 1
         for event_name, transitions in transitions_by_event.items():
             transitions.sort(key=lambda item: (item[1], item[2]))
             model.transition_map[state_name][event_name] = [item[0] for item in transitions]
+
+
+def _callable_is_synchronous(callback: typing.Callable[..., typing.Any]) -> bool:
+    try:
+        callback = inspect.unwrap(callback)
+    except Exception:
+        pass
+    return not inspect.iscoroutinefunction(callback)
+
+
+def _guard_is_synchronous(model: Model, guard_name: str | None) -> bool:
+    guard = model.get(guard_name or "", GuardNode)
+    return guard is None or _callable_is_synchronous(guard.expression)
+
+
+def _behavior_is_synchronous(model: Model, behavior_name: str) -> bool:
+    behavior = model.get(behavior_name, BehaviorNode)
+    if behavior is None or behavior.kind == Kinds.Concurrent:
+        return True
+    return _callable_is_synchronous(behavior.operation)
+
+
+def _behaviors_are_synchronous(model: Model, behavior_names: list[str]) -> bool:
+    return all(_behavior_is_synchronous(model, behavior_name) for behavior_name in behavior_names)
+
+
+def _entry_is_synchronous(
+    model: Model,
+    vertex: VertexNode,
+    default_entry: bool,
+    seen: builtins.set[tuple[str, str]],
+) -> bool:
+    if isinstance(vertex, (ShallowHistoryNode, DeepHistoryNode)):
+        return False
+    if isinstance(vertex, ChoiceNode):
+        for transition_name in vertex.transitions:
+            transition = model.get(transition_name, TransitionNode)
+            if transition is None:
+                continue
+            if not _transition_is_synchronous(model, transition, vertex.qualified_name, seen):
+                return False
+        return True
+    if isinstance(vertex, StateNode):
+        if not _behaviors_are_synchronous(model, vertex.entry):
+            return False
+        if not default_entry or vertex.initial == "":
+            return True
+        initial = model.get(vertex.initial, VertexNode)
+        if isinstance(initial, VertexNode) and initial.transitions:
+            transition = model.get(initial.transitions[0], TransitionNode)
+            if transition is not None:
+                return _transition_is_synchronous(model, transition, vertex.qualified_name, seen)
+    return True
+
+
+def _transition_is_synchronous(
+    model: Model,
+    transition: TransitionNode,
+    leaf_name: str,
+    seen: builtins.set[tuple[str, str]],
+) -> bool:
+    key = (transition.qualified_name, leaf_name)
+    if key in seen:
+        return True
+    seen.add(key)
+    path = transition.paths.get(leaf_name)
+    if path is None:
+        return True
+    if not _guard_is_synchronous(model, transition.guard):
+        return False
+    if not _behaviors_are_synchronous(model, transition.effect):
+        return False
+    for exiting in path.exit:
+        vertex = model.get(exiting, StateNode)
+        if vertex is not None and not _behaviors_are_synchronous(model, vertex.exit):
+            return False
+    if transition.kind == Kinds.Internal:
+        return True
+    for entering in path.enter:
+        vertex = model.get(entering, VertexNode)
+        if vertex is None:
+            continue
+        if not _entry_is_synchronous(model, vertex, entering == transition.target, seen):
+            return False
+    return True
+
+
+def _mark_synchronous_transition_paths(model: Model) -> None:
+    for element in model.members.values():
+        if not isinstance(element, TransitionNode):
+            continue
+        for leaf_name, path in element.paths.items():
+            path.synchronous = _transition_is_synchronous(model, element, leaf_name, builtins.set())
 
 
 def _build_deferred_table(model: Model) -> None:
@@ -2902,10 +3291,10 @@ def _build_deferred_table(model: Model) -> None:
                     model.deferred_map[state_name][deferred_event] = True
             if current_path in ("", "/", model.qualified_name):
                 if current_path == model.qualified_name:
-                    current_path = posixpath.dirname(current_path)
+                    current_path = _parent_path(current_path)
                 else:
                     break
-            current_path = posixpath.dirname(current_path)
+            current_path = _parent_path(current_path)
 
 
 def Define(name: str, *elements: NamedElement) -> Model:

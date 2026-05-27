@@ -184,9 +184,9 @@ async def test_context_waitable_queue_and_instance_branches():
     queue.push(core.Event(name="regular"))
     queue.push(core.Event(name="complete", kind=core.Kinds.CompletionEvent))
     assert queue.len() == 2
-    assert (await queue.pop()).name == "complete"
-    assert (await queue.pop()).name == "regular"
-    assert await queue.pop() is None
+    assert queue.pop().name == "complete"
+    assert queue.pop().name == "regular"
+    assert queue.pop() is None
 
     class RecordingQueue(core.Queue):
         def __init__(self):
@@ -203,16 +203,16 @@ async def test_context_waitable_queue_and_instance_branches():
     queue.push(core.Event(name="complete", kind=core.Kinds.CompletionEvent))
     assert regular_queue.pushed == ["regular"]
     assert queue.len() == 2
-    assert (await queue.pop()).name == "complete"
-    assert (await queue.pop()).name == "regular"
-    assert await queue.pop() is None
+    assert queue.pop().name == "complete"
+    assert queue.pop().name == "regular"
+    assert queue.pop() is None
 
     with pytest.raises(TypeError, match="complete Push/Pop/Len"):
         core.Queue(Push=lambda event: None)
 
     hook_items: list[core.Event] = []
 
-    async def hook_pop() -> core.Event | None:
+    def hook_pop() -> core.Event | None:
         return hook_items.pop(0) if hook_items else None
 
     hook_queue = core.Queue(
@@ -222,7 +222,7 @@ async def test_context_waitable_queue_and_instance_branches():
     )
     hook_queue.push(core.Event(name="hooked"))
     assert hook_queue.len() == 1
-    assert (await hook_queue.pop()).name == "hooked"
+    assert hook_queue.pop().name == "hooked"
 
     class FailingPushQueue(core.Queue):
         def __init__(self, error: RuntimeError):

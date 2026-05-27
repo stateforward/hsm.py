@@ -60,14 +60,18 @@ kind = MakeKind
 
 
 def IsKind(kind_value: int, *base_kinds: int) -> bool:
+    kind_int = int(kind_value)
     for base in base_kinds:
         base_id = int(base) & id_mask
-        if int(kind_value) == base_id:
+        if kind_int == base_id:
             return True
-        for depth in range(depth_max):
-            current_id = _extract_id(kind_value, depth)
-            if current_id == base_id:
+        current = kind_int
+        for _ in range(depth_max):
+            if current & id_mask == base_id:
                 return True
+            current >>= id_length
+            if current == 0:
+                break
     return False
 
 

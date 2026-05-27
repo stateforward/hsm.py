@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 import hsm
@@ -15,6 +17,21 @@ def _result_model() -> hsm.Model:
         hsm.State(
             "idle",
             hsm.Transition(hsm.On("go"), hsm.Target("../done")),
+        ),
+        hsm.State("done"),
+    )
+
+
+def _async_result_model() -> hsm.Model:
+    async def effect(ctx: hsm.Context, inst: ResultInstance, event: hsm.Event) -> None:
+        await asyncio.sleep(0)
+
+    return hsm.Define(
+        "AsyncResultMachine",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done"), hsm.Effect(effect)),
         ),
         hsm.State("done"),
     )
@@ -74,6 +91,25 @@ async def test_top_level_dispatch_resolves_none_on_success():
 
     assert result is None
     assert instance.state() == "/ResultMachine/done"
+
+    await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_dispatch_completion_does_not_cancel_submitted_event():
+    instance = ResultInstance()
+    ctx = hsm.Context()
+    await hsm.Start(ctx, instance, _async_result_model())
+
+    completion = instance.dispatch(hsm.Event("go"))
+    completion.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await completion
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert instance.state() == "/AsyncResultMachine/done"
 
     await hsm.Stop(instance)
 
