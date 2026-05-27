@@ -2288,6 +2288,7 @@ class HSM(Behavior[TInstance]):
         try:
             if behavior.kind == Kinds.Concurrent:
                 activity_ctx = Context()
+                registered: list[ActiveBehavior | None] = [None]
 
                 async def run_activity() -> None:
                     try:
@@ -2305,12 +2306,13 @@ class HSM(Behavior[TInstance]):
                         self._dispatch_error(error)
                     finally:
                         self._notify_executed(behavior)
-                        if self._active.get(behavior.qualified_name) is active_behavior:
+                        current = registered[0]
+                        if current is not None and self._active.get(behavior.qualified_name) is current:
                             self._active.pop(behavior.qualified_name, None)
 
                 task = asyncio.create_task(run_activity(), name=behavior.qualified_name)
-                active_behavior = ActiveBehavior(context=activity_ctx, task=task)
-                self._active[behavior.qualified_name] = active_behavior
+                registered[0] = ActiveBehavior(context=activity_ctx, task=task)
+                self._active[behavior.qualified_name] = registered[0]
                 return
             await _maybe_await(behavior.operation(self._runtime_context, self._instance, event))
             self._notify_executed(behavior)
@@ -2494,6 +2496,7 @@ class HSM(Behavior[TInstance]):
         try:
             if behavior.kind == Kinds.Concurrent:
                 activity_ctx = Context()
+                registered: list[ActiveBehavior | None] = [None]
 
                 async def run_activity() -> None:
                     try:
@@ -2511,12 +2514,13 @@ class HSM(Behavior[TInstance]):
                         self._dispatch_error(error)
                     finally:
                         self._notify_executed(behavior)
-                        if self._active.get(behavior.qualified_name) is active_behavior:
+                        current = registered[0]
+                        if current is not None and self._active.get(behavior.qualified_name) is current:
                             self._active.pop(behavior.qualified_name, None)
 
                 task = asyncio.create_task(run_activity(), name=behavior.qualified_name)
-                active_behavior = ActiveBehavior(context=activity_ctx, task=task)
-                self._active[behavior.qualified_name] = active_behavior
+                registered[0] = ActiveBehavior(context=activity_ctx, task=task)
+                self._active[behavior.qualified_name] = registered[0]
                 return
             result = behavior.operation(self._runtime_context, self._instance, event)
             if inspect.isawaitable(result):

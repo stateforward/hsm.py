@@ -3259,6 +3259,36 @@ def test_after_executed_closes_when_activity_is_cancelled_on_stop():
     asyncio.run(_after_executed_closes_when_activity_is_cancelled_on_stop())
 
 
+async def _eager_completed_activity_does_not_fail_on_stop() -> None:
+    class EagerCompletedActivityInstance(hsm.Instance):
+        pass
+
+    async def immediate_activity(ctx, inst: EagerCompletedActivityInstance, event):
+        return None
+
+    loop = asyncio.get_running_loop()
+    previous_task_factory = loop.get_task_factory()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    try:
+        model = hsm.Define(
+            "EagerCompletedActivity",
+            hsm.Initial(hsm.Target("active")),
+            hsm.State("active", hsm.Activity(immediate_activity)),
+        )
+        instance = EagerCompletedActivityInstance()
+        ctx = hsm.Context()
+        sm = await hsm.Started(ctx, instance, model)
+
+        await asyncio.wait_for(hsm.Stop(sm), timeout=1)
+        assert sm._active == {}
+    finally:
+        loop.set_task_factory(previous_task_factory)
+
+
+def test_eager_completed_activity_does_not_fail_on_stop():
+    asyncio.run(_eager_completed_activity_does_not_fail_on_stop())
+
+
 async def _cancelled_start_cleans_up_registration_and_activities() -> None:
     class CancelledStartInstance(hsm.Instance):
         def __init__(self):
