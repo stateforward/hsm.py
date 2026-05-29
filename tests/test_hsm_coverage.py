@@ -2,6 +2,7 @@ import asyncio
 import re
 import subprocess
 import sys
+import weakref
 from datetime import timedelta
 
 import pytest
@@ -61,6 +62,23 @@ def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
         "/Bare/parent",
         "/Bare/parent/child",
     ]
+    assert core._current_task_or_none() is None
+    assert core._qualify_model_name("/Bare", "") == ""
+    assert core._qualify_model_name("/Bare", "/Bare/idle") == "/Bare/idle"
+    assert core._qualify_model_name("/Bare", "/outside") == "/Bare/outside"
+
+    class Closable:
+        def __init__(self):
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    closable = Closable()
+    core._close_awaitable(closable)
+    assert closable.closed is True
+    with pytest.raises(core._AsyncRequired):
+        core._raise_async_required(Closable())
 
     event = core.Event(
         name="go",
@@ -108,12 +126,26 @@ def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
 
 @pytest.mark.asyncio
 async def test_context_waitable_queue_and_instance_branches():
+    assert core._current_task_or_none() is asyncio.current_task()
     await core._normalize_waitable(None)
 
     trigger = asyncio.Event()
     trigger.set()
     await core._normalize_waitable(trigger)
     await core._normalize_waitable(asyncio.sleep(0))
+    future = asyncio.get_running_loop().create_future()
+    future.set_result(None)
+    await core._normalize_waitable(future)
+
+    class FutureWaiter:
+        def __init__(self):
+            self.future = asyncio.get_running_loop().create_future()
+            self.future.set_result(None)
+
+        def wait(self) -> asyncio.Future[None]:
+            return self.future
+
+    await core._normalize_waitable(FutureWaiter())
 
     class AsyncWaiter:
         def __init__(self):
@@ -175,10 +207,23 @@ async def test_context_waitable_queue_and_instance_branches():
         pass
 
     registered = Registered()
-    other.register(registered)  # type: ignore[arg-type]
-    assert registered in other.machines()
-    other.unregister(registered)  # type: ignore[arg-type]
-    other.unregister(registered)  # type: ignore[arg-type]
+    registry_context = other.WithValue(core.Keys.Instances, weakref.WeakSet())
+    registry_context.register(registered)
+    assert registered in registry_context.machines()
+    registry_context.unregister(registered)
+    registry_context.unregister(registered)
+    assert core.context is core.Context
+    assert core.context_key is core.ContextKey
+    assert core.keys is core.Keys
+    request_key = core.context_key("request")
+    alias_context = other.with_value(request_key, "req-1")
+    assert alias_context.value(request_key) == "req-1"
+    assert alias_context.Value(request_key) == "req-1"
+    assert other.value(request_key) is None
+    assert core.from_context(alias_context) == (None, False)
+    instances, ok = core.instances_from_context(alias_context)
+    assert ok is True
+    assert instances == []
 
     queue = core.Queue()
     queue.push(core.Event(name="regular"))
@@ -268,12 +313,12 @@ async def test_context_waitable_queue_and_instance_branches():
     assert queue_error_instance.error is queue_error
 
     machine_free = CoverageInstance()
-    with pytest.raises(core.ValidationError, match="missing hsm"):
+    with pytest.raises(core.ValidationError, match="started HSM"):
         machine_free.dispatch(core.Event(name="noop"))
     assert machine_free.state() == ""
     assert machine_free.context() is None
     await machine_free.stop()
-    with pytest.raises(core.ValidationError, match="missing hsm"):
+    with pytest.raises(core.ValidationError, match="started HSM"):
         await machine_free.restart()
 
     await core.noop_operation(core.Context(), machine_free, core.Event(name="noop"))
@@ -281,6 +326,179 @@ async def test_context_waitable_queue_and_instance_branches():
     assert await core.noop_duration(core.Context(), machine_free, core.Event(name="noop")) == timedelta(
         seconds=0
     )
+
+
+def test_operation_argument_selection_branches():
+    ctx = core.Context()
+    instance = CoverageInstance()
+    event = core.Event("go")
+
+    def no_positional(*, event: core.Event) -> str:
+        return "keyword-only"
+
+    assert core._operation_argument_candidates(no_positional, ctx, instance, (event,))[0] == (
+        ctx,
+        instance,
+        event,
+    )
+
+    def instance_first(inst: core.Instance, event: core.Event) -> tuple[core.Instance, core.Event]:
+        return inst, event
+
+    assert core._invoke_operation_callback(instance_first, ctx, instance, (event,)) == (instance, event)
+    assert core._operation_argument_candidates(object(), ctx, instance, (event,))[0] == (
+        ctx,
+        instance,
+        event,
+    )
+
+    model = _bare_model("Operations")
+    model.operations["fallback"] = core.OperationDef(qualified_name="fallback")
+    instance.fallback = lambda event: event.name  # type: ignore[attr-defined]
+    assert core._operation_callback(model, instance, "fallback")(event) == "go"
+
+    with pytest.raises(core.ValidationError, match='missing operation "missing"'):
+        core._operation_callback(model, instance, "missing")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_fanout_helper_edge_paths():
+    assert await core._await_all_started([]) is None
+    assert await core._await_all_shielded_started([]) is None
+    assert await core._dispatch_machines_sequential_started([]) is None
+    assert await core._await_all_started([asyncio.sleep(0)]) is None
+
+    started: list[int] = []
+    loop = asyncio.get_running_loop()
+
+    class ScheduledMachine:
+        def _start_scheduled_processing(self, event_kind: int) -> None:
+            started.append(event_kind)
+
+    waiter = loop.create_future()
+    done = core._start_later_dispatches([(ScheduledMachine(), core.Kinds.Event, waiter)])
+    await asyncio.sleep(0)
+    assert started == [core.Kinds.Event]
+    waiter.set_result(None)
+    await done
+
+    class FailingScheduledMachine:
+        def _start_scheduled_processing(self, event_kind: int) -> None:
+            raise RuntimeError("start failed")
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        await core._start_later_dispatches(
+            [(FailingScheduledMachine(), core.Kinds.Event, loop.create_future())]
+        )
+
+    completed = loop.create_future()
+    completed.set_exception(RuntimeError("dispatch failed"))
+    done = loop.create_future()
+    core._continue_later_dispatches(done, completed, 1, lambda index: None)
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        await done
+
+    ignored = loop.create_future()
+    ignored.set_result(None)
+    core._continue_later_dispatches(done, ignored, 2, lambda index: None)
+    assert done.done()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_later_and_reentrant_queue_paths_notify_and_do_not_wait():
+    class FanoutInstance(core.Instance):
+        pass
+
+    async def mark(ctx: core.Context, inst: FanoutInstance, event: core.Event) -> None:
+        return None
+
+    model = core.Define(
+        "FanoutHelperCoverage",
+        core.Initial(core.Target("idle")),
+        core.State(
+            "idle",
+            core.Transition(core.On("go"), core.Target("../done"), core.Effect(mark)),
+        ),
+        core.State("done"),
+    )
+
+    ctx = core.Context()
+    instance = FanoutInstance()
+    machine = await core.Started(ctx, instance, model)
+    dispatched = core.AfterDispatch(ctx, instance, core.Event("go"))
+
+    await machine.dispatch_later(core.Event("go"))
+    await dispatched
+    assert instance.state() == "/FanoutHelperCoverage/done"
+
+    await core.Stop(instance)
+
+    reentrant = FanoutInstance()
+    machine = await core.Started(ctx, reentrant, model)
+    current = asyncio.current_task()
+    assert current is not None
+    machine._active_timer_tasks.add(current)
+    try:
+        assert await machine.dispatch_later(core.Event("go")) is None
+        assert machine._timer_task_pending_dispatch is True
+        assert reentrant.state() == "/FanoutHelperCoverage/idle"
+    finally:
+        machine._active_timer_tasks.discard(current)
+    await core.Stop(reentrant)
+
+    queued_reentrant = FanoutInstance()
+    machine = await core.Started(ctx, queued_reentrant, model)
+    current = asyncio.current_task()
+    assert current is not None
+    machine._active_timer_tasks.add(current)
+    dispatched = core.AfterDispatch(ctx, queued_reentrant, core.Event("go"))
+    try:
+        assert await core._queue_dispatches_for_later([(machine, core.Event("go"))]) is None
+        await dispatched
+        assert machine._timer_task_pending_dispatch is True
+        assert queued_reentrant.state() == "/FanoutHelperCoverage/idle"
+    finally:
+        machine._active_timer_tasks.discard(current)
+    await core.Stop(queued_reentrant)
+
+    done_awaitable = FanoutInstance()
+    machine = await core.Started(ctx, done_awaitable, model)
+    assert machine._processing.try_acquire() is True
+    machine._awaitable = core._future_done()
+    try:
+        assert await core._queue_dispatches_for_later([(machine, core.Event("go"))]) is None
+        assert done_awaitable.state() == "/FanoutHelperCoverage/idle"
+    finally:
+        machine._processing.release()
+    await core.Stop(done_awaitable)
+
+    same_task = FanoutInstance()
+    machine = await core.Started(ctx, same_task, model)
+    assert machine._processing.try_acquire() is True
+    machine._awaitable = asyncio.current_task()
+    try:
+        assert await machine.dispatch_later(core.Event("go")) is None
+        assert same_task.state() == "/FanoutHelperCoverage/idle"
+    finally:
+        machine._processing.release()
+    await core.Stop(same_task)
+
+    completed_awaitable = FanoutInstance()
+    machine = await core.Started(ctx, completed_awaitable, model)
+    assert machine._processing.try_acquire() is True
+    machine._awaitable = core._future_done()
+    try:
+        assert await machine.dispatch_later(core.Event("go")) is None
+        assert completed_awaitable.state() == "/FanoutHelperCoverage/idle"
+    finally:
+        machine._processing.release()
+    await core.Stop(completed_awaitable)
+
+    time_event_instance = FanoutInstance()
+    machine = await core.Started(ctx, time_event_instance, model)
+    await machine.dispatch_later(core.Event("timer", kind=core.Kinds.TimeEvent))
+    assert time_event_instance.state() == "/FanoutHelperCoverage/idle"
+    await core.Stop(time_event_instance)
 
 
 def test_direct_validation_branches():
@@ -584,16 +802,16 @@ def test_model_finalization_validation_branches():
             core.State("idle"),
         )
 
-    with pytest.raises(core.ValidationError, match='missing operation "work" for OnCall'):
-        core.Define(
-            "PendingOnCall",
-            core.Initial(core.Target("idle")),
-            core.State(
-                "idle",
-                core.Transition(core.OnCall("work"), core.Target("../done")),
-            ),
-            core.State("done"),
-        )
+    pending_on_call = core.Define(
+        "PendingOnCall",
+        core.Initial(core.Target("idle")),
+        core.State(
+            "idle",
+            core.Transition(core.OnCall("work"), core.Target("../done")),
+        ),
+        core.State("done"),
+    )
+    assert pending_on_call.events["@call:work"].kind == core.Kinds.CallEvent
 
 
 @pytest.mark.asyncio
@@ -628,7 +846,8 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     first_hsm = await core.Started(ctx, first, model)
     second_hsm = await core.Start(ctx, second, model)
 
-    assert first_hsm.context() is ctx
+    assert first_hsm.context().machine() is first_hsm
+    assert first_hsm in ctx.machines()
     delattr(first_hsm, "id")
     delattr(first_hsm, "qualified_name")
     assert first_hsm.id().startswith("hsm-")
@@ -677,7 +896,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
 
     group = core.NewGroup(first, core.NewGroup(second), None)
     assert group.state() == "/RuntimeCoverage/idle"
-    assert group.context() is ctx
+    assert group.context() is first.context()
     group_snapshot = core.TakeSnapshot(None, group)
     assert group_snapshot.ID != ""
     assert group_snapshot.QualifiedName == "/RuntimeCoverage,/RuntimeCoverage"
@@ -715,7 +934,8 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     empty_snapshot = empty_group.take_snapshot()
     assert empty_snapshot.ID != ""
     assert core.QualifiedName(empty_group) == ""
-    await core.Dispatch(None, empty_group, core.Event(name="noop"))
+    with pytest.raises(core.ValidationError, match="started HSM"):
+        await core.Dispatch(None, empty_group, core.Event(name="noop"))
     await core.Restart(empty_group)
     await core.Stop(empty_group)
     with pytest.raises(core.ValidationError, match="missing hsm"):
@@ -724,7 +944,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     await core.DispatchAll(None, core.Event(name="noop"))
     await core.DispatchTo(None, core.Event(name="noop"), "hsm-*")
 
-    with pytest.raises(core.ValidationError, match="missing hsm"):
+    with pytest.raises(core.ValidationError, match="started HSM"):
         core.TakeSnapshot(None, CoverageInstance())
 
 

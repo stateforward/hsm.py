@@ -1234,10 +1234,11 @@ async def _failing_error_handler_does_not_recursively_enqueue_error_events() -> 
     ctx = hsm.Context()
     await hsm.Start(ctx, instance, model)
 
-    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("go")), timeout=1)
+    with pytest.raises(RuntimeError, match="primary failure"):
+        await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("go")), timeout=1)
 
-    assert instance.state() == "/RecursiveError/error"
-    assert instance.error_effects == 1
+    assert instance.state() == "/RecursiveError/idle"
+    assert instance.error_effects == 0
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     await hsm.Stop(instance)
 
@@ -1307,10 +1308,10 @@ async def _manual_cancelled_error_callbacks_do_not_abort_processing() -> None:
 
     effect_instance = CancelledCallbackInstance()
     await hsm.Start(ctx, effect_instance, model)
-    await hsm.Dispatch(ctx, effect_instance, hsm.Event("effect"))
-    assert effect_instance.state() == "/ManualCancelledCallbacks/error"
-    assert len(effect_instance.errors) == 1
-    assert isinstance(effect_instance.errors[0], asyncio.CancelledError)
+    with pytest.raises(asyncio.CancelledError, match="manual effect cancellation"):
+        await hsm.Dispatch(ctx, effect_instance, hsm.Event("effect"))
+    assert effect_instance.state() == "/ManualCancelledCallbacks/idle"
+    assert effect_instance.errors == []
     assert hsm.TakeSnapshot(ctx, effect_instance).QueueLen == 0
     await hsm.Stop(effect_instance)
 
@@ -2772,14 +2773,18 @@ async def _group_event_mutations_preflight_members() -> None:
 
     cases = (
         (hsm.MakeGroup(running, stopped), "started HSM"),
-        (hsm.MakeGroup(running, never_started), "missing hsm"),
+        (hsm.MakeGroup(running, never_started), "started HSM"),
     )
     for group, expected_error in cases:
+        await hsm.Dispatch(ctx, group, hsm.Event("go"))
+        assert running.state() == "/GroupPreflight/done"
+        assert stopped.state() == "/GroupPreflight"
+        assert never_started.state() == ""
+        await hsm.Restart(running)
+
         for operation in (
-            lambda group=group: hsm.Dispatch(ctx, group, hsm.Event("go")),
             lambda group=group: hsm.Set(ctx, group, "flag", True),
             lambda group=group: hsm.Restart(group, "restarted"),
-            lambda group=group: hsm.Stop(group),
         ):
             try:
                 await operation()
@@ -2793,7 +2798,11 @@ async def _group_event_mutations_preflight_members() -> None:
             assert never_started.state() == ""
             assert hsm.Get(ctx, running, "flag") == (False, True)
             assert hsm.TakeSnapshot(ctx, running).QueueLen == 0
-            assert running.entries == [None]
+            assert running.entries[-1] is None
+
+        await hsm.Stop(running)
+        assert running.state() == "/GroupPreflight"
+        await hsm.Start(ctx, running, model)
 
     await hsm.Stop(running)
 
@@ -2891,10 +2900,17 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
                 expected_state = "/LifecycleScript/idle"
                 expected_flag = 0
         elif action == "restart":
-            await hsm.Restart(sm, index)
-            expected_context = sm.context()
-            expected_state = "/LifecycleScript/idle"
-            expected_flag = 0
+            if sm._started:
+                await hsm.Restart(sm, index)
+                expected_state = "/LifecycleScript/idle"
+                expected_flag = 0
+            else:
+                try:
+                    await hsm.Restart(sm, index)
+                except hsm.ValidationError as error:
+                    assert "started HSM" in str(error)
+                else:
+                    raise AssertionError("Restart() on a stopped HSM should fail")
         elif action == "stop":
             await hsm.Stop(sm)
             expected_context = None
@@ -3025,14 +3041,14 @@ async def _never_started_instance_rejects_event_mutating_conveniences() -> None:
     try:
         instance.dispatch(hsm.Event("go"))
     except hsm.ValidationError as error:
-        assert "missing hsm" in str(error)
+        assert "started HSM" in str(error)
     else:
         raise AssertionError("instance.dispatch() on never-started instance should fail")
 
     try:
         await instance.restart()
     except hsm.ValidationError as error:
-        assert "missing hsm" in str(error)
+        assert "started HSM" in str(error)
     else:
         raise AssertionError("instance.restart() on never-started instance should fail")
 
@@ -3616,7 +3632,7 @@ async def _stop_resets_dynamic_runtime_state() -> None:
     assert sm._active == {}
     assert sm._history_shallow == {}
     assert sm._history_deep == {}
-    assert sm._runtime_context.done is False
+    assert sm.context().done is True
     assert sm._stop_requested is False
     assert sm._restart_requested is None
 

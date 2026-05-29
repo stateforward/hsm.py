@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import assert_type, cast
+from typing import Any, assert_type, cast
 
 import hsm
 
@@ -15,8 +15,8 @@ assert_type(keyword_event, hsm.Event[int])
 assert_type(keyword_event.Data, int)
 
 empty_event = hsm.Event("empty")
-assert_type(empty_event, hsm.Event[None])
-assert_type(empty_event.Data, None)
+assert_type(empty_event, hsm.Event[Any])
+assert_type(empty_event.Data, Any)
 
 with_data_event = empty_event.WithData("payload")
 assert_type(with_data_event, hsm.Event[str])

@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Security fixes are released on the latest `0.x` line of `stateforward.hsm`.
+Security fixes are released on the latest `1.x` line of `stateforward.hsm`.
 Consumers should run the newest published patch version before reporting an
 issue that may already be fixed.
 

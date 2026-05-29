@@ -158,6 +158,9 @@ def test_snake_case_dsl_aliases_are_available():
     assert hsm.match("machine-1", "other-*", "machine-*")
     assert hsm.onset is hsm.OnSet
     assert hsm.MakeGroup is hsm.NewGroup
+    assert hsm.group is hsm.Group
+    assert "Group" in hsm.__all__
+    assert "group" in hsm.__all__
 
 
 def test_public_pascal_case_exports_have_snake_case_aliases():
@@ -532,6 +535,64 @@ async def test_snapshot_identity_config_and_event_data_helpers():
     assert seen == ["boot", "again"]
 
     await hsm.Stop(instance)
+
+
+@pytest.mark.asyncio
+async def test_context_carries_current_machine_and_all_started_machines():
+    model = hsm.Define(
+        "ContextMachineRegistry",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+
+    ctx = hsm.Context()
+    alpha = await hsm.Started(ctx, ParityInstance(), model, hsm.Config(id="alpha"))
+    bravo = await hsm.Started(alpha.context(), ParityInstance(), model, hsm.Config(id="bravo"))
+    tagged = ctx.WithValue("request-id", "req-7")
+
+    assert ctx.machine() is None
+    assert alpha.context().machine() is alpha
+    assert bravo.context().machine() is bravo
+    assert hsm.FromContext(alpha.context()) == (alpha, True)
+    assert hsm.FromContext(ctx) == (None, False)
+    assert ctx.Value(hsm.Keys.Owner) is None
+    assert ctx.Value("request-id") is None
+    assert tagged.Value("request-id") == "req-7"
+    assert {hsm.ID(machine) for machine in ctx.machines()} == {"alpha", "bravo"}
+    assert {hsm.ID(machine) for machine in alpha.context().machines()} == {"alpha", "bravo"}
+    instances, ok = hsm.InstancesFromContext(ctx)
+    assert ok is True
+    assert {hsm.ID(machine) for machine in instances} == {"alpha", "bravo"}
+
+
+@pytest.mark.asyncio
+async def test_cross_machine_dispatch_stamps_source_and_target_from_context():
+    async def send_to_bravo(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+        await hsm.DispatchTo(ctx, hsm.Event("relay"), "bravo")
+
+    async def record_delivery(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+        inst.log.append(f"{event.Source}->{event.Target}")
+
+    model = hsm.Define(
+        "ContextDeliveryEnvelope",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Effect(send_to_bravo)),
+            hsm.Transition(hsm.On("relay"), hsm.Effect(record_delivery)),
+        ),
+    )
+
+    ctx = hsm.Context()
+    alpha_instance = ParityInstance()
+    bravo_instance = ParityInstance()
+    alpha = await hsm.Started(ctx, alpha_instance, model, hsm.Config(id="alpha"))
+    await hsm.Started(alpha.context(), bravo_instance, model, hsm.Config(id="bravo"))
+
+    await hsm.Dispatch(alpha.context(), alpha, hsm.Event("go"))
+
+    assert alpha_instance.log == []
+    assert bravo_instance.log == ["alpha->bravo"]
 
 
 @pytest.mark.asyncio

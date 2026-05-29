@@ -395,13 +395,15 @@ hsm.Transition(
 
 ## Python Aliases
 
-Every exported PascalCase DSL and runtime function, except the acronym class `HSM`, has a direct Python snake_case alias. Builder and runtime function aliases include `define`, `state`, `initial`, `transition`, `source`, `target`, `entry`, `exit`, `activity`, `effect`, `guard`, `on`, `on_set`, `on_call`, `after`, `at`, `every`, `when`, `defer`, `choice`, `shallow_history`, `deep_history`, `final`, `attribute`, `operation`, `new`, `start`, `started`, `stop`, `restart`, `dispatch`, `dispatch_all`, `dispatch_to`, `get`, `set`, `call`, `take_snapshot`, `after_entry`, `after_dispatch`, `after_process`, `after_exit`, `after_executed`, `match`, `lca`, `is_ancestor`, `make_kind`, `new_group`, `make_group`, `expression`, `id`, `name`, and `qualified_name`. The top-level package exports `MakeKind`/`make_kind` and `IsKind`/`is_kind`; the `hsm.kind` helper module also exposes `Make`/`MakeKind`, `IsKind`, `List`, and `Bases` plus Python aliases `make`/`make_kind`, `is_kind`, `list`, and `bases`.
+<!-- Python aliases and runtime value exports from hsm/hsm.py -->
 
-DSL values and types also have direct Python aliases: `event` maps to `Event`, `completion_event` maps to `CompletionEvent`, `snapshot` maps to `Snapshot`, `event_snapshot` maps to `EventSnapshot`, `clock` maps to `Clock`, `config` maps to `Config`, `context` maps to `Context`, `default_clock` maps to `DefaultClock`, lifecycle events expose `initial_event`, `error_event`, `any_event`, and `final_event`, and kind constants expose names such as `state_kind`, `transition_kind`, `event_kind`, and `final_state_kind`. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; `Config` accepts and exposes `id`, `name`, `data`, and `clock` alongside `ID`, `Name`, `Data`, and `Clock`; snapshots expose both PascalCase fields such as `QueueLen` and snake_case properties such as `queue_len`. These aliases map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
+Every exported PascalCase DSL and runtime function, except the acronym class `HSM`, has a direct Python snake_case alias. Builder and runtime function aliases include `define`, `state`, `submachine_state`, `entry_point`, `exit_point`, `initial`, `transition`, `source`, `target`, `entry`, `exit`, `activity`, `effect`, `guard`, `on`, `on_set`, `on_call`, `after`, `at`, `every`, `when`, `defer`, `choice`, `shallow_history`, `deep_history`, `final`, `attribute`, `operation`, `new`, `start`, `started`, `stop`, `restart`, `dispatch`, `dispatch_all`, `dispatch_to`, `get`, `set`, `call`, `take_snapshot`, `after_entry`, `after_dispatch`, `after_process`, `after_exit`, `after_executed`, `match`, `lca`, `is_ancestor`, `make_kind`, `new_group`, `make_group`, `expression`, `id`, `name`, and `qualified_name`. The top-level package exports `MakeKind`/`make_kind` and `IsKind`/`is_kind`; the `hsm.kind` helper module also exposes `Make`/`MakeKind`, `IsKind`, `List`, and `Bases` plus Python aliases `make`/`make_kind`, `is_kind`, `list`, and `bases`.
+
+DSL values and types also have direct Python aliases: `event` maps to `Event`, `completion_event` maps to `CompletionEvent`, `snapshot` maps to `Snapshot`, `event_snapshot` maps to `EventSnapshot`, `clock` maps to `Clock`, `config` maps to `Config`, `context` maps to `Context`, `context_key` maps to `ContextKey`, `keys` maps to `Keys`, `from_context` maps to `FromContext`, `instances_from_context` maps to `InstancesFromContext`, and `default_clock` maps to `DefaultClock`. Lifecycle events expose `initial_event`, `error_event`, `any_event`, and `final_event`, and kind constants expose names such as `state_kind`, `transition_kind`, `event_kind`, `final_state_kind`, `submachine_state_kind`, and `exit_point_kind`. Submachine composition exposes `submachine_state`, `entry_point`, and `exit_point` alongside `SubmachineState`, `EntryPoint`, and `ExitPoint`. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; `Config` accepts and exposes `id`, `name`, `data`, and `clock` alongside `ID`, `Name`, `Data`, and `Clock`; snapshots expose both PascalCase fields such as `QueueLen` and snake_case properties such as `queue_len`. These aliases map directly to the PascalCase APIs. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
 
 ## Current Python Notes
 
-`After`, `At`, `Every`, and `When` are implemented.
+`After`, `At`, `Every`, `When`, `SubmachineState`, `EntryPoint`, and `ExitPoint` are implemented. The Python runtime passes the shared HSM conformance suite.
 
 This package requires Python 3.13 or newer.
 
@@ -418,6 +420,14 @@ uv run pyright
 uv build
 uvx twine check dist/*
 ```
+
+Run shared conformance cases from the monorepo root with the Python runner:
+
+```bash
+PYTHONPATH=hsm.py python3 hsm.py/conformance/run_case.py conformance/cases/basic_transition.json
+```
+
+The v1.0 release candidate passes all 1,392 shared conformance cases. The runner exits `77` when every selected failure is an explicit unsupported-feature skip.
 
 The suite includes deterministic Hypothesis fuzz tests for generated state
 machines, guarded transition order, runtime attribute updates, and invalid timer
