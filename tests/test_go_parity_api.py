@@ -338,7 +338,7 @@ async def test_pascal_case_aliases_and_snapshot():
     assert hsm.state is hsm.State
     assert hsm.transition is hsm.Transition
 
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     await hsm.Start(ctx, instance, model)
 
     snapshot = hsm.TakeSnapshot(ctx, instance)
@@ -352,8 +352,14 @@ async def test_pascal_case_aliases_and_snapshot():
     assert hsm.ID(instance) == snapshot.id
     assert hsm.QualifiedName(instance) == "/AliasMachine"
     assert hsm.Name(instance) == "AliasMachine"
-    assert any(event.Name == "go" and event.Target == "/AliasMachine/done" for event in snapshot.Events)
-    assert any(event.name == "go" and event.target == "/AliasMachine/done" for event in snapshot.events)
+    assert any(
+        event.Name == "go" and event.Target == "/AliasMachine/done"
+        for event in snapshot.Events
+    )
+    assert any(
+        event.name == "go" and event.target == "/AliasMachine/done"
+        for event in snapshot.events
+    )
 
     await hsm.Stop(instance)
 
@@ -368,7 +374,7 @@ async def test_model_paths_use_posix_semantics_for_absolute_targets():
         hsm.State("inactive"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     await hsm.Start(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event("stop"))
 
@@ -397,7 +403,7 @@ async def test_attribute_onset_get_set_and_snapshot():
         hsm.State("changed"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     await hsm.Start(ctx, instance, model)
 
     initial_value, ok = hsm.Get(ctx, instance, "count")
@@ -406,8 +412,7 @@ async def test_attribute_onset_get_set_and_snapshot():
     initial_snapshot = hsm.TakeSnapshot(ctx, instance)
     assert initial_snapshot.Attributes["/AttributeMachine/count"] == 1
     assert any(
-        event.Name == "/AttributeMachine/count"
-        and event.Kind == hsm.ChangeEventKind
+        event.Name == "/AttributeMachine/count" and event.Kind == hsm.ChangeEventKind
         for event in initial_snapshot.Events
     )
 
@@ -453,7 +458,9 @@ async def test_snapshot_contents_are_read_only_and_point_in_time():
     with pytest.raises(AttributeError):
         snapshot_payload["items"][0]["nested"].append("snapshot-mutated")
     with pytest.raises(AttributeError):
-        snapshot.Events.append(hsm.EventSnapshot("extra", hsm.EventKind, "", False, None))
+        snapshot.Events.append(
+            hsm.EventSnapshot("extra", hsm.EventKind, "", False, None)
+        )
     with pytest.raises(AttributeError):
         snapshot.Events[0].Name = "changed"
     with pytest.raises(AttributeError):
@@ -497,7 +504,9 @@ async def test_snapshot_identity_config_and_event_data_helpers():
     instance = ParityInstance()
     seen: list[object] = []
 
-    async def idle_entry(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+    async def idle_entry(
+        ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
+    ) -> None:
         seen.append(event.Data)
 
     model = hsm.Define(
@@ -545,21 +554,30 @@ async def test_context_carries_current_machine_and_all_started_machines():
         hsm.State("idle"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     alpha = await hsm.Started(ctx, ParityInstance(), model, hsm.Config(id="alpha"))
-    bravo = await hsm.Started(alpha.context(), ParityInstance(), model, hsm.Config(id="bravo"))
+    bravo = await hsm.Started(
+        alpha.context(), ParityInstance(), model, hsm.Config(id="bravo")
+    )
     tagged = ctx.WithValue("request-id", "req-7")
 
-    assert ctx.machine() is None
-    assert alpha.context().machine() is alpha
-    assert bravo.context().machine() is bravo
-    assert hsm.FromContext(alpha.context()) == (alpha, True)
     assert hsm.FromContext(ctx) == (None, False)
+    assert hsm.FromContext(alpha.context()) == (alpha, True)
+    assert hsm.FromContext(bravo.context()) == (bravo, True)
+    assert hsm.FromContext(alpha.context()) == (alpha, True)
     assert ctx.Value(hsm.Keys.Owner) is None
     assert ctx.Value("request-id") is None
     assert tagged.Value("request-id") == "req-7"
-    assert {hsm.ID(machine) for machine in ctx.machines()} == {"alpha", "bravo"}
-    assert {hsm.ID(machine) for machine in alpha.context().machines()} == {"alpha", "bravo"}
+    assert {hsm.ID(machine) for machine in hsm.InstancesFromContext(ctx)[0]} == {
+        "alpha",
+        "bravo",
+    }
+    assert {
+        hsm.ID(machine) for machine in hsm.InstancesFromContext(alpha.context())[0]
+    } == {
+        "alpha",
+        "bravo",
+    }
     instances, ok = hsm.InstancesFromContext(ctx)
     assert ok is True
     assert {hsm.ID(machine) for machine in instances} == {"alpha", "bravo"}
@@ -567,10 +585,14 @@ async def test_context_carries_current_machine_and_all_started_machines():
 
 @pytest.mark.asyncio
 async def test_cross_machine_dispatch_stamps_source_and_target_from_context():
-    async def send_to_bravo(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+    async def send_to_bravo(
+        ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
+    ) -> None:
         await hsm.DispatchTo(ctx, hsm.Event("relay"), "bravo")
 
-    async def record_delivery(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+    async def record_delivery(
+        ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
+    ) -> None:
         inst.log.append(f"{event.Source}->{event.Target}")
 
     model = hsm.Define(
@@ -622,7 +644,9 @@ async def test_config_clock_drives_after_transition():
     )
 
     ctx = hsm.Context()
-    await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
+    await hsm.Started(
+        ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
+    )
 
     for _ in range(10):
         if sleeps:
@@ -670,7 +694,9 @@ async def test_config_clock_drives_at_transition():
     )
 
     ctx = hsm.Context()
-    await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
+    await hsm.Started(
+        ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
+    )
 
     for _ in range(10):
         if sleeps:
@@ -690,11 +716,16 @@ async def test_config_clock_drives_at_transition():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("timer_factory", "attribute_value"), [
-    (hsm.After, timedelta(seconds=3)),
-    (hsm.Every, timedelta(seconds=4)),
-])
-async def test_attribute_duration_drives_after_and_every_transitions(timer_factory, attribute_value):
+@pytest.mark.parametrize(
+    ("timer_factory", "attribute_value"),
+    [
+        (hsm.After, timedelta(seconds=3)),
+        (hsm.Every, timedelta(seconds=4)),
+    ],
+)
+async def test_attribute_duration_drives_after_and_every_transitions(
+    timer_factory, attribute_value
+):
     instance = ParityInstance()
     sleeps: list[tuple[object, asyncio.Future[None]]] = []
 
@@ -718,7 +749,9 @@ async def test_attribute_duration_drives_after_and_every_transitions(timer_facto
     )
 
     ctx = hsm.Context()
-    await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
+    await hsm.Started(
+        ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
+    )
 
     for _ in range(10):
         if sleeps:
@@ -764,7 +797,9 @@ async def test_attribute_timepoint_drives_at_transition():
     )
 
     ctx = hsm.Context()
-    await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
+    await hsm.Started(
+        ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
+    )
 
     for _ in range(10):
         if sleeps:
@@ -825,19 +860,27 @@ async def test_snake_case_named_operation_dsl_builds_and_runs_model():
 
     instance = NamedOperationInstance()
 
-    async def allow(ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event) -> bool:
+    async def allow(
+        ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event
+    ) -> bool:
         assert isinstance(ctx, hsm.Context)
         assert inst is instance
         inst.log.append(f"guard:{event.Name}")
         return True
 
-    async def leave_idle(ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event) -> None:
+    async def leave_idle(
+        ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event
+    ) -> None:
         inst.log.append(f"exit:{event.Name}")
 
-    async def effect(ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event) -> None:
+    async def effect(
+        ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event
+    ) -> None:
         inst.log.append(f"effect:{event.Name}")
 
-    async def enter_done(ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event) -> None:
+    async def enter_done(
+        ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event
+    ) -> None:
         inst.log.append(f"enter_done:{event.Name}")
 
     model = hsm.define(
@@ -879,14 +922,14 @@ async def test_snake_case_named_operation_dsl_builds_and_runs_model():
 
 
 def test_named_operation_dsl_rejects_missing_operation_references():
-    with pytest.raises(hsm.ValidationError, match='missing operation "missing" for behavior or guard'):
+    with pytest.raises(hsm.ValidationError, match='missing operation "missing"'):
         hsm.Define(
             "MissingNamedOperationMachine",
             hsm.Initial(hsm.Target("idle")),
             hsm.State("idle", hsm.Entry("missing")),
         )
 
-    with pytest.raises(hsm.ValidationError, match='missing operation "missing" for behavior or guard'):
+    with pytest.raises(hsm.ValidationError, match='missing operation "missing"'):
         hsm.Define(
             "MissingNamedGuardMachine",
             hsm.Initial(hsm.Target("idle")),
@@ -903,63 +946,38 @@ def test_named_operation_dsl_rejects_missing_operation_references():
 
 
 @pytest.mark.asyncio
-async def test_operation_call_signature_variants_match_dsl_runtime():
+async def test_operation_call_requires_context_and_instance():
     class SignatureInstance(ParityInstance):
         pass
 
     instance = SignatureInstance()
-    calls: list[str] = []
 
-    async def ctx_inst(ctx: hsm.Context, inst: SignatureInstance, value: int) -> str:
+    async def work(ctx: hsm.Context, inst: SignatureInstance, value: int) -> str:
         assert isinstance(ctx, hsm.Context)
         assert inst is instance
-        calls.append(f"ctx_inst:{value}")
-        return f"ctx_inst:{value}"
+        return f"work:{value}"
 
-    async def context_only(context: hsm.Context, value: int) -> str:
-        assert isinstance(context, hsm.Context)
-        calls.append(f"context_only:{value}")
-        return f"context_only:{value}"
-
-    async def inst_only(inst: SignatureInstance, value: int) -> str:
-        assert inst is instance
-        calls.append(f"inst_only:{value}")
-        return f"inst_only:{value}"
-
-    async def args_only(value: int) -> str:
-        calls.append(f"args_only:{value}")
-        return f"args_only:{value}"
-
-    async def record_call(ctx: hsm.Context, inst: SignatureInstance, event: hsm.Event) -> None:
+    async def record_call(
+        ctx: hsm.Context, inst: SignatureInstance, event: hsm.Event
+    ) -> None:
         assert isinstance(event.Data, hsm.CallData)
         inst.log.append(event.Data.name)
 
     model = hsm.Define(
         "SignatureCallMachine",
-        hsm.Operation("ctx_inst", ctx_inst),
-        hsm.Operation("context_only", context_only),
-        hsm.Operation("inst_only", inst_only),
-        hsm.Operation("args_only", args_only),
+        hsm.Operation("work", work),
         hsm.Initial(hsm.Target("idle")),
         hsm.State(
             "idle",
-            hsm.Transition(hsm.OnCall("ctx_inst"), hsm.Effect(record_call)),
-            hsm.Transition(hsm.OnCall("context_only"), hsm.Effect(record_call)),
-            hsm.Transition(hsm.OnCall("inst_only"), hsm.Effect(record_call)),
-            hsm.Transition(hsm.OnCall("args_only"), hsm.Effect(record_call)),
+            hsm.Transition(hsm.OnCall("work"), hsm.Effect(record_call)),
         ),
     )
 
     ctx = hsm.Context()
     await hsm.Start(ctx, instance, model)
 
-    assert await hsm.Call(ctx, instance, "ctx_inst", 1) == "ctx_inst:1"
-    assert await hsm.Call(ctx, instance, "context_only", 2) == "context_only:2"
-    assert await hsm.Call(ctx, instance, "inst_only", 3) == "inst_only:3"
-    assert await hsm.Call(ctx, instance, "args_only", 4) == "args_only:4"
-
-    assert calls == ["ctx_inst:1", "context_only:2", "inst_only:3", "args_only:4"]
-    assert instance.log == ["ctx_inst", "context_only", "inst_only", "args_only"]
+    assert await hsm.Call(ctx, instance, "work", 1) == "work:1"
+    assert instance.log == ["/SignatureCallMachine/work"]
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
 
     await hsm.Stop(instance)
@@ -969,10 +987,13 @@ async def test_operation_call_signature_variants_match_dsl_runtime():
 async def test_oncall_dispatches_before_operation_exception():
     instance = ParityInstance()
 
-    async def fail(value: int) -> None:
+    async def fail(ctx: hsm.Context, inst: ParityInstance, value: int) -> None:
+        del ctx, inst
         raise RuntimeError(f"boom:{value}")
 
-    async def record_call(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+    async def record_call(
+        ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
+    ) -> None:
         assert isinstance(event.Data, hsm.CallData)
         inst.log.append(f"oncall:{event.Data.args[0]}")
 
@@ -1041,7 +1062,9 @@ async def test_observers_restart_and_shallow_history():
     dispatched_leave = hsm.AfterDispatch(ctx, instance, hsm.Event(name="leave"))
 
     await hsm.Dispatch(ctx, instance, hsm.Event(name="leave"))
-    await asyncio.gather(entered_outside, exited_parent_b, processed_leave, dispatched_leave)
+    await asyncio.gather(
+        entered_outside, exited_parent_b, processed_leave, dispatched_leave
+    )
 
     assert instance.state() == "/ObserverHistoryMachine/outside"
 
@@ -1069,7 +1092,7 @@ async def test_group_dispatch_all_and_dispatch_to():
         hsm.State("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     await hsm.Start(ctx, first, model)
     await hsm.Start(ctx, second, model)
 

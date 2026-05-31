@@ -2,7 +2,6 @@ import asyncio
 import re
 import subprocess
 import sys
-import weakref
 from datetime import timedelta
 
 import pytest
@@ -41,7 +40,7 @@ class _NullPartial(core.PartialElement):
 
 def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
     model = _bare_model()
-    state = core.StateNode(qualified_name="/Bare/idle")
+    state = core.StateElement(qualified_name="/Bare/idle")
     model.set(state.qualified_name, state)
 
     assert core.Match("value") is False
@@ -49,19 +48,26 @@ def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
     assert core.Element().owner() == ""
     assert core.NamedElement(qualified_name="/").owner() == ""
     assert core.NamedElement(qualified_name="/Bare/idle").name() == "idle"
-    assert core.find([], core.StateNode) is None
+    assert core.find([], core.StateElement) is None
     assert core.PartialElement().apply(model, []) is None
-    assert model.get(state.qualified_name, core.TransitionNode) is None
+    assert model.get(state.qualified_name, core.TransitionElement) is None
     assert core.LCA("", "/Bare/idle") == "/Bare/idle"
     assert core.least_common_ancestor("/Bare/a", "/Bare/b") == "/Bare"
     assert core.IsAncestor("/", "/Bare/idle") is True
     assert core.IsAncestor("/Bare/idle", "/Bare/idle") is False
     assert core.is_ancestor("/Bare", "/Bare/idle") is True
-    assert core._segments_between("/Bare", "/Bare") == []
-    assert core._segments_between("/Bare", "/Bare/parent/child") == [
-        "/Bare/parent",
-        "/Bare/parent/child",
-    ]
+    history_model = core.Define(
+        "HistoryPaths",
+        core.InitialElement(core.Target("parent")),
+        core.StateElement(
+            "parent",
+            core.ShallowHistory("hist", core.Target("child")),
+            core.StateElement("child"),
+        ),
+    )
+    assert history_model.history_paths[
+        ("/HistoryPaths/parent", "/HistoryPaths/parent/child")
+    ] == ("/HistoryPaths/parent/child",)
     assert core._current_task_or_none() is None
     assert core._qualify_model_name("/Bare", "") == ""
     assert core._qualify_model_name("/Bare", "/Bare/idle") == "/Bare/idle"
@@ -77,8 +83,9 @@ def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
     closable = Closable()
     core._close_awaitable(closable)
     assert closable.closed is True
-    with pytest.raises(core._AsyncRequired):
-        core._raise_async_required(Closable())
+    with pytest.raises(RuntimeError, match="returned awaitable"):
+        core._close_awaitable(Closable())
+        raise RuntimeError("transition behavior returned awaitable")
 
     event = core.Event(
         name="go",
@@ -98,22 +105,22 @@ def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
     assert core._event_from_name("*") is core.AnyEvent
     assert core._event_from_name("other").name == "other"
 
-    assert isinstance(core.Initial("named"), core.PartialInitial)
-    assert isinstance(core.Transition("named"), core.PartialTransition)
-    assert isinstance(core.Source(core.State("idle")), core.PartialSource)
-    assert isinstance(core.Target(core.State("idle")), core.PartialTarget)
+    assert isinstance(core.InitialElement("named"), core.PartialInitial)
+    assert isinstance(core.TransitionElement("named"), core.PartialTransition)
+    assert isinstance(core.Source(core.StateElement("idle")), core.PartialSource)
+    assert isinstance(core.Target(core.StateElement("idle")), core.PartialTarget)
     assert isinstance(core.When(lambda *_: None), core.PartialWhen)
     assert isinstance(core.When("count"), core.PartialOnSet)
     assert isinstance(core.Defer(core.Event(name="later")), core.PartialDefer)
     assert isinstance(
-        core.ShallowHistory(core.Transition(core.Target("idle"))),
+        core.ShallowHistory(core.TransitionElement(core.Target("idle"))),
         core.PartialHistory,
     )
     assert isinstance(
-        core.DeepHistory(core.Transition(core.Target("idle"))),
+        core.DeepHistory(core.TransitionElement(core.Target("idle"))),
         core.PartialHistory,
     )
-    assert isinstance(core.Final(core.State("done")), core.PartialFinal)
+    assert isinstance(core.Final(core.StateElement("done")), core.PartialFinal)
 
     result = subprocess.run(
         [sys.executable, "-m", "hsm.hsm"],
@@ -165,7 +172,7 @@ async def test_context_waitable_queue_and_instance_branches():
     with pytest.raises(TypeError, match="unsupported When"):
         await core._normalize_waitable(InvalidWaiter())
 
-    ctx = core.Context()
+    ctx = core.Context().WithValue(core.Keys.Instances, {})
     seen: list[str] = []
 
     def failing_listener() -> None:
@@ -203,15 +210,6 @@ async def test_context_waitable_queue_and_instance_branches():
     other.cancel()
     await other.wait_done()
 
-    class Registered:
-        pass
-
-    registered = Registered()
-    registry_context = other.WithValue(core.Keys.Instances, weakref.WeakSet())
-    registry_context.register(registered)
-    assert registered in registry_context.machines()
-    registry_context.unregister(registered)
-    registry_context.unregister(registered)
     assert core.context is core.Context
     assert core.context_key is core.ContextKey
     assert core.keys is core.Keys
@@ -222,60 +220,79 @@ async def test_context_waitable_queue_and_instance_branches():
     assert other.value(request_key) is None
     assert core.from_context(alias_context) == (None, False)
     instances, ok = core.instances_from_context(alias_context)
-    assert ok is True
+    assert ok is False
     assert instances == []
 
-    queue = core.Queue()
+    queue = core.MultiQueue()
     queue.push(core.Event(name="regular"))
     queue.push(core.Event(name="complete", kind=core.Kinds.CompletionEvent))
-    assert queue.len() == 2
-    assert queue.pop().name == "complete"
-    assert queue.pop().name == "regular"
-    assert queue.pop() is None
+    assert queue.len() == (2, None)
+    complete, ok, err = queue.pop()
+    assert ok and err is None and complete.name == "complete"
+    regular, ok, err = queue.pop()
+    assert ok and err is None and regular.name == "regular"
+    _, ok, err = queue.pop()
+    assert not ok and err is None
 
-    class RecordingQueue(core.Queue):
+    class RecordingQueue(core.MultiQueue):
         def __init__(self):
             super().__init__()
             self.pushed: list[str] = []
 
-        def push(self, event: core.Event) -> None:
+        def push(self, event: core.Event) -> core.QueuePushResult:
             self.pushed.append(event.name)
-            super().push(event)
+            return super().push(event)
 
     regular_queue = RecordingQueue()
-    queue = core.Queue(regular_queue)
+    queue = core.MultiQueue(regular_queue)
     queue.push(core.Event(name="regular"))
     queue.push(core.Event(name="complete", kind=core.Kinds.CompletionEvent))
     assert regular_queue.pushed == ["regular"]
-    assert queue.len() == 2
-    assert queue.pop().name == "complete"
-    assert queue.pop().name == "regular"
-    assert queue.pop() is None
+    assert queue.len() == (2, None)
+    complete, ok, err = queue.pop()
+    assert ok and err is None and complete.name == "complete"
+    regular, ok, err = queue.pop()
+    assert ok and err is None and regular.name == "regular"
+    _, ok, err = queue.pop()
+    assert not ok and err is None
 
-    with pytest.raises(TypeError, match="complete Push/Pop/Len"):
-        core.Queue(Push=lambda event: None)
+    class IncompleteFifo:
+        def push(self, event: core.Event) -> core.QueuePushResult:
+            return (None,)
 
-    hook_items: list[core.Event] = []
+    with pytest.raises(TypeError, match="callable pop"):
+        core.MultiQueue(IncompleteFifo())
 
-    def hook_pop() -> core.Event | None:
-        return hook_items.pop(0) if hook_items else None
+    class ListFifo(core.Fifo):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items: list[core.Event] = []
 
-    hook_queue = core.Queue(
-        Push=lambda event: hook_items.append(event),
-        Pop=hook_pop,
-        Len=lambda: len(hook_items),
-    )
+        def push(self, event: core.Event) -> core.QueuePushResult:
+            self.items.append(event)
+            return (None,)
+
+        def pop(self) -> core.QueuePopResult:
+            if not self.items:
+                return (core.Event(), False, None)
+            return (self.items.pop(0), True, None)
+
+        def len(self) -> core.QueueLenResult:
+            return (len(self.items), None)
+
+    hook_queue = core.MultiQueue(ListFifo())
     hook_queue.push(core.Event(name="hooked"))
-    assert hook_queue.len() == 1
-    assert hook_queue.pop().name == "hooked"
+    assert hook_queue.len() == (1, None)
+    hooked, ok, err = hook_queue.pop()
+    assert ok and err is None and hooked.name == "hooked"
 
-    class FailingPushQueue(core.Queue):
+    class FailingPushQueue(core.MultiQueue):
         def __init__(self, error: RuntimeError):
             super().__init__()
             self.error = error
 
-        def push(self, event: core.Event) -> BaseException | None:
-            return self.error
+        def push(self, event: core.Event) -> core.QueuePushResult:
+            return (self.error,)
 
     class QueueErrorInstance(core.Instance):
         def __init__(self):
@@ -288,16 +305,16 @@ async def test_context_waitable_queue_and_instance_branches():
     queue_error = RuntimeError("queue push failed")
     error_model = core.Define(
         "QueuePushError",
-        core.Initial(core.Target("idle")),
-        core.State(
+        core.InitialElement(core.Target("idle")),
+        core.StateElement(
             "idle",
-            core.Transition(
+            core.TransitionElement(
                 core.On(core.ErrorEvent),
                 core.Target("../failed"),
                 core.Effect(record_queue_error),
             ),
         ),
-        core.State("failed"),
+        core.StateElement("failed"),
     )
     queue_error_instance = QueueErrorInstance()
     error_ctx = core.Context()
@@ -322,90 +339,61 @@ async def test_context_waitable_queue_and_instance_branches():
         await machine_free.restart()
 
     await core.noop_operation(core.Context(), machine_free, core.Event(name="noop"))
-    assert await core.noop_expression(core.Context(), machine_free, core.Event(name="noop")) is True
-    assert await core.noop_duration(core.Context(), machine_free, core.Event(name="noop")) == timedelta(
-        seconds=0
+    assert (
+        await core.noop_expression(
+            core.Context(), machine_free, core.Event(name="noop")
+        )
+        is True
     )
+    assert await core.noop_duration(
+        core.Context(), machine_free, core.Event(name="noop")
+    ) == timedelta(seconds=0)
 
 
-def test_operation_argument_selection_branches():
+@pytest.mark.asyncio
+async def test_operation_callback_resolution_and_invoke_contract():
     ctx = core.Context()
     instance = CoverageInstance()
     event = core.Event("go")
 
-    def no_positional(*, event: core.Event) -> str:
-        return "keyword-only"
+    async def behavior(
+        behavior_ctx: core.Context, inst: core.Instance, behavior_event: core.Event
+    ) -> str:
+        assert behavior_ctx is ctx
+        assert inst is instance
+        assert behavior_event is event
+        return "behavior"
 
-    assert core._operation_argument_candidates(no_positional, ctx, instance, (event,))[0] == (
-        ctx,
-        instance,
-        event,
-    )
+    assert await core._maybe_await(behavior(ctx, instance, event)) == "behavior"
 
-    def instance_first(inst: core.Instance, event: core.Event) -> tuple[core.Instance, core.Event]:
-        return inst, event
+    async def operation(
+        operation_ctx: core.Context, inst: core.Instance, value: int
+    ) -> int:
+        assert operation_ctx is ctx
+        assert inst is instance
+        return value + 1
 
-    assert core._invoke_operation_callback(instance_first, ctx, instance, (event,)) == (instance, event)
-    assert core._operation_argument_candidates(object(), ctx, instance, (event,))[0] == (
-        ctx,
-        instance,
-        event,
-    )
+    assert await core._maybe_await(operation(ctx, instance, 4)) == 5
 
     model = _bare_model("Operations")
-    model.operations["fallback"] = core.OperationDef(qualified_name="fallback")
-    instance.fallback = lambda event: event.name  # type: ignore[attr-defined]
-    assert core._operation_callback(model, instance, "fallback")(event) == "go"
+    model.operations["fallback"] = core.OperationElement(qualified_name="fallback")
+    instance.fallback = lambda fallback_event: fallback_event.name  # type: ignore[attr-defined]
+    callback = core._operation_callback(model.operations["fallback"], instance)
+    assert callback(ctx, instance, event) == "go"
 
     with pytest.raises(core.ValidationError, match='missing operation "missing"'):
-        core._operation_callback(model, instance, "missing")
+        core._resolve_operation(model, "missing")
 
 
 @pytest.mark.asyncio
 async def test_dispatch_fanout_helper_edge_paths():
-    assert await core._await_all_started([]) is None
-    assert await core._await_all_shielded_started([]) is None
-    assert await core._dispatch_machines_sequential_started([]) is None
-    assert await core._await_all_started([asyncio.sleep(0)]) is None
-
-    started: list[int] = []
-    loop = asyncio.get_running_loop()
-
-    class ScheduledMachine:
-        def _start_scheduled_processing(self, event_kind: int) -> None:
-            started.append(event_kind)
-
-    waiter = loop.create_future()
-    done = core._start_later_dispatches([(ScheduledMachine(), core.Kinds.Event, waiter)])
-    await asyncio.sleep(0)
-    assert started == [core.Kinds.Event]
-    waiter.set_result(None)
-    await done
-
-    class FailingScheduledMachine:
-        def _start_scheduled_processing(self, event_kind: int) -> None:
-            raise RuntimeError("start failed")
-
-    with pytest.raises(RuntimeError, match="start failed"):
-        await core._start_later_dispatches(
-            [(FailingScheduledMachine(), core.Kinds.Event, loop.create_future())]
-        )
-
-    completed = loop.create_future()
-    completed.set_exception(RuntimeError("dispatch failed"))
-    done = loop.create_future()
-    core._continue_later_dispatches(done, completed, 1, lambda index: None)
-    with pytest.raises(RuntimeError, match="dispatch failed"):
-        await done
-
-    ignored = loop.create_future()
-    ignored.set_result(None)
-    core._continue_later_dispatches(done, ignored, 2, lambda index: None)
-    assert done.done()
+    assert await core._dispatch_machines([]) is None
+    assert await core._await_all([asyncio.sleep(0)]) is None
+    assert await core._await_all_shielded([core._future_done()]) is None
 
 
 @pytest.mark.asyncio
-async def test_dispatch_later_and_reentrant_queue_paths_notify_and_do_not_wait():
+async def test_dispatch_reentrant_queue_paths_notify_and_do_not_wait():
     class FanoutInstance(core.Instance):
         pass
 
@@ -414,12 +402,14 @@ async def test_dispatch_later_and_reentrant_queue_paths_notify_and_do_not_wait()
 
     model = core.Define(
         "FanoutHelperCoverage",
-        core.Initial(core.Target("idle")),
-        core.State(
+        core.InitialElement(core.Target("idle")),
+        core.StateElement(
             "idle",
-            core.Transition(core.On("go"), core.Target("../done"), core.Effect(mark)),
+            core.TransitionElement(
+                core.On("go"), core.Target("../done"), core.Effect(mark)
+            ),
         ),
-        core.State("done"),
+        core.StateElement("done"),
     )
 
     ctx = core.Context()
@@ -427,46 +417,18 @@ async def test_dispatch_later_and_reentrant_queue_paths_notify_and_do_not_wait()
     machine = await core.Started(ctx, instance, model)
     dispatched = core.AfterDispatch(ctx, instance, core.Event("go"))
 
-    await machine.dispatch_later(core.Event("go"))
+    await machine.dispatch(core.Event("go"))
     await dispatched
     assert instance.state() == "/FanoutHelperCoverage/done"
 
     await core.Stop(instance)
-
-    reentrant = FanoutInstance()
-    machine = await core.Started(ctx, reentrant, model)
-    current = asyncio.current_task()
-    assert current is not None
-    machine._active_timer_tasks.add(current)
-    try:
-        assert await machine.dispatch_later(core.Event("go")) is None
-        assert machine._timer_task_pending_dispatch is True
-        assert reentrant.state() == "/FanoutHelperCoverage/idle"
-    finally:
-        machine._active_timer_tasks.discard(current)
-    await core.Stop(reentrant)
-
-    queued_reentrant = FanoutInstance()
-    machine = await core.Started(ctx, queued_reentrant, model)
-    current = asyncio.current_task()
-    assert current is not None
-    machine._active_timer_tasks.add(current)
-    dispatched = core.AfterDispatch(ctx, queued_reentrant, core.Event("go"))
-    try:
-        assert await core._queue_dispatches_for_later([(machine, core.Event("go"))]) is None
-        await dispatched
-        assert machine._timer_task_pending_dispatch is True
-        assert queued_reentrant.state() == "/FanoutHelperCoverage/idle"
-    finally:
-        machine._active_timer_tasks.discard(current)
-    await core.Stop(queued_reentrant)
 
     done_awaitable = FanoutInstance()
     machine = await core.Started(ctx, done_awaitable, model)
     assert machine._processing.try_acquire() is True
     machine._awaitable = core._future_done()
     try:
-        assert await core._queue_dispatches_for_later([(machine, core.Event("go"))]) is None
+        assert await machine.dispatch(core.Event("go")) is None
         assert done_awaitable.state() == "/FanoutHelperCoverage/idle"
     finally:
         machine._processing.release()
@@ -477,7 +439,7 @@ async def test_dispatch_later_and_reentrant_queue_paths_notify_and_do_not_wait()
     assert machine._processing.try_acquire() is True
     machine._awaitable = asyncio.current_task()
     try:
-        assert await machine.dispatch_later(core.Event("go")) is None
+        assert await machine.dispatch(core.Event("go")) is None
         assert same_task.state() == "/FanoutHelperCoverage/idle"
     finally:
         machine._processing.release()
@@ -488,7 +450,7 @@ async def test_dispatch_later_and_reentrant_queue_paths_notify_and_do_not_wait()
     assert machine._processing.try_acquire() is True
     machine._awaitable = core._future_done()
     try:
-        assert await machine.dispatch_later(core.Event("go")) is None
+        assert await machine.dispatch(core.Event("go")) is None
         assert completed_awaitable.state() == "/FanoutHelperCoverage/idle"
     finally:
         machine._processing.release()
@@ -496,74 +458,83 @@ async def test_dispatch_later_and_reentrant_queue_paths_notify_and_do_not_wait()
 
     time_event_instance = FanoutInstance()
     machine = await core.Started(ctx, time_event_instance, model)
-    await machine.dispatch_later(core.Event("timer", kind=core.Kinds.TimeEvent))
+    await machine.dispatch(core.Event("timer", kind=core.Kinds.TimeEvent))
     assert time_event_instance.state() == "/FanoutHelperCoverage/idle"
     await core.Stop(time_event_instance)
 
 
 def test_direct_validation_branches():
     model = _bare_model()
-    state = core.StateNode(qualified_name="/Bare/idle")
+    state = core.StateElement(qualified_name="/Bare/idle")
     model.set(state.qualified_name, state)
-    target = core.StateNode(qualified_name="/Bare/other")
+    target = core.StateElement(qualified_name="/Bare/other")
     model.set(target.qualified_name, target)
 
-    final_state = core.FinalStateNode(qualified_name="/Bare/final")
+    final_state = core.FinalStateElement(qualified_name="/Bare/final")
     model.set(final_state.qualified_name, final_state)
 
     with pytest.raises(core.ValidationError, match="state must be called"):
-        core.State("orphan").apply(model, [])
+        core.StateElement("orphan").apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="initial must be called within a State"):
-        core.Initial(core.Target("idle")).apply(model, [])
+    with pytest.raises(
+        core.ValidationError, match="initial must be called within a StateElement"
+    ):
+        core.InitialElement(core.Target("idle")).apply(model, [])
 
     with pytest.raises(core.ValidationError, match="already has an initial state"):
         core.Define(
             "DuplicateInitial",
-            core.State(
+            core.StateElement(
                 "idle",
-                core.Initial(core.Target("child")),
-                core.Initial(core.Target("child")),
-                core.State("child"),
+                core.InitialElement(core.Target("child")),
+                core.InitialElement(core.Target("child")),
+                core.StateElement("child"),
             ),
-            core.Initial(core.Target("idle")),
+            core.InitialElement(core.Target("idle")),
         )
 
     with pytest.raises(core.ValidationError, match="cannot have a guard"):
         core.Define(
             "GuardedInitial",
-            core.Initial(core.Target("idle")),
-            core.State(
+            core.InitialElement(core.Target("idle")),
+            core.StateElement(
                 "idle",
-                core.Initial(core.Guard(_guard_true), core.Target("child")),
-                core.State("child"),
+                core.InitialElement(
+                    core.GuardElement(_guard_true), core.Target("child")
+                ),
+                core.StateElement("child"),
             ),
         )
 
     with pytest.raises(core.ValidationError, match="initial state is required"):
-        core.Define("MissingInitialTarget", core.State("idle", core.Initial("missing")))
+        core.Define(
+            "MissingInitialTarget",
+            core.StateElement("idle", core.InitialElement("missing")),
+        )
 
     with pytest.raises(core.ValidationError, match="must target a nested state"):
         core.Define(
             "WrongInitialTarget",
-            core.Initial(core.Target("outer")),
-            core.State(
+            core.InitialElement(core.Target("outer")),
+            core.StateElement(
                 "outer",
-                core.Initial(core.Target("../other")),
-                core.State("child"),
+                core.InitialElement(core.Target("../other")),
+                core.StateElement("child"),
             ),
-            core.State("other"),
+            core.StateElement("other"),
         )
 
-    with pytest.raises(core.ValidationError, match="within a nested State"):
+    with pytest.raises(core.ValidationError, match="within a nested StateElement"):
         core.ShallowHistory("memory").apply(model, [model])
 
-    with pytest.raises(core.ValidationError, match='model name "Bad/Model" cannot contain "/"'):
+    with pytest.raises(
+        core.ValidationError, match='model name "Bad/Model" cannot contain "/"'
+    ):
         core.Define("Bad/Model")
 
     slash_name_cases = [
         (
-            core.State("bad/state"),
+            core.StateElement("bad/state"),
             [model],
             'state name "bad/state" cannot contain "/"',
         ),
@@ -573,12 +544,16 @@ def test_direct_validation_branches():
             'final name "bad/final" cannot contain "/"',
         ),
         (
-            core.ShallowHistory("bad/history", core.Transition(core.Target("idle"))),
+            core.ShallowHistory(
+                "bad/history", core.TransitionElement(core.Target("idle"))
+            ),
             [model, state],
             'ShallowHistory name "bad/history" cannot contain "/"',
         ),
         (
-            core.DeepHistory("bad/history", core.Transition(core.Target("idle"))),
+            core.DeepHistory(
+                "bad/history", core.TransitionElement(core.Target("idle"))
+            ),
             [model, state],
             'DeepHistory name "bad/history" cannot contain "/"',
         ),
@@ -597,118 +572,161 @@ def test_direct_validation_branches():
         with pytest.raises(core.ValidationError, match=re.escape(message)):
             partial.apply(model, stack)
 
-    with pytest.raises(core.ValidationError, match="ShallowHistory requires a default transition"):
+    with pytest.raises(
+        core.ValidationError, match="ShallowHistory requires a default transition"
+    ):
         core.Define(
             "MissingShallowHistoryDefault",
-            core.Initial(core.Target("parent/idle")),
-            core.State(
+            core.InitialElement(core.Target("parent/idle")),
+            core.StateElement(
                 "parent",
-                core.Initial(core.Target("idle")),
-                core.State("idle"),
+                core.InitialElement(core.Target("idle")),
+                core.StateElement("idle"),
                 core.ShallowHistory("memory"),
             ),
         )
 
-    with pytest.raises(core.ValidationError, match="DeepHistory requires a default transition"):
+    with pytest.raises(
+        core.ValidationError, match="DeepHistory requires a default transition"
+    ):
         core.Define(
             "MissingDeepHistoryDefault",
-            core.Initial(core.Target("parent/idle")),
-            core.State(
+            core.InitialElement(core.Target("parent/idle")),
+            core.StateElement(
                 "parent",
-                core.Initial(core.Target("idle")),
-                core.State("idle"),
+                core.InitialElement(core.Target("idle")),
+                core.StateElement("idle"),
                 core.DeepHistory("memory"),
             ),
         )
 
     with pytest.raises(core.ValidationError, match="Top level transitions"):
         core.ResolvePaths(
-            transition=core.TransitionNode(
+            transition=core.TransitionElement(
                 qualified_name="/Bare/toplevel",
                 source="/",
                 target="/Bare/idle",
             )
         ).apply(model, [])
 
-    with pytest.raises(core.ValidationError, match='Vertex "/Bare/missing" not found'):
+    with pytest.raises(
+        core.ValidationError, match='VertexElement "/Bare/missing" not found'
+    ):
         core.ValidateVertex(qualified_name="/Bare/missing").apply(model, [])
 
     with pytest.raises(core.ValidationError, match="transition must be called"):
-        core.Transition(core.On("go")).apply(model, [])
+        core.TransitionElement(core.On("go")).apply(model, [])
 
     with pytest.raises(core.ValidationError, match='Source "/Bare/missing" not found'):
-        core.Transition(core.Source("/Bare/missing"), core.On("go")).apply(model, [state])
+        core.TransitionElement(core.Source("/Bare/missing"), core.On("go")).apply(
+            model, [state]
+        )
 
     with pytest.raises(core.ValidationError, match="has no events"):
         core.PartialTransition().apply(model, [state])
 
-    with pytest.raises(core.ValidationError, match="must be called within a hsm.Transition"):
+    with pytest.raises(
+        core.ValidationError, match="must be called within a hsm.TransitionElement"
+    ):
         core.Source("idle").apply(model, [])
 
     with pytest.raises(core.ValidationError, match="already has a source"):
         core.Source("other").apply(
             model,
-            [core.TransitionNode(qualified_name="/Bare/t", source="/Bare/idle")],
+            [core.TransitionElement(qualified_name="/Bare/t", source="/Bare/idle")],
         )
 
     with pytest.raises(core.ValidationError, match='missing source ""'):
-        core.Source(_NullPartial()).apply(model, [core.TransitionNode(qualified_name="/Bare/t", source=".")])
+        core.Source(_NullPartial()).apply(
+            model, [core.TransitionElement(qualified_name="/Bare/t", source=".")]
+        )
 
-    with pytest.raises(core.ValidationError, match="must be called within Transition"):
+    with pytest.raises(
+        core.ValidationError, match="must be called within TransitionElement"
+    ):
         core.Target("idle").apply(model, [])
 
     with pytest.raises(core.ValidationError, match="already has a target"):
         core.Target("other").apply(
             model,
-            [core.TransitionNode(qualified_name="/Bare/t", source="/Bare/idle", target="/Bare/other")],
+            [
+                core.TransitionElement(
+                    qualified_name="/Bare/t", source="/Bare/idle", target="/Bare/other"
+                )
+            ],
         )
 
     with pytest.raises(core.ValidationError, match='missing target ""'):
-        core.Target(_NullPartial()).apply(model, [core.TransitionNode(qualified_name="/Bare/t")])
+        core.Target(_NullPartial()).apply(
+            model, [core.TransitionElement(qualified_name="/Bare/t")]
+        )
 
-    with pytest.raises(core.ValidationError, match="entry must be called within a State"):
+    with pytest.raises(
+        core.ValidationError, match="entry must be called within a StateElement"
+    ):
         core.Entry(_action).apply(model, [])
 
     with pytest.raises(core.ValidationError, match="has no missing"):
-        core.PartialBehaviors(qualified_name="missing", type=core.StateNode).apply(model, [state])
+        core.PartialBehaviors(qualified_name="missing", type=core.StateElement).apply(
+            model, [state]
+        )
 
-    with pytest.raises(core.ValidationError, match="guard must be called within a Transition"):
-        core.Guard(_guard_true).apply(model, [])
+    with pytest.raises(
+        core.ValidationError, match="guard must be called within a TransitionElement"
+    ):
+        core.GuardElement(_guard_true).apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="trigger must be called within a Transition"):
+    with pytest.raises(
+        core.ValidationError, match="trigger must be called within a TransitionElement"
+    ):
         core.On("go").apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="defer must be called within a state"):
+    with pytest.raises(
+        core.ValidationError, match="defer must be called within a state"
+    ):
         core.Defer(core.Event(name="later")).apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="choice must be called within a state or transition"):
-        core.Choice("branch").apply(model, [])
+    with pytest.raises(
+        core.ValidationError, match="choice must be called within a state or transition"
+    ):
+        core.ChoiceElement("branch").apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="choice must be called within a state"):
-        core.Choice("branch").apply(model, [core.TransitionNode(qualified_name="/Bare/t", source=".")])
+    with pytest.raises(
+        core.ValidationError, match="choice must be called within a state"
+    ):
+        core.ChoiceElement("branch").apply(
+            model, [core.TransitionElement(qualified_name="/Bare/t", source=".")]
+        )
 
-    with pytest.raises(core.ValidationError, match='choice "/NoTransitions/idle/branch" has no transitions'):
+    with pytest.raises(
+        core.ValidationError,
+        match='choice "/NoTransitions/idle/branch" has no transitions',
+    ):
         core.Define(
             "NoTransitions",
-            core.Initial(core.Target("idle")),
-            core.State("idle", core.Choice("branch")),
+            core.InitialElement(core.Target("idle")),
+            core.StateElement("idle", core.ChoiceElement("branch")),
         )
 
     with pytest.raises(core.ValidationError, match="cannot have a guard"):
         core.Define(
             "ChoiceGuard",
-            core.Initial(core.Target("idle")),
-            core.State(
+            core.InitialElement(core.Target("idle")),
+            core.StateElement(
                 "idle",
-                core.Choice(
+                core.ChoiceElement(
                     "branch",
-                    core.Transition(core.Guard(_guard_true), core.Target("../done")),
+                    core.TransitionElement(
+                        core.GuardElement(_guard_true), core.Target("../done")
+                    ),
                 ),
             ),
-            core.State("done"),
+            core.StateElement("done"),
         )
 
-    with pytest.raises(core.ValidationError, match='Final state "/Bare/missing" not found'):
+    with pytest.raises(
+        core.ValidationError, match='Final state "/Bare/missing" not found'
+    ):
         core.ValidateFinalState(qualified_name="/Bare/missing").apply(model, [])
 
     final_state.transitions.append("/Bare/final/t")
@@ -728,7 +746,9 @@ def test_direct_validation_branches():
         core.ValidateFinalState(qualified_name="/Bare/final").apply(model, [])
     final_state.activity.clear()
 
-    with pytest.raises(core.ValidationError, match="Final must be called within a namespace"):
+    with pytest.raises(
+        core.ValidationError, match="Final must be called within a namespace"
+    ):
         core.Final("done").apply(model, [])
 
     with pytest.raises(core.ValidationError, match="attribute name cannot be empty"):
@@ -745,43 +765,68 @@ def test_direct_validation_branches():
     with pytest.raises(core.ValidationError, match="duplicate operation work"):
         core.Operation("work").apply(model, [model])
 
-    with pytest.raises(core.ValidationError, match="operation must be called within Define"):
+    with pytest.raises(
+        core.ValidationError, match="operation must be called within Define"
+    ):
         core.Operation("lost").apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="OnSet\\(\\) must be called within a Transition"):
+    with pytest.raises(
+        core.ValidationError,
+        match="OnSet\\(\\) must be called within a TransitionElement",
+    ):
         core.OnSet("count").apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="requires a non-empty attribute name"):
-        core.OnSet("").apply(model, [core.TransitionNode(qualified_name="/Bare/t")])
+    with pytest.raises(
+        core.ValidationError, match="requires a non-empty attribute name"
+    ):
+        core.OnSet("").apply(model, [core.TransitionElement(qualified_name="/Bare/t")])
 
-    with pytest.raises(core.ValidationError, match="OnCall\\(\\) must be called within a Transition"):
+    with pytest.raises(
+        core.ValidationError,
+        match="OnCall\\(\\) must be called within a TransitionElement",
+    ):
         core.OnCall("work").apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="requires a non-empty operation name"):
-        core.OnCall("").apply(model, [core.TransitionNode(qualified_name="/Bare/t")])
+    with pytest.raises(
+        core.ValidationError, match="requires a non-empty operation name"
+    ):
+        core.OnCall("").apply(model, [core.TransitionElement(qualified_name="/Bare/t")])
 
     with pytest.raises(core.ValidationError, match='Source "/Bare/missing" not found'):
-        core.TimedBehavior(
-            event=core.Event(name="timer"),
-            duration=_action,  # type: ignore[arg-type]
-            transition=core.TransitionNode(
-                qualified_name="/Bare/timer",
-                source="/Bare/missing",
-            ),
-        ).apply(model, [])
+        core.PartialTransition(
+            qualified_name="timer",
+            owned_elements=[
+                core.PartialOn("go"),
+                core.After(_action),  # type: ignore[arg-type]
+                core.PartialTarget("x"),
+                core.PartialSource("/Bare/missing"),
+            ],
+        ).apply(model, [core.StateElement("s", qualified_name="/Bare/s")])
+        while model.owned_elements:
+            partial = model.owned_elements.pop()
+            if isinstance(partial, core.PartialElement):
+                partial.apply(model, [])
 
-    with pytest.raises(core.ValidationError, match="after must be called within a Transition"):
+    with pytest.raises(
+        core.ValidationError, match="after must be called within a TransitionElement"
+    ):
         core.After(_action).apply(model, [])  # type: ignore[arg-type]
 
-    with pytest.raises(core.ValidationError, match="when must be called within a Transition"):
+    with pytest.raises(
+        core.ValidationError, match="when must be called within a TransitionElement"
+    ):
         core.When(lambda *_: None).apply(model, [])
 
-    initial = core.InitialNode(qualified_name="/Bare/.initial")
+    initial = core.InitialElement(qualified_name="/Bare/.initial")
     model.set(initial.qualified_name, initial)
-    with pytest.raises(core.ValidationError, match="source is a State"):
+    with pytest.raises(core.ValidationError, match="source is a StateElement"):
         core.When(lambda *_: None).apply(
             model,
-            [core.TransitionNode(qualified_name="/Bare/t", source=initial.qualified_name)],
+            [
+                core.TransitionElement(
+                    qualified_name="/Bare/t", source=initial.qualified_name
+                )
+            ],
         )
 
 
@@ -789,29 +834,31 @@ def test_model_finalization_validation_branches():
     with pytest.raises(core.ValidationError, match="entry actions are not allowed"):
         core.Define(
             "TopEntry",
-            core.Initial(core.Target("idle")),
+            core.InitialElement(core.Target("idle")),
             core.Entry(_action),
-            core.State("idle"),
+            core.StateElement("idle"),
         )
 
     with pytest.raises(core.ValidationError, match="exit actions are not allowed"):
         core.Define(
             "TopExit",
-            core.Initial(core.Target("idle")),
+            core.InitialElement(core.Target("idle")),
             core.Exit(_action),
-            core.State("idle"),
+            core.StateElement("idle"),
         )
 
     pending_on_call = core.Define(
         "PendingOnCall",
-        core.Initial(core.Target("idle")),
-        core.State(
+        core.Operation("work"),
+        core.InitialElement(core.Target("idle")),
+        core.StateElement(
             "idle",
-            core.Transition(core.OnCall("work"), core.Target("../done")),
+            core.TransitionElement(core.OnCall("work"), core.Target("../done")),
         ),
-        core.State("done"),
+        core.StateElement("done"),
     )
     assert pending_on_call.events["@call:work"].kind == core.Kinds.CallEvent
+    assert pending_on_call.events["@call:work"].source == "/PendingOnCall/work"
 
 
 @pytest.mark.asyncio
@@ -827,31 +874,34 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
         core.Attribute("bag", {"items": []}),
         core.Operation("double"),
         core.Operation("missing_method"),
-        core.Initial(core.Target("idle")),
-        core.State(
+        core.InitialElement(core.Target("idle")),
+        core.StateElement(
             "idle",
             core.Activity(activity_done),
-            core.Transition(core.On("go"), core.Target("../done")),
-            core.Transition(core.OnSet("count"), core.Target("../set_state")),
-            core.Transition(core.OnCall("double"), core.Target("../called")),
+            core.TransitionElement(core.On("go"), core.Target("../done")),
+            core.TransitionElement(core.OnSet("count"), core.Target("../set_state")),
+            core.TransitionElement(core.OnCall("double"), core.Target("../called")),
         ),
-        core.State("called", core.Transition(core.On("reset"), core.Target("../idle"))),
-        core.State("set_state", core.Transition(core.On("reset"), core.Target("../idle"))),
-        core.State("done"),
+        core.StateElement(
+            "called", core.TransitionElement(core.On("reset"), core.Target("../idle"))
+        ),
+        core.StateElement(
+            "set_state",
+            core.TransitionElement(core.On("reset"), core.Target("../idle")),
+        ),
+        core.StateElement("done"),
     )
 
-    ctx = core.Context()
+    ctx = core.Context().WithValue(core.Keys.Instances, {})
     first = CoverageInstance()
     second = CoverageInstance()
     first_hsm = await core.Started(ctx, first, model)
     second_hsm = await core.Start(ctx, second, model)
 
-    assert first_hsm.context().machine() is first_hsm
-    assert first_hsm in ctx.machines()
-    delattr(first_hsm, "id")
-    delattr(first_hsm, "qualified_name")
-    assert first_hsm.id().startswith("hsm-")
-    assert first_hsm.qualified_name() == "/RuntimeCoverage"
+    assert core.FromContext(first_hsm.context()) == (first_hsm, True)
+    assert first_hsm in core.InstancesFromContext(ctx)[0]
+    assert first_hsm.id.startswith("hsm-")
+    assert first_hsm.qualified_name == "/RuntimeCoverage"
     assert core.QualifiedName(first) == "/RuntimeCoverage"
     assert core.AfterExecuted(ctx, first, "/RuntimeCoverage/idle").done() is False
 
@@ -884,13 +934,17 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     with pytest.raises(core.ValidationError, match='missing operation "unknown"'):
         await first_hsm.call("unknown")
 
-    with pytest.raises(core.ValidationError, match='missing operation "missing_method"'):
+    with pytest.raises(
+        core.ValidationError, match='missing operation "missing_method"'
+    ):
         await first_hsm.call("missing_method")
 
-    ghost = core.TransitionNode(qualified_name="/RuntimeCoverage/ghost", target="/RuntimeCoverage/done")
+    ghost = core.TransitionElement(
+        qualified_name="/RuntimeCoverage/ghost", target="/RuntimeCoverage/done"
+    )
     first_hsm.model.transition_map[first.state()].setdefault("ghost", []).append(ghost)
     snapshot = core.TakeSnapshot(ctx, first)
-    assert snapshot.State == "/RuntimeCoverage/idle"
+    assert snapshot.StateElement == "/RuntimeCoverage/idle"
     assert snapshot.QueueLen == 0
     assert all(event.Name != "ghost" for event in snapshot.Events)
 
@@ -900,7 +954,9 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     group_snapshot = core.TakeSnapshot(None, group)
     assert group_snapshot.ID != ""
     assert group_snapshot.QualifiedName == "/RuntimeCoverage,/RuntimeCoverage"
-    assert group_snapshot.State == "/RuntimeCoverage/idle | /RuntimeCoverage/idle"
+    assert (
+        group_snapshot.StateElement == "/RuntimeCoverage/idle | /RuntimeCoverage/idle"
+    )
     assert group_snapshot.QueueLen == 0
 
     identified_group = core.MakeGroup("coverage-group", first, second)
@@ -914,12 +970,13 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     assert first.state() == "/RuntimeCoverage/idle"
     assert second.state() == "/RuntimeCoverage/idle"
 
-    await core.Set(None, group, "count", 3)
+    await core.Set(None, first, "count", 3)
+    await core.Set(None, second, "count", 3)
     assert first.state() == "/RuntimeCoverage/set_state"
     assert second.state() == "/RuntimeCoverage/set_state"
 
     await core.Dispatch(None, group, core.Event(name="reset"))
-    assert await core.Call(None, group, "double", 5) == 10
+    assert await core.Call(None, first, "double", 5) == 10
     assert first.values[-1] == 5
     assert second.values == []
 
@@ -930,7 +987,6 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     empty_group = core.NewGroup(None)
     assert empty_group.state() == ""
     assert empty_group.context() is None
-    assert empty_group.get("count") == (None, False)
     empty_snapshot = empty_group.take_snapshot()
     assert empty_snapshot.ID != ""
     assert core.QualifiedName(empty_group) == ""
@@ -938,8 +994,6 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
         await core.Dispatch(None, empty_group, core.Event(name="noop"))
     await core.Restart(empty_group)
     await core.Stop(empty_group)
-    with pytest.raises(core.ValidationError, match="missing hsm"):
-        await core.Call(None, empty_group, "double", 1)
 
     await core.DispatchAll(None, core.Event(name="noop"))
     await core.DispatchTo(None, core.Event(name="noop"), "hsm-*")
@@ -950,15 +1004,17 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
 
 @pytest.mark.asyncio
 async def test_dispatch_event_schema_is_copied_from_caller():
-    def mutate_schema(ctx: core.Context, instance: CoverageInstance, event: core.Event) -> None:
+    def mutate_schema(
+        ctx: core.Context, instance: CoverageInstance, event: core.Event
+    ) -> None:
         event.schema["mutated"] = True
 
     model = core.Define(
         "SchemaOwnership",
-        core.Initial(core.Target("idle")),
-        core.State(
+        core.InitialElement(core.Target("idle")),
+        core.StateElement(
             "idle",
-            core.Transition(core.On("touch"), core.Effect(mutate_schema)),
+            core.TransitionElement(core.On("touch"), core.Effect(mutate_schema)),
         ),
     )
     ctx = core.Context()

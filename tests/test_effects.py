@@ -129,38 +129,28 @@ async def test_effect_with_event_access():
     await hsm.stop(instance)
 
 
-@pytest.mark.asyncio
-async def test_async_effects():
-    """Test asynchronous effects"""
-    instance = EffectInstance()
+def test_async_effects_are_rejected_at_build_time():
+    async def async_effect(
+        ctx: hsm.Context, inst: EffectInstance, event: hsm.Event
+    ) -> None:
+        inst.log_action("async-effect-completed")
 
-    async def async_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
-        await asyncio.sleep(0.001)  # Simulate async work
-        inst.log_action('async-effect-completed')
-        inst.data['async_done'] = True
-
-    model = hsm.define('AsyncEffectMachine',
-        hsm.initial(hsm.target('waiting')),
-        hsm.state('waiting',
-            hsm.transition(
-                hsm.on('process'),
-                hsm.target('../done'),
-                hsm.effect(async_effect)
-            )
-        ),
-        hsm.state('done')
-    )
-
-    ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
-
-    await instance.dispatch(hsm.Event(name='process'))
-
-    assert 'async-effect-completed' in instance.log
-    assert instance.data.get('async_done') is True
-    assert instance.state() == '/AsyncEffectMachine/done'
-
-    await hsm.stop(instance)
+    with pytest.raises(
+        hsm.ValidationError, match="effect must be a synchronous function"
+    ):
+        hsm.Define(
+            "AsyncEffectMachine",
+            hsm.Initial(hsm.Target("waiting")),
+            hsm.State(
+                "waiting",
+                hsm.Transition(
+                    hsm.On("process"),
+                    hsm.Target("../done"),
+                    hsm.Effect(async_effect),
+                ),
+            ),
+            hsm.State("done"),
+        )
 
 
 @pytest.mark.asyncio

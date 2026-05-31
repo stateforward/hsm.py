@@ -1,6 +1,8 @@
 import asyncio
+import copy
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -8,6 +10,14 @@ from hypothesis import strategies as st
 
 import hsm
 from hsm import hsm as core
+
+
+def _context_machines(ctx: hsm.Context) -> list[Any]:
+    return hsm.InstancesFromContext(ctx)[0]
+
+
+def _runtime_context() -> hsm.Context:
+    return hsm.Context().WithValue(hsm.Keys.Instances, {})
 
 
 class FuzzInstance(hsm.Instance):
@@ -62,7 +72,7 @@ def _flat_model(spec: FlatSpec) -> hsm.Model:
 
 async def _drive_flat_spec(spec: FlatSpec) -> None:
     instance = FuzzInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, _flat_model(spec))
 
     expected_state = 0
@@ -133,7 +143,7 @@ def _guarded_model(guards: tuple[bool, ...], targets: tuple[int, ...]) -> hsm.Mo
 
 async def _drive_guarded_spec(guards: tuple[bool, ...], targets: tuple[int, ...]) -> None:
     instance = FuzzInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, _guarded_model(guards, targets))
 
     await hsm.Dispatch(ctx, instance, hsm.Event("go"))
@@ -206,7 +216,7 @@ async def _drive_hierarchical_trace(trace: tuple[str, ...]) -> None:
     )
 
     instance = HierarchicalInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     expected_state = "a"
@@ -250,7 +260,7 @@ async def _drive_hierarchical_trace(trace: tuple[str, ...]) -> None:
 
 async def _dispatch_toggle_stress(iterations: int) -> None:
     instance = FuzzInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "StressToggle",
         hsm.Initial(hsm.Target("off")),
@@ -274,7 +284,7 @@ def test_concurrent_dispatch_stress():
 
 
 async def _broadcast_stress(machine_count: int, rounds: int) -> None:
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "BroadcastStress",
         hsm.Initial(hsm.Target("idle")),
@@ -317,7 +327,7 @@ async def _direct_dispatch_event_metadata_isolation_stress(rounds: int) -> None:
         hsm.State("ready", hsm.Transition(hsm.On("go"), hsm.Effect(mutate_event))),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instance = DirectEventInstance()
     await hsm.Start(ctx, instance, model)
 
@@ -372,7 +382,7 @@ async def _broadcast_event_metadata_isolation_stress(machine_count: int, rounds:
         hsm.State("ready", hsm.Transition(hsm.On("shared"), hsm.Effect(mutate_event))),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [BroadcastEventInstance(index) for index in range(machine_count)]
     for index, instance in enumerate(instances):
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"event-isolation-{index}"))
@@ -428,7 +438,7 @@ async def _event_data_payload_reference_contract_stress(machine_count: int, roun
         hsm.State("ready", hsm.Transition(hsm.On("touch"), hsm.Effect(mutate_payload))),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [PayloadContractInstance(index) for index in range(machine_count)]
     for index, instance in enumerate(instances):
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"payload-contract-{index}"))
@@ -495,7 +505,7 @@ async def _broadcast_self_stop_stress(machine_count: int, rounds: int) -> None:
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [BroadcastSelfStopInstance() for _ in range(machine_count)]
 
     for round_index in range(rounds):
@@ -503,10 +513,10 @@ async def _broadcast_self_stop_stress(machine_count: int, rounds: int) -> None:
             assert instance.state() in ("", "/BroadcastSelfStop")
             await hsm.Started(ctx, instance, model, hsm.Config(ID=f"self-stop-{round_index}-{index}"))
 
-        assert len(ctx.machines()) == machine_count
+        assert len(_context_machines(ctx)) == machine_count
         await hsm.DispatchAll(ctx, hsm.Event("stop"))
 
-        assert ctx.machines() == []
+        assert _context_machines(ctx) == []
         for instance in instances:
             assert instance.state() == "/BroadcastSelfStop"
             assert instance.stops == round_index + 1
@@ -531,7 +541,7 @@ async def _snapshot_attribute_aliasing_stress(rounds: int) -> None:
         hsm.State("idle", hsm.Transition(hsm.OnSet("payload"))),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instance = SnapshotIsolationInstance()
     await hsm.Start(ctx, instance, model)
 
@@ -596,15 +606,19 @@ async def _group_set_attribute_value_isolation_stress(rounds: int) -> None:
         hsm.State("ready", hsm.Transition(hsm.OnSet("payload"), hsm.Effect(mutate_set_value))),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [GroupSetIsolationInstance(index) for index in range(20)]
     for index, instance in enumerate(instances):
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-set-{index}"))
 
-    group = hsm.MakeGroup(*instances)
     for round_index in range(rounds):
         value = {"items": [round_index]}
-        await hsm.Set(ctx, group, "payload", value)
+        await asyncio.gather(
+            *(
+                hsm.Set(ctx, instance, "payload", copy.deepcopy(value))
+                for instance in instances
+            )
+        )
 
         assert value == {"items": [round_index]}
         for instance in instances:
@@ -619,7 +633,7 @@ async def _group_set_attribute_value_isolation_stress(rounds: int) -> None:
         first_value["items"].append("first-only")
         assert second_value == {"items": [round_index, "member-1"]}
 
-    await hsm.Stop(group)
+    await hsm.Stop(hsm.MakeGroup(*instances))
 
 
 def test_group_set_attribute_value_isolation_stress():
@@ -659,13 +673,19 @@ async def _cancelled_group_set_awaiter_does_not_cancel_onset_processing() -> Non
         ),
         hsm.State("changed"),
     )
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [GroupSetCancelInstance(index) for index in range(12)]
     for index, instance in enumerate(instances):
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-set-cancel-{index}"))
 
-    group = hsm.MakeGroup(*instances)
-    set_task = asyncio.ensure_future(hsm.Set(ctx, group, "payload", {"round": 1}))
+    set_task = asyncio.ensure_future(
+        asyncio.gather(
+            *(
+                hsm.Set(ctx, instance, "payload", {"round": 1})
+                for instance in instances
+            )
+        )
+    )
     seen = {
         await asyncio.wait_for(entered_effects.get(), timeout=1)
         for _ in range(len(instances))
@@ -730,7 +750,7 @@ async def _drive_attribute_set_trace(values: tuple[int, ...]) -> None:
         ),
     )
     instance = AttributeInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     expected_changes: list[tuple[int | None, int]] = []
@@ -780,7 +800,7 @@ async def _set_call_concurrency_stress(rounds: int) -> None:
         ),
     )
     instance = RuntimeInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     async def set_value(value: int) -> None:
@@ -833,7 +853,7 @@ async def _group_call_first_member_semantics_stress(rounds: int) -> None:
         hsm.State("ready", hsm.Transition(hsm.OnCall("identify"), hsm.Effect(record_call))),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     first = GroupCallInstance("first")
     stopped_second = GroupCallInstance("second")
     never_started = GroupCallInstance("never")
@@ -841,9 +861,8 @@ async def _group_call_first_member_semantics_stress(rounds: int) -> None:
     await hsm.Start(ctx, stopped_second, model)
     await hsm.Stop(stopped_second)
 
-    group = hsm.MakeGroup(first, hsm.MakeGroup(stopped_second, never_started))
     for index in range(rounds):
-        assert await hsm.Call(ctx, group, "identify", index) == ("first", index)
+        assert await hsm.Call(ctx, first, "identify", index) == ("first", index)
         assert first.calls == list(range(index + 1))
         assert stopped_second.calls == []
         assert never_started.calls == []
@@ -851,13 +870,6 @@ async def _group_call_first_member_semantics_stress(rounds: int) -> None:
         assert stopped_second.effects == 0
         assert never_started.effects == 0
         assert hsm.TakeSnapshot(ctx, first).QueueLen == 0
-
-    try:
-        await hsm.Call(ctx, hsm.MakeGroup(), "identify", 0)
-    except hsm.ValidationError as error:
-        assert "missing hsm" in str(error)
-    else:
-        raise AssertionError("Call() on an empty group should fail")
 
     await hsm.Stop(first)
 
@@ -893,7 +905,7 @@ async def _cancelled_call_awaiter_does_not_cancel_oncall_processing() -> None:
         hsm.State("idle", hsm.Transition(hsm.OnCall("work"), hsm.Effect(slow_oncall_effect))),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instance = CancelledCallInstance()
     await hsm.Start(ctx, instance, model)
 
@@ -955,7 +967,7 @@ async def _activity_cancellation_stress(rounds: int) -> None:
 
     for _ in range(rounds):
         instance = ActivityInstance()
-        ctx = hsm.Context()
+        ctx = _runtime_context()
         sm = await hsm.Started(ctx, instance, model)
         for _ in range(10):
             if instance.started:
@@ -979,7 +991,7 @@ def test_activity_cancellation_stress():
 
 async def _deferred_event_replay_stress(rounds: int) -> None:
     instance = FuzzInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "DeferredStress",
         hsm.Initial(hsm.Target("holding")),
@@ -1018,7 +1030,7 @@ def test_deferred_events_replay_without_extra_dispatch():
 
 async def _stop_discards_deferred_events() -> None:
     instance = FuzzInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "DeferredStop",
         hsm.Initial(hsm.Target("holding")),
@@ -1035,7 +1047,7 @@ async def _stop_discards_deferred_events() -> None:
     await hsm.Stop(instance)
 
     assert instance.state() == "/DeferredStop"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
     assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
 
 
@@ -1050,7 +1062,7 @@ def deferred_traces(draw):
 
 async def _drive_deferred_trace(trace: tuple[str, ...]) -> None:
     instance = FuzzInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "DeferredFuzz",
         hsm.Initial(hsm.Target("holding")),
@@ -1182,7 +1194,7 @@ async def _drive_invalid_timer_callback(mode: str, invalid_value: object) -> Non
         hsm.State("error"),
     )
     instance = TimerErrorInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/InvalidTimer/error"), timeout=1)
@@ -1231,7 +1243,7 @@ async def _failing_error_handler_does_not_recursively_enqueue_error_events() -> 
     )
 
     instance = RecursiveErrorInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     with pytest.raises(RuntimeError, match="primary failure"):
@@ -1304,7 +1316,7 @@ async def _manual_cancelled_error_callbacks_do_not_abort_processing() -> None:
         hsm.State("error"),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
 
     effect_instance = CancelledCallbackInstance()
     await hsm.Start(ctx, effect_instance, model)
@@ -1376,7 +1388,7 @@ async def _stop_during_inflight_dispatch_does_not_block_loop() -> None:
         hsm.State("done"),
     )
     instance = BlockingInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event("go")))
@@ -1416,7 +1428,7 @@ async def _cancelled_stop_waiter_releases_processing_mutex() -> None:
         hsm.State("done"),
     )
     instance = BlockingInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event("go")))
@@ -1462,7 +1474,7 @@ async def _concurrent_stop_awaiters_share_one_stop_sequence() -> None:
         hsm.State("active", hsm.Exit(slow_exit)),
     )
     instance = ConcurrentStopInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     stop_tasks = [asyncio.ensure_future(hsm.Stop(instance)) for _ in range(20)]
@@ -1475,12 +1487,12 @@ async def _concurrent_stop_awaiters_share_one_stop_sequence() -> None:
 
     assert instance.exits == 1
     assert instance.state() == "/ConcurrentStopAwaiters"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
 
     await asyncio.wait_for(hsm.Stop(instance), timeout=1)
     assert instance.exits == 1
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_concurrent_stop_awaiters_share_one_stop_sequence():
@@ -1505,7 +1517,7 @@ async def _cancelled_dispatch_awaiter_does_not_cancel_processing_task() -> None:
         hsm.State("done"),
     )
     instance = BlockingInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event("go")))
@@ -1553,7 +1565,7 @@ async def _cancelled_broadcast_awaiter_does_not_cancel_member_processing() -> No
         ),
         hsm.State("done"),
     )
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [BroadcastCancelInstance(index) for index in range(12)]
     for index, instance in enumerate(instances):
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"broadcast-cancel-{index}"))
@@ -1612,7 +1624,7 @@ async def _cancelled_dispatch_to_awaiter_does_not_cancel_selected_processing() -
         ),
         hsm.State("done"),
     )
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [DispatchToCancelInstance(index) for index in range(12)]
     for index, instance in enumerate(instances):
         prefix = "target" if index % 2 == 0 else "skip"
@@ -1681,7 +1693,7 @@ async def _cancelled_group_dispatch_awaiter_does_not_cancel_member_processing() 
         ),
         hsm.State("done"),
     )
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [GroupCancelInstance(index) for index in range(12)]
     for index, instance in enumerate(instances):
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-cancel-{index}"))
@@ -1757,7 +1769,7 @@ async def _awaited_nested_dispatch_from_effect_does_not_self_await() -> None:
     )
 
     instance = NestedDispatchInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("j")), timeout=1)
@@ -1803,13 +1815,13 @@ async def _awaited_stop_from_effect_does_not_self_deadlock() -> None:
     )
 
     instance = SelfStoppingInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("stop")), timeout=1)
 
     assert instance.state() == "/SelfStopping"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
     assert instance.trace == ["effect.before-stop", "effect.after-stop", "done.entry", "done.exit"]
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
 
@@ -1851,13 +1863,13 @@ async def _awaited_restart_from_effect_does_not_self_deadlock() -> None:
     )
 
     instance = SelfRestartingInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event("restart")), timeout=1)
 
     assert instance.state() == "/SelfRestarting/idle"
-    assert len(ctx.machines()) == 1
+    assert len(_context_machines(ctx)) == 1
     assert instance.trace == [
         "idle.entry:None",
         "effect.before-restart",
@@ -1896,13 +1908,13 @@ async def _stop_from_activity_does_not_await_current_activity_task() -> None:
     )
 
     instance = ActivityStopInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
     await asyncio.wait_for(activity_started.wait(), timeout=1)
     await asyncio.wait_for(activity_done.wait(), timeout=1)
 
     assert instance.state() == "/ActivitySelfStop"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
     assert instance.trace == ["activity.before-stop", "activity.after-stop"]
 
 
@@ -1939,12 +1951,12 @@ async def _restart_from_activity_does_not_await_current_activity_task() -> None:
     )
 
     instance = ActivityRestartInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
     await asyncio.wait_for(activity_done.wait(), timeout=1)
 
     assert instance.state() == "/ActivitySelfRestart/active"
-    assert len(ctx.machines()) == 1
+    assert len(_context_machines(ctx)) == 1
     assert instance.trace == [
         "entry:None",
         "activity.before-restart",
@@ -1979,7 +1991,7 @@ async def _group_restart_data_isolation_stress(rounds: int) -> None:
         hsm.State("active", hsm.Entry(active_entry)),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [GroupRestartDataInstance(index) for index in range(20)]
     group = hsm.MakeGroup(*instances)
     for index, instance in enumerate(instances):
@@ -2024,7 +2036,7 @@ async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
         hsm.State("active", hsm.Exit(slow_exit)),
     )
     instance = BlockingInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
 
     cancelled_stop = asyncio.ensure_future(hsm.Stop(instance))
@@ -2046,7 +2058,7 @@ async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
     await asyncio.wait_for(second_stop, timeout=1)
 
     assert instance.state() == "/CancelledAcquiredStop"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_cancelled_stop_after_acquire_releases_processing_mutex():
@@ -2077,7 +2089,7 @@ async def _cancelled_restart_after_stop_acquire_remains_recoverable() -> None:
         hsm.State("active", hsm.Entry(active_entry), hsm.Exit(slow_exit)),
     )
     instance = BlockingInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Start(ctx, instance, model)
 
     cancelled_restart = asyncio.ensure_future(hsm.Restart(instance, "cancelled"))
@@ -2101,7 +2113,7 @@ async def _cancelled_restart_after_stop_acquire_remains_recoverable() -> None:
 
     assert instance.state() == "/CancelledAcquiredRestart/active"
     assert instance.entries == [None, "recovered"]
-    assert ctx.machines() == [sm]
+    assert _context_machines(ctx) == [sm]
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
 
     entered_exit.clear()
@@ -2110,7 +2122,7 @@ async def _cancelled_restart_after_stop_acquire_remains_recoverable() -> None:
     final_release = await asyncio.wait_for(release_exits.get(), timeout=1)
     final_release.set()
     await asyncio.wait_for(final_stop, timeout=1)
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_cancelled_restart_after_stop_acquire_remains_recoverable():
@@ -2141,7 +2153,7 @@ async def _concurrent_restart_awaiters_remain_consistent() -> None:
         hsm.State("active", hsm.Entry(active_entry), hsm.Exit(slow_exit)),
     )
     instance = ConcurrentRestartInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Start(ctx, instance, model)
 
     restart_count = 12
@@ -2163,7 +2175,7 @@ async def _concurrent_restart_awaiters_remain_consistent() -> None:
 
     assert sorted(value for value in instance.entries if value is not None) == list(range(restart_count))
     assert instance.state() == "/ConcurrentRestartAwaiters/active"
-    assert {id(machine) for machine in ctx.machines()} == {id(sm)}
+    assert {id(machine) for machine in _context_machines(ctx)} == {id(sm)}
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     assert instance.exits >= 1
 
@@ -2171,7 +2183,7 @@ async def _concurrent_restart_awaiters_remain_consistent() -> None:
     final_release = await asyncio.wait_for(release_exits.get(), timeout=1)
     final_release.set()
     await asyncio.wait_for(final_stop, timeout=1)
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_concurrent_restart_awaiters_remain_consistent():
@@ -2202,7 +2214,7 @@ async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> N
         hsm.Initial(hsm.Target("active")),
         hsm.State("active", hsm.Entry(active_entry), hsm.Exit(slow_exit)),
     )
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     instances = [BlockingInstance(index) for index in range(8)]
     machines = [
         await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-restart-{index}"))
@@ -2228,7 +2240,7 @@ async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> N
     await asyncio.sleep(0)
     assert all(instance.entries == [None] for instance in instances)
     assert all(instance.state() == "/CancelledGroupRestart/active" for instance in instances)
-    assert {id(machine) for machine in ctx.machines()} == {id(machine) for machine in machines}
+    assert {id(machine) for machine in _context_machines(ctx)} == {id(machine) for machine in machines}
 
     recovered_restart = asyncio.ensure_future(hsm.Restart(group, "recovered"))
     seen_recovered = {
@@ -2243,7 +2255,7 @@ async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> N
 
     assert all(instance.state() == "/CancelledGroupRestart/active" for instance in instances)
     assert all(instance.entries == [None, "recovered"] for instance in instances)
-    assert {id(machine) for machine in ctx.machines()} == {id(machine) for machine in machines}
+    assert {id(machine) for machine in _context_machines(ctx)} == {id(machine) for machine in machines}
     assert all(hsm.TakeSnapshot(ctx, instance).QueueLen == 0 for instance in instances)
 
     final_stop = asyncio.ensure_future(hsm.Stop(group))
@@ -2256,7 +2268,7 @@ async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> N
         release_exit = await asyncio.wait_for(release_exits.get(), timeout=1)
         release_exit.set()
     await asyncio.wait_for(final_stop, timeout=1)
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_cancelled_group_restart_after_stop_acquire_remains_recoverable():
@@ -2267,7 +2279,7 @@ async def _context_registration_lifecycle_stress(rounds: int) -> None:
     class LifecycleInstance(hsm.Instance):
         pass
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "RegistrationLifecycle",
         hsm.Initial(hsm.Target("idle")),
@@ -2278,16 +2290,16 @@ async def _context_registration_lifecycle_stress(rounds: int) -> None:
     for index in range(rounds):
         instance = LifecycleInstance()
         await hsm.Start(ctx, instance, model)
-        assert len(ctx.machines()) == 1
+        assert len(_context_machines(ctx)) == 1
         await hsm.DispatchAll(ctx, hsm.Event("go"))
         assert instance.state() == "/RegistrationLifecycle/done"
         await hsm.Stop(instance)
         assert instance.state() == "/RegistrationLifecycle"
-        assert ctx.machines() == []
+        assert _context_machines(ctx) == []
 
         if index % 10 == 0:
             await hsm.DispatchAll(ctx, hsm.Event("go"))
-            assert ctx.machines() == []
+            assert _context_machines(ctx) == []
 
 
 def test_context_registration_does_not_leak_on_repeated_start_stop():
@@ -2298,7 +2310,7 @@ async def _cancelled_context_broadcasts_do_not_dispatch() -> None:
     class CancelledContextInstance(hsm.Instance):
         pass
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "CancelledContextBroadcast",
         hsm.Initial(hsm.Target("idle")),
@@ -2308,7 +2320,7 @@ async def _cancelled_context_broadcasts_do_not_dispatch() -> None:
     first = await hsm.Started(ctx, CancelledContextInstance(), model, hsm.Config(ID="first"))
     second = await hsm.Started(ctx, CancelledContextInstance(), model, hsm.Config(ID="second"))
 
-    assert {hsm.ID(machine) for machine in ctx.machines()} == {"first", "second"}
+    assert {hsm.ID(machine) for machine in _context_machines(ctx)} == {"first", "second"}
     ctx.cancel()
 
     await hsm.DispatchAll(ctx, hsm.Event("go"))
@@ -2331,7 +2343,7 @@ async def _repeated_start_fails_without_leaking_context_registration() -> None:
     class RepeatedStartInstance(hsm.Instance):
         pass
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "RepeatedStart",
         hsm.Initial(hsm.Target("idle")),
@@ -2339,7 +2351,7 @@ async def _repeated_start_fails_without_leaking_context_registration() -> None:
     )
     instance = RepeatedStartInstance()
     sm = await hsm.Start(ctx, instance, model)
-    assert ctx.machines() == [sm]
+    assert _context_machines(ctx) == [sm]
 
     try:
         await hsm.Start(ctx, instance, model)
@@ -2355,10 +2367,10 @@ async def _repeated_start_fails_without_leaking_context_registration() -> None:
     else:
         raise AssertionError("repeated Start() on an HSM should fail")
 
-    assert ctx.machines() == [sm]
+    assert _context_machines(ctx) == [sm]
     assert instance.state() == "/RepeatedStart/idle"
     await hsm.Stop(instance)
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_repeated_start_fails_without_leaking_context_registration():
@@ -2379,7 +2391,7 @@ async def _concurrent_start_attempts_do_not_double_bind_instance() -> None:
         entered_entry.set()
         await release_entry.wait()
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "ConcurrentStart",
         hsm.Initial(hsm.Target("idle")),
@@ -2397,17 +2409,17 @@ async def _concurrent_start_attempts_do_not_double_bind_instance() -> None:
     else:
         raise AssertionError("concurrent Start() should not double-bind an instance")
 
-    assert len(ctx.machines()) == 1
+    assert len(_context_machines(ctx)) == 1
     release_entry.set()
     sm = await asyncio.wait_for(first_start, timeout=1)
 
-    assert ctx.machines() == [sm]
+    assert _context_machines(ctx) == [sm]
     assert instance.entries == 1
     assert instance.state() == "/ConcurrentStart/idle"
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
 
     await hsm.Stop(instance)
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_concurrent_start_attempts_do_not_double_bind_instance():
@@ -2428,7 +2440,7 @@ async def _concurrent_hsm_start_attempts_reject_in_progress_start() -> None:
         entered_entry.set()
         await release_entry.wait()
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "ConcurrentHSMStart",
         hsm.Initial(hsm.Target("idle")),
@@ -2447,17 +2459,17 @@ async def _concurrent_hsm_start_attempts_reject_in_progress_start() -> None:
     else:
         raise AssertionError("concurrent Start() on an HSM should reject in-progress start")
 
-    assert len(ctx.machines()) == 1
+    assert len(_context_machines(ctx)) == 1
     release_entry.set()
     assert await asyncio.wait_for(first_start, timeout=1) is sm
 
-    assert ctx.machines() == [sm]
+    assert _context_machines(ctx) == [sm]
     assert instance.entries == ["first"]
     assert instance.state() == "/ConcurrentHSMStart/idle"
     assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
 
     await hsm.Stop(sm)
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_concurrent_hsm_start_attempts_reject_in_progress_start():
@@ -2473,7 +2485,7 @@ async def _stopped_hsm_start_resets_runtime_state() -> None:
     async def record_entry(ctx: hsm.Context, inst: ReusableInstance, event: hsm.Event) -> None:
         entries.append((event.Data, ctx.done))
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "ReusableStart",
         hsm.Attribute("count", 0),
@@ -2489,18 +2501,18 @@ async def _stopped_hsm_start_resets_runtime_state() -> None:
     await hsm.Stop(sm)
 
     assert instance.state() == "/ReusableStart"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
     await hsm.Start(ctx, sm, "second")
 
     assert instance.state() == "/ReusableStart/idle"
-    assert ctx.machines() == [sm]
+    assert _context_machines(ctx) == [sm]
     assert hsm.Get(ctx, sm, "count") == (0, True)
     assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
     assert entries == [("first", False), ("second", False)]
 
     await hsm.Stop(sm)
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_stopped_hsm_start_resets_runtime_state():
@@ -2519,20 +2531,20 @@ async def _starting_new_hsm_in_new_context_clears_old_context_registration() -> 
     instance = MovedContextInstance()
     sm = hsm.New(instance, model)
     old_context = sm.context()
-    new_context = hsm.Context()
+    new_context = _runtime_context()
 
-    assert old_context.machines() == [sm]
-    assert new_context.machines() == []
+    assert _context_machines(old_context) == [sm]
+    assert _context_machines(new_context) == []
 
     await hsm.Start(new_context, sm)
 
-    assert old_context.machines() == []
-    assert new_context.machines() == [sm]
+    assert _context_machines(old_context) == []
+    assert _context_machines(new_context) == [sm]
 
     await hsm.Stop(sm)
 
-    assert old_context.machines() == []
-    assert new_context.machines() == []
+    assert _context_machines(old_context) == []
+    assert _context_machines(new_context) == []
 
 
 def test_starting_new_hsm_in_new_context_clears_old_context_registration():
@@ -2550,7 +2562,7 @@ async def _cancelled_observer_waiters_do_not_accumulate(rounds: int) -> None:
         hsm.State("done"),
     )
     instance = ObserverLeakInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Start(ctx, instance, model)
 
     async def cancel_waiter(future: asyncio.Future[None]) -> None:
@@ -2596,7 +2608,7 @@ async def _stop_cancels_pending_observer_waiters() -> None:
         hsm.State("idle"),
     )
     instance = ObserverStopInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Start(ctx, instance, model)
     futures = [
         hsm.AfterEntry(ctx, instance, "/ObserverStop/missing"),
@@ -2631,7 +2643,7 @@ async def _stopped_machine_rejects_observer_waiters() -> None:
         hsm.State("idle"),
     )
     instance = ObserverStoppedInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Start(ctx, instance, model)
     await hsm.Stop(instance)
 
@@ -2661,7 +2673,7 @@ def test_stopped_machine_rejects_observer_waiters():
 
 
 async def _cancelled_context_waiter_does_not_poison_future() -> None:
-    ctx = hsm.Context()
+    ctx = _runtime_context()
 
     cancelled_waiter = asyncio.create_task(ctx.wait_done())
     await asyncio.sleep(0)
@@ -2689,7 +2701,7 @@ def test_cancelled_context_waiter_does_not_poison_future():
 
 
 async def _mixed_context_waiter_cancellation_stress() -> None:
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     waiters = [asyncio.create_task(ctx.wait_done()) for _ in range(100)]
     await asyncio.sleep(0)
 
@@ -2763,7 +2775,7 @@ async def _group_event_mutations_preflight_members() -> None:
         hsm.State("changed"),
     )
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     running = GroupPreflightInstance()
     stopped = GroupPreflightInstance()
     never_started = GroupPreflightInstance()
@@ -2782,23 +2794,19 @@ async def _group_event_mutations_preflight_members() -> None:
         assert never_started.state() == ""
         await hsm.Restart(running)
 
-        for operation in (
-            lambda group=group: hsm.Set(ctx, group, "flag", True),
-            lambda group=group: hsm.Restart(group, "restarted"),
-        ):
-            try:
-                await operation()
-            except hsm.ValidationError as error:
-                assert expected_error in str(error)
-            else:
-                raise AssertionError("group event mutation should fail before partial fan-out")
+        try:
+            await hsm.Restart(group, "restarted")
+        except hsm.ValidationError as error:
+            assert expected_error in str(error)
+        else:
+            raise AssertionError("group restart should fail before partial fan-out")
 
-            assert running.state() == "/GroupPreflight/idle"
-            assert stopped.state() == "/GroupPreflight"
-            assert never_started.state() == ""
-            assert hsm.Get(ctx, running, "flag") == (False, True)
-            assert hsm.TakeSnapshot(ctx, running).QueueLen == 0
-            assert running.entries[-1] is None
+        assert running.state() == "/GroupPreflight/idle"
+        assert stopped.state() == "/GroupPreflight"
+        assert never_started.state() == ""
+        assert hsm.Get(ctx, running, "flag") == (False, True)
+        assert hsm.TakeSnapshot(ctx, running).QueueLen == 0
+        assert running.entries[-1] is None
 
         await hsm.Stop(running)
         assert running.state() == "/GroupPreflight"
@@ -2866,17 +2874,18 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
     instance = ScriptInstance()
     sm = hsm.New(instance, model)
     initial_context = sm.context()
-    context_a = hsm.Context()
-    context_b = hsm.Context()
+    context_a = _runtime_context()
+    context_b = _runtime_context()
     contexts = (initial_context, context_a, context_b)
 
     expected_context: hsm.Context | None = initial_context
     expected_state = "/LifecycleScript"
     expected_flag = 0
     expected_calls = 0
+    running = False
 
     def assert_context_membership() -> None:
-        memberships = [ctx for ctx in contexts if sm in ctx.machines()]
+        memberships = [ctx for ctx in contexts if sm in _context_machines(ctx)]
         if expected_context is None:
             assert memberships == []
         else:
@@ -2887,7 +2896,7 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
     for index, action in enumerate(actions):
         if action in ("start_a", "start_b"):
             target_context = context_a if action == "start_a" else context_b
-            if sm._started:
+            if running:
                 try:
                     await hsm.Start(target_context, sm, index)
                 except hsm.ValidationError as error:
@@ -2899,8 +2908,9 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
                 expected_context = target_context
                 expected_state = "/LifecycleScript/idle"
                 expected_flag = 0
+                running = True
         elif action == "restart":
-            if sm._started:
+            if running:
                 await hsm.Restart(sm, index)
                 expected_state = "/LifecycleScript/idle"
                 expected_flag = 0
@@ -2916,8 +2926,9 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
             expected_context = None
             expected_state = "/LifecycleScript"
             expected_flag = 0
+            running = False
         elif action == "go":
-            if sm._started:
+            if running:
                 await hsm.Dispatch(sm.context(), sm, hsm.Event("go"))
                 if expected_state == "/LifecycleScript/idle":
                     expected_state = "/LifecycleScript/done"
@@ -2929,7 +2940,7 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
                 else:
                     raise AssertionError("Dispatch() on a stopped HSM should fail")
         elif action == "reset":
-            if sm._started:
+            if running:
                 await hsm.Dispatch(sm.context(), sm, hsm.Event("reset"))
                 if expected_state == "/LifecycleScript/done":
                     expected_state = "/LifecycleScript/idle"
@@ -2942,7 +2953,7 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
                     raise AssertionError("Dispatch() on a stopped HSM should fail")
         elif action in ("set_0", "set_1"):
             value = 0 if action == "set_0" else 1
-            if sm._started:
+            if running:
                 await hsm.Set(sm.context(), sm, "flag", value)
                 expected_flag = value
             else:
@@ -2953,7 +2964,7 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
                 else:
                     raise AssertionError("Set() on a stopped HSM should fail")
         elif action == "call":
-            if sm._started:
+            if running:
                 assert await hsm.Call(sm.context(), sm, "ping", index) == index + 1
                 expected_calls += 1
             else:
@@ -2973,6 +2984,7 @@ async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) ->
 
     await hsm.Stop(sm)
     expected_context = None
+    running = False
     assert_context_membership()
     assert hsm.TakeSnapshot(sm.context(), sm).QueueLen == 0
 
@@ -2986,7 +2998,7 @@ async def _stopped_machine_rejects_event_mutating_operations() -> None:
         async def work(self):
             self.called = True
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "StoppedRejects",
         hsm.Attribute("flag", False),
@@ -3005,7 +3017,7 @@ async def _stopped_machine_rejects_event_mutating_operations() -> None:
     await hsm.Stop(instance)
 
     assert instance.state() == "/StoppedRejects"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
     for operation in (
         lambda: hsm.Dispatch(ctx, instance, hsm.Event("go")),
@@ -3083,13 +3095,13 @@ async def _stop_suppresses_exit_action_errors_without_leaving_stale_queue() -> N
         ),
     )
     instance = StopErrorInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Start(ctx, instance, model)
 
     await hsm.Stop(instance)
 
     assert instance.state() == "/StopExitError"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
     assert instance.error_handled is False
     assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
 
@@ -3114,14 +3126,14 @@ async def _stop_suppresses_exit_cancelled_error_without_stale_registration() -> 
         hsm.State("active", hsm.Exit(cancelling_exit)),
     )
     instance = StopCancelledInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Start(ctx, instance, model)
 
     await hsm.Stop(instance)
 
     assert instance.exit_seen is True
     assert instance.state() == "/StopExitCancelled"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
     assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
 
     try:
@@ -3169,7 +3181,7 @@ async def _activity_cancellation_cleanup_errors_do_not_dispatch_error_events() -
         hsm.State("error"),
     )
     instance = CleanupErrorInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Start(ctx, instance, model)
     await asyncio.wait_for(activity_started.wait(), timeout=1)
 
@@ -3207,7 +3219,7 @@ async def _completed_activity_removes_active_record_without_exit() -> None:
         hsm.State("done"),
     )
     instance = CompletedActivityInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Started(ctx, instance, model)
     await asyncio.wait_for(activity_started.wait(), timeout=1)
     active_tasks = [active.task for active in sm._active.values()]
@@ -3259,7 +3271,7 @@ async def _after_executed_closes_when_activity_is_cancelled_on_stop() -> None:
         hsm.State("active", hsm.Activity(cancellable_activity)),
     )
     instance = StoppedActivityInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = await hsm.Started(ctx, instance, model)
     await asyncio.wait_for(activity_started.wait(), timeout=1)
 
@@ -3292,7 +3304,7 @@ async def _eager_completed_activity_does_not_fail_on_stop() -> None:
             hsm.State("active", hsm.Activity(immediate_activity)),
         )
         instance = EagerCompletedActivityInstance()
-        ctx = hsm.Context()
+        ctx = _runtime_context()
         sm = await hsm.Started(ctx, instance, model)
 
         await asyncio.wait_for(hsm.Stop(sm), timeout=1)
@@ -3337,7 +3349,7 @@ async def _cancelled_start_cleans_up_registration_and_activities() -> None:
     )
 
     instance = CancelledStartInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     start_task = asyncio.ensure_future(hsm.Start(ctx, instance, model))
     await asyncio.wait_for(activity_started.wait(), timeout=1)
     await asyncio.wait_for(entered_entry.wait(), timeout=1)
@@ -3350,7 +3362,7 @@ async def _cancelled_start_cleans_up_registration_and_activities() -> None:
 
     assert instance.activity_cancelled is True
     assert instance.state() == "/CancelledStart"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
     try:
         await hsm.Dispatch(ctx, instance, hsm.Event("go"))
@@ -3394,7 +3406,7 @@ async def _cancelled_start_discards_queued_startup_events() -> None:
     )
 
     instance = QueuedStartupInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     sm = hsm.New(instance, model)
 
     start_task = asyncio.ensure_future(hsm.Start(ctx, sm, "first"))
@@ -3407,7 +3419,7 @@ async def _cancelled_start_discards_queued_startup_events() -> None:
         pass
 
     assert instance.state() == "/CancelledStartQueuedEvents"
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
     assert hsm.TakeSnapshot(ctx, sm).QueueLen == 0
     assert hsm.Get(ctx, sm, "count") == (0, True)
 
@@ -3430,7 +3442,7 @@ async def _restart_preserves_context_registration() -> None:
     class RestartInstance(hsm.Instance):
         pass
 
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "RestartRegistration",
         hsm.Initial(hsm.Target("idle")),
@@ -3439,10 +3451,10 @@ async def _restart_preserves_context_registration() -> None:
     )
     instance = RestartInstance()
     await hsm.Start(ctx, instance, model)
-    assert len(ctx.machines()) == 1
+    assert len(_context_machines(ctx)) == 1
 
     await hsm.Restart(instance)
-    assert len(ctx.machines()) == 1
+    assert len(_context_machines(ctx)) == 1
     assert instance.state() == "/RestartRegistration/idle"
 
     await hsm.DispatchAll(ctx, hsm.Event("go"))
@@ -3450,7 +3462,7 @@ async def _restart_preserves_context_registration() -> None:
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
 
     await hsm.Stop(instance)
-    assert ctx.machines() == []
+    assert _context_machines(ctx) == []
 
 
 def test_restart_preserves_context_registration():
@@ -3487,7 +3499,7 @@ async def _timer_restart_cancellation_stress(rounds: int) -> None:
         hsm.State("done"),
     )
     instance = TimerInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
 
     for _ in range(rounds):
@@ -3521,8 +3533,6 @@ async def _timer_restart_cancellation_stress(rounds: int) -> None:
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     await hsm.Stop(instance)
     await asyncio.sleep(0)
-    sm = getattr(instance, "_Instance__hsm")
-    assert sm._active == {}
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     assert all(future.done() for future in sleeps)
 
@@ -3533,7 +3543,7 @@ def test_timer_restart_cancellation_stress():
 
 async def _history_reentry_stress(rounds: int) -> None:
     instance = FuzzInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "HistoryStress",
         hsm.Initial(hsm.Target("parent")),
@@ -3587,7 +3597,7 @@ def test_shallow_and_deep_history_reentry_stress():
 
 async def _stop_resets_dynamic_runtime_state() -> None:
     instance = FuzzInstance()
-    ctx = hsm.Context()
+    ctx = _runtime_context()
     model = hsm.Define(
         "StopReset",
         hsm.Attribute("count", 0),
@@ -3633,8 +3643,6 @@ async def _stop_resets_dynamic_runtime_state() -> None:
     assert sm._history_shallow == {}
     assert sm._history_deep == {}
     assert sm.context().done is True
-    assert sm._stop_requested is False
-    assert sm._restart_requested is None
 
 
 def test_stop_resets_dynamic_runtime_state():

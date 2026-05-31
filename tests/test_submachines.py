@@ -14,7 +14,7 @@ class SubmachineInstance(hsm.Instance):
 
 
 def _record(value: str):
-    async def callback(ctx, inst: SubmachineInstance, event):
+    def callback(ctx, inst: SubmachineInstance, event):
         inst.log.append(value)
 
     return callback
@@ -187,6 +187,32 @@ async def test_submachine_entry_point_effect_error_short_circuits_at_boundary():
 
     assert instance.state() == "/EntryPointEffectErrorParent/drive"
     assert instance.log == ["entry-point:effect"]
+
+
+def test_entry_point_guard_is_rejected_at_build_time():
+    with pytest.raises(hsm.ValidationError, match="cannot have a guard"):
+        hsm.Define(
+            "EntryPointGuardRejected",
+            hsm.EntryPoint(
+                "warm",
+                hsm.Target("running"),
+                hsm.Guard(lambda ctx, inst, event: True),
+            ),
+            hsm.Initial(hsm.Target("cold")),
+            hsm.State("cold"),
+            hsm.State("running"),
+        )
+
+
+def test_submachine_internal_entry_point_target_is_rejected_at_build_time():
+    with pytest.raises(hsm.ValidationError, match="entry point target cannot be internal"):
+        hsm.Define(
+            "InternalEntryPointChild",
+            hsm.EntryPoint("start", hsm.Target("b")),
+            hsm.Initial(hsm.Target("a")),
+            hsm.State("a", hsm.Transition(hsm.On("go"), hsm.Target("../start"))),
+            hsm.State("b"),
+        )
 
 
 @pytest.mark.asyncio

@@ -88,8 +88,6 @@ async def _timer_restart_soak(iterations: int) -> None:
     assert cancelled >= iterations
     await hsm.Stop(instance)
     await asyncio.sleep(0)
-    sm = getattr(instance, "_Instance__hsm")
-    assert sm._active == {}
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     assert all(future.done() for future in sleeps)
 

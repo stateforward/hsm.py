@@ -18,7 +18,7 @@ from hsm import hsm as hsm_core
 
 Trace = list[dict[str, Any]]
 Case = dict[str, Any]
-Behavior = Callable[[hsm.Context, hsm.Instance, hsm.Event], Any]
+BehaviorElement = Callable[[hsm.Context, hsm.Instance, hsm.Event], Any]
 
 
 SUPPORTED_FEATURES = {
@@ -104,14 +104,18 @@ class TransitionKindOverride(hsm_core.PartialElement):
     def apply(self, model: hsm_core.Model, stack: list[hsm_core.NamedElement]) -> None:
         transition = self.transition
         if transition is None:
-            transition = hsm_core.find(stack, hsm_core.TransitionNode)
+            transition = hsm_core.find(stack, hsm_core.TransitionElement)
             if transition is None:
-                raise ConformanceError("transition kind must be used within a transition")
+                raise ConformanceError(
+                    "transition kind must be used within a transition"
+                )
             model.add(TransitionKindOverride(self.kind_value, transition))
             return
         transition.kind = self.kind_value
         transition.paths.clear()
-        hsm_core.ResolvePaths(transition=transition, traceback=self.traceback).apply(model, [])
+        hsm_core.ResolvePaths(transition=transition, traceback=self.traceback).apply(
+            model, []
+        )
 
 
 class LogicalClock:
@@ -155,7 +159,7 @@ class Runner:
         self.case = case
         self.trace: Trace = []
         self.snapshots: dict[str, Any] = {}
-        self.ctx = hsm.Context()
+        self.ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
         self.model: hsm.Model | None = None
         self.instances: dict[str, ConformanceInstance] = {}
         self.groups: dict[str, hsm.Group] = {}
@@ -171,7 +175,6 @@ class Runner:
         self.building_models: set[str] = set()
         self.activity_behavior_ids: set[str] = set()
         self.behavior_roles: dict[str, set[str]] = {}
-        self.timer_source_callbacks: dict[tuple[Any, ...], Behavior] = {}
         self.model_name = self._require_object(case, "model").get("name", "")
         if not isinstance(self.model_name, str) or not self.model_name:
             raise ConformanceError("model.name must be a non-empty string")
@@ -188,14 +191,21 @@ class Runner:
             except AssertionError:
                 raise
             except Exception as error:
-                expected_error = self._optional_object(self._require_object(self.case, "expect"), "error")
+                expected_error = self._optional_object(
+                    self._require_object(self.case, "expect"), "error"
+                )
                 if not expected_error:
                     raise
                 contains = expected_error.get("message_contains")
                 if isinstance(contains, str) and contains not in str(error):
                     raise
                 if not self.trace or self.trace[-1].get("type") != "error":
-                    self.trace.append({"type": "error", "code": expected_error.get("code", "runtime_error")})
+                    self.trace.append(
+                        {
+                            "type": "error",
+                            "code": expected_error.get("code", "runtime_error"),
+                        }
+                    )
                 break
 
         self.flush_timer_scheduled()
@@ -235,7 +245,9 @@ class Runner:
         if built is not None:
             return built
         if model_name in self.building_models:
-            raise ConformanceError(f"recursive submachine model reference {model_name!r}")
+            raise ConformanceError(
+                f"recursive submachine model reference {model_name!r}"
+            )
         self.building_models.add(model_name)
         try:
             model = self.build_model_ir(model_ir)
@@ -269,7 +281,9 @@ class Runner:
         for name, ref in self._optional_object(model_ir, "operations").items():
             behavior_id = self.behavior_id(ref)
             self.mark_behavior_role(behavior_id, "operation")
-            parts.append(hsm.Operation(name, self.operation_callback(name, behavior_id)))
+            parts.append(
+                hsm.Operation(name, self.operation_callback(name, behavior_id))
+            )
 
         for entry_point in model_ir.get("entry_points", []):
             entry_parts: list[Any] = [
@@ -283,16 +297,24 @@ class Runner:
             for ref in entry_point.get("effects", []):
                 behavior_id = self.behavior_id(ref)
                 self.mark_behavior_role(behavior_id, "effect")
-                entry_parts.append(hsm.Effect(self.behavior_callback(behavior_id, role="effect")))
-            parts.append(hsm.EntryPoint(self._require_string(entry_point, "name"), *entry_parts))
+                entry_parts.append(
+                    hsm.Effect(self.behavior_callback(behavior_id, role="effect"))
+                )
+            parts.append(
+                hsm.EntryPoint(self._require_string(entry_point, "name"), *entry_parts)
+            )
 
         for exit_point in model_ir.get("exit_points", []):
             exit_parts: list[Any] = []
             for ref in exit_point.get("effects", []):
                 behavior_id = self.behavior_id(ref)
                 self.mark_behavior_role(behavior_id, "effect")
-                exit_parts.append(hsm.Effect(self.behavior_callback(behavior_id, role="effect")))
-            parts.append(hsm.ExitPoint(self._require_string(exit_point, "name"), *exit_parts))
+                exit_parts.append(
+                    hsm.Effect(self.behavior_callback(behavior_id, role="effect"))
+                )
+            parts.append(
+                hsm.ExitPoint(self._require_string(exit_point, "name"), *exit_parts)
+            )
 
         parts.append(self.build_initial(model_ir["initial"], "/" + model_name))
         for state in self._require_array(model_ir, "states"):
@@ -304,7 +326,11 @@ class Runner:
 
     def build_initial(self, initial: Any, owner_path: str) -> Any:
         if isinstance(initial, str):
-            return hsm.Initial(hsm.Target(self.absolute_path(initial, owner_path, bare_relative_to_owner=True)))
+            return hsm.InitialElement(
+                hsm.Target(
+                    self.absolute_path(initial, owner_path, bare_relative_to_owner=True)
+                )
+            )
         if isinstance(initial, dict):
             parts: list[Any] = [
                 hsm.Target(
@@ -318,8 +344,10 @@ class Runner:
             for ref in initial.get("effects", []):
                 behavior_id = self.behavior_id(ref)
                 self.mark_behavior_role(behavior_id, "effect")
-                parts.append(hsm.Effect(self.behavior_callback(behavior_id, role="effect")))
-            return hsm.Initial(*parts)
+                parts.append(
+                    hsm.Effect(self.behavior_callback(behavior_id, role="effect"))
+                )
+            return hsm.InitialElement(*parts)
         raise ConformanceError("initial must be a string or object")
 
     def build_state(self, state: dict[str, Any], owner_path: str) -> Any:
@@ -332,7 +360,11 @@ class Runner:
         parts: list[Any] = []
         if "initial" in state:
             parts.append(self.build_initial(state["initial"], state_path))
-        for field, factory in (("entry", hsm.Entry), ("exit", hsm.Exit), ("activity", hsm.Activity)):
+        for field, factory in (
+            ("entry", hsm.Entry),
+            ("exit", hsm.Exit),
+            ("activity", hsm.Activity),
+        ):
             refs = state.get(field, [])
             if refs:
                 callbacks = []
@@ -343,7 +375,11 @@ class Runner:
                 parts.append(factory(*callbacks))
         for event in state.get("defer", []):
             parts.append(hsm.Defer(self.event_name_from_ref(event)))
-        transition_owner_path = owner_path if kind in {"choice", "shallow_history", "deep_history"} else state_path
+        transition_owner_path = (
+            owner_path
+            if kind in {"choice", "shallow_history", "deep_history"}
+            else state_path
+        )
         for child in state.get("states", []):
             parts.append(self.build_state(child, state_path))
         for transition in state.get("transitions", []):
@@ -351,12 +387,13 @@ class Runner:
                 self.build_transition(
                     transition,
                     transition_owner_path,
-                    bare_relative_targets=kind in {"choice", "shallow_history", "deep_history"},
+                    bare_relative_targets=kind
+                    in {"choice", "shallow_history", "deep_history"},
                 )
             )
 
         if kind == "state":
-            return hsm.State(name, *parts)
+            return hsm.StateElement(name, *parts)
         if kind == "submachine":
             machine_name = self._require_string(state, "machine")
             machine = self.models_by_name.get(machine_name)
@@ -365,13 +402,13 @@ class Runner:
                 if machine_ir is None:
                     raise ConformanceError(f"unknown submachine model {machine_name!r}")
                 machine = self.build_named_model(machine_ir)
-            return hsm.SubmachineState(name, machine, *parts)
+            return hsm.SubmachineStateElement(name, machine, *parts)
         if kind == "final":
             if parts:
                 raise ConformanceError(f"final state {name!r} cannot contain parts")
             return hsm.Final(name)
         if kind == "choice":
-            return hsm.Choice(name, *parts)
+            return hsm.ChoiceElement(name, *parts)
         if kind == "shallow_history":
             return hsm.ShallowHistory(name, *parts)
         if kind == "deep_history":
@@ -387,26 +424,38 @@ class Runner:
     ) -> Any:
         parts: list[Any] = []
         if "kind" in transition:
-            parts.append(TransitionKindOverride(self.transition_kind_from_ir(transition["kind"])))
+            parts.append(
+                TransitionKindOverride(self.transition_kind_from_ir(transition["kind"]))
+            )
         source_path: str | None = None
         if "source" in transition:
-            source_path = self.absolute_path(transition["source"], owner_path, bare_relative_to_owner=bare_relative_targets)
+            source_path = self.absolute_path(
+                transition["source"],
+                owner_path,
+                bare_relative_to_owner=bare_relative_targets,
+            )
             parts.append(hsm.Source(source_path))
         trigger = transition.get("trigger")
         if trigger is None and "on" in transition:
             trigger = {"kind": "on", "event": transition["on"]}
-        timer_trigger = isinstance(trigger, dict) and trigger.get("kind") in {"after", "every", "at"}
+        timer_trigger = isinstance(trigger, dict) and trigger.get("kind") in {
+            "after",
+            "every",
+            "at",
+        }
         if trigger is not None:
             parts.append(self.build_trigger(trigger))
-        guard_callback: Behavior | None = None
+        guard_callback: BehaviorElement | None = None
         if "guard" in transition:
             behavior_id = self.behavior_id(transition["guard"])
             self.mark_behavior_role(behavior_id, "guard")
             guard_callback = self.behavior_callback(behavior_id, role="guard")
         if timer_trigger:
-            parts.append(hsm.Guard(self.timer_fired_guard_callback(guard_callback)))
+            parts.append(
+                hsm.GuardElement(self.timer_fired_guard_callback(guard_callback))
+            )
         elif guard_callback is not None:
-            parts.append(hsm.Guard(guard_callback))
+            parts.append(hsm.GuardElement(guard_callback))
         if "target" in transition:
             parts.append(
                 hsm.Target(
@@ -419,16 +468,18 @@ class Runner:
                 )
             )
         if "entry_point" in transition:
-            parts.append(hsm.EntryPoint(self._require_string(transition, "entry_point")))
+            parts.append(
+                hsm.EntryPoint(self._require_string(transition, "entry_point"))
+            )
         for ref in transition.get("effects", []):
             behavior_id = self.behavior_id(ref)
             self.mark_behavior_role(behavior_id, "effect")
             parts.append(hsm.Effect(self.behavior_callback(behavior_id, role="effect")))
         if "id" in transition:
-            return hsm.Transition(transition["id"], *parts)
+            return hsm.TransitionElement(transition["id"], *parts)
         if not parts:
             raise ConformanceError("transition must contain at least one partial")
-        return hsm.Transition(parts[0], *parts[1:])
+        return hsm.TransitionElement(parts[0], *parts[1:])
 
     def build_trigger(self, trigger: dict[str, Any]) -> Any:
         kind = trigger.get("kind")
@@ -444,7 +495,11 @@ class Runner:
         if kind == "when":
             if "attribute" in trigger:
                 return hsm.When(trigger["attribute"])
-            return hsm.When(self.behavior_callback(self._require_string(trigger, "behavior"), role="guard"))
+            return hsm.When(
+                self.behavior_callback(
+                    self._require_string(trigger, "behavior"), role="guard"
+                )
+            )
         if kind == "completion":
             return hsm.On(hsm.FinalEvent)
         if kind == "exit_point":
@@ -452,45 +507,33 @@ class Runner:
         if kind in {"after", "every", "at"}:
             if "duration_ms" in trigger:
                 millis = int(trigger["duration_ms"])
-                key = (kind, "duration_ms", millis)
-                cached = self.timer_source_callbacks.get(key)
-                if cached is not None:
-                    return {"after": hsm.After, "every": hsm.Every, "at": hsm.At}[kind](cached)
 
-                async def duration(ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event) -> timedelta:
+                async def duration(
+                    ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
+                ) -> timedelta:
                     self.note_timer_scheduled()
                     return self.duration_from_millis(millis)
 
                 value = duration
-                self.timer_source_callbacks[key] = value
             elif "time_ms" in trigger:
                 millis = int(trigger["time_ms"])
-                key = (kind, "time_ms", millis)
-                cached = self.timer_source_callbacks.get(key)
-                if cached is not None:
-                    return {"after": hsm.After, "every": hsm.Every, "at": hsm.At}[kind](cached)
 
-                async def timepoint(ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event) -> datetime:
+                async def timepoint(
+                    ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
+                ) -> datetime:
                     self.note_timer_scheduled()
                     remaining = millis - self.logical_clock.now_ms
-                    return datetime.now() + self.timepoint_duration_from_millis(remaining)
+                    return datetime.now() + self.timepoint_duration_from_millis(
+                        remaining
+                    )
 
                 value = timepoint
-                self.timer_source_callbacks[key] = value
             elif "attribute" in trigger:
                 attribute = self._require_string(trigger, "attribute")
-                key = (kind, "attribute", attribute)
-                value = self.timer_source_callbacks.get(key)
-                if value is None:
-                    value = self.timer_attribute_source(attribute, timepoint=kind == "at")
-                    self.timer_source_callbacks[key] = value
+                value = self.timer_attribute_source(attribute, timepoint=kind == "at")
             elif "behavior" in trigger:
                 behavior = self._require_string(trigger, "behavior")
-                key = (kind, "behavior", behavior)
-                value = self.timer_source_callbacks.get(key)
-                if value is None:
-                    value = self.timer_behavior_source(behavior, timepoint=kind == "at")
-                    self.timer_source_callbacks[key] = value
+                value = self.timer_behavior_source(behavior, timepoint=kind == "at")
             else:
                 raise ConformanceError(f"{kind} trigger requires attribute or behavior")
             if kind == "after":
@@ -514,8 +557,10 @@ class Runner:
             return timedelta(microseconds=500)
         return timedelta(milliseconds=millis)
 
-    def timer_attribute_source(self, name: str, *, timepoint: bool) -> Behavior:
-        async def callback(ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event) -> Any:
+    def timer_attribute_source(self, name: str, *, timepoint: bool) -> BehaviorElement:
+        async def callback(
+            ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
+        ) -> Any:
             try:
                 value, _ = hsm.Get(ctx, instance, name)
                 if timepoint:
@@ -531,11 +576,15 @@ class Runner:
         callback.__name__ = f"attribute_{name}"
         return callback
 
-    def timer_behavior_source(self, behavior_id: str, *, timepoint: bool) -> Behavior:
+    def timer_behavior_source(
+        self, behavior_id: str, *, timepoint: bool
+    ) -> BehaviorElement:
         behavior = self.behavior_callback(behavior_id, role="timer")
         should_trace_schedule = self.behavior_is_silent_timer_source(behavior_id)
 
-        async def callback(ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event) -> Any:
+        async def callback(
+            ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
+        ) -> Any:
             try:
                 value = await behavior(ctx, instance, event)
                 if timepoint:
@@ -553,19 +602,35 @@ class Runner:
         return callback
 
     def trace_expected_error_once(self) -> None:
-        expected_error = self._optional_object(self._require_object(self.case, "expect"), "error")
+        expected_error = self._optional_object(
+            self._require_object(self.case, "expect"), "error"
+        )
         if not expected_error:
             return
         if self.trace and self.trace[-1].get("type") == "error":
             return
-        self.trace.append({"type": "error", "code": expected_error.get("code", "runtime_error")})
+        self.trace.append(
+            {"type": "error", "code": expected_error.get("code", "runtime_error")}
+        )
 
     def behavior_is_silent_timer_source(self, behavior_id: str) -> bool:
         program = self._optional_object(self.case, "behaviors").get(behavior_id, [])
         if not isinstance(program, list):
             return False
-        visible_ops = {"trace", "set_attr", "set_attr_from_event_data", "dispatch", "call", "snapshot", "raise", "sleep", "yield"}
-        return not any(isinstance(op, dict) and op.get("op") in visible_ops for op in program)
+        visible_ops = {
+            "trace",
+            "set_attr",
+            "set_attr_from_event_data",
+            "dispatch",
+            "call",
+            "snapshot",
+            "raise",
+            "sleep",
+            "yield",
+        }
+        return not any(
+            isinstance(op, dict) and op.get("op") in visible_ops for op in program
+        )
 
     def note_timer_scheduled(self) -> None:
         self.pending_timer_scheduled += 1
@@ -590,8 +655,12 @@ class Runner:
             raise ConformanceError(f"unsupported transition kind {kind!r}")
         return mapping[kind]
 
-    def timer_fired_guard_callback(self, guard: Behavior | None = None) -> Behavior:
-        async def callback(ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event) -> None:
+    def timer_fired_guard_callback(
+        self, guard: BehaviorElement | None = None
+    ) -> BehaviorElement:
+        async def callback(
+            ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
+        ) -> None:
             should_trace = not getattr(event, "_conformance_timer_fired_traced", False)
             if should_trace:
                 setattr(event, "_conformance_timer_fired_traced", True)
@@ -653,7 +722,13 @@ class Runner:
                 seen_members.add(member_id)
             if len(members) < 2:
                 raise ConformanceError("group must contain at least two members")
-            self.groups[group_id] = hsm.MakeGroup(group_id, *(self.instances[self._require_member_id(member)] for member in members))
+            self.groups[group_id] = hsm.MakeGroup(
+                group_id,
+                *(
+                    self.instances[self._require_member_id(member)]
+                    for member in members
+                ),
+            )
 
     def run_validation(self) -> None:
         try:
@@ -673,17 +748,25 @@ class Runner:
         for item in expected:
             if isinstance(item, str):
                 if item not in message:
-                    raise AssertionError(f"validation error mismatch: {message!r} does not contain {item!r}")
+                    raise AssertionError(
+                        f"validation error mismatch: {message!r} does not contain {item!r}"
+                    )
                 return
             if not isinstance(item, dict):
                 continue
             contains = item.get("message_contains")
             if isinstance(contains, str) and contains not in message:
-                raise AssertionError(f"validation error mismatch: {message!r} does not contain {contains!r}")
+                raise AssertionError(
+                    f"validation error mismatch: {message!r} does not contain {contains!r}"
+                )
                 return
             code = item.get("code")
-            if isinstance(code, str) and not self.validation_code_matches(code, message):
-                raise AssertionError(f"validation error mismatch: {message!r} does not match code {code!r}")
+            if isinstance(code, str) and not self.validation_code_matches(
+                code, message
+            ):
+                raise AssertionError(
+                    f"validation error mismatch: {message!r} does not match code {code!r}"
+                )
         return
 
     @staticmethod
@@ -701,7 +784,7 @@ class Runner:
             "invalid_submachine_contents": "cannot contain nested",
             "invalid_submachine_internal_target": "cannot target internal state",
             "invalid_entry_point_target": "entry point target",
-            "invalid_entry_point_usage": "can only target a SubmachineState",
+            "invalid_entry_point_usage": "can only target a SubmachineStateElement",
             "invalid_entry_point_internal_target": "entry point target cannot be internal",
             "invalid_entry_point_target_kind": "entry point target",
             "invalid_exit_point_usage": "ExitPoint outcome can only be handled",
@@ -714,7 +797,7 @@ class Runner:
             "choice_missing_transition": "has no transitions",
             "invalid_submachine_initial": "already has an initial state",
             "submachine_model_cycle": "recursive submachine model reference",
-            "invalid_history_owner": "within a nested State",
+            "invalid_history_owner": "within a nested StateElement",
             "missing_operation": "missing operation",
             "multiple_transition_triggers": "multiple transition triggers",
             "multiple_trigger_operands": "multiple trigger operands",
@@ -761,7 +844,14 @@ class Runner:
             if state.get("kind") in {"choice", "shallow_history", "deep_history"}:
                 if "initial" in state:
                     raise ConformanceError("already has an initial state")
-                for field in ("entry", "exit", "activity", "defer", "states", "initial"):
+                for field in (
+                    "entry",
+                    "exit",
+                    "activity",
+                    "defer",
+                    "states",
+                    "initial",
+                ):
                     if field in state:
                         raise ConformanceError("invalid pseudostate contents")
             initial = state.get("initial")
@@ -805,18 +895,31 @@ class Runner:
                 raise ConformanceError(f'{what} name "{name}" cannot contain "/"')
             return name
 
-        def absolute_in_model(path: str, owner_path: str, *, bare_relative_to_owner: bool = False) -> str:
+        def absolute_in_model(
+            path: str, owner_path: str, *, bare_relative_to_owner: bool = False
+        ) -> str:
             if not isinstance(path, str) or not path:
                 raise ConformanceError("path must be a non-empty string")
             if path.startswith("/"):
                 resolved = posixpath.normpath(path)
-            elif bare_relative_to_owner or path == "." or path.startswith("./") or path.startswith("../"):
+            elif (
+                bare_relative_to_owner
+                or path == "."
+                or path.startswith("./")
+                or path.startswith("../")
+            ):
                 resolved = posixpath.normpath(posixpath.join(owner_path, path))
             else:
                 resolved = posixpath.normpath("/" + model_name + "/" + path)
-            root = resolved.strip("/").split("/", 1)[0] if resolved.startswith("/") else model_name
+            root = (
+                resolved.strip("/").split("/", 1)[0]
+                if resolved.startswith("/")
+                else model_name
+            )
             if root != model_name:
-                raise ConformanceError(f"submachine boundary target {resolved!r} leaves model {model_name!r}")
+                raise ConformanceError(
+                    f"submachine boundary target {resolved!r} leaves model {model_name!r}"
+                )
             return resolved
 
         def state_names(states: list[Any], owner_path: str) -> set[str]:
@@ -850,10 +953,10 @@ class Runner:
                     raise ConformanceError(f"connection point name collision {name!r}")
                 target_set.add(name)
 
-        def connection_path(name: str, kind: str) -> str:
-            return posixpath.normpath(f"/{model_name}/.{kind}/{name}")
+        def entry_connector_path(name: str) -> str:
+            return posixpath.normpath(f"/{model_name}/{name}")
 
-        entry_paths = {connection_path(name, "entry") for name in entry_points}
+        entry_paths = {entry_connector_path(name) for name in entry_points}
         exit_paths = {connection_path(name, "exit") for name in exit_points}
 
         def validate_state_target(path: str) -> None:
@@ -866,7 +969,9 @@ class Runner:
                 root = target.strip("/").split("/", 1)[0]
                 if root != model_name:
                     raise ConformanceError(f'target "{target}" not found')
-            validate_state_target(absolute_in_model(target, owner_path, bare_relative_to_owner=True))
+            validate_state_target(
+                absolute_in_model(target, owner_path, bare_relative_to_owner=True)
+            )
 
         def behavior_program_returns_number(behavior_id: str) -> bool:
             program = self._optional_object(self.case, "behaviors").get(behavior_id)
@@ -877,7 +982,9 @@ class Runner:
                     continue
                 if op.get("op") == "return_value":
                     value = op.get("value")
-                    return (type(value) is int or type(value) is float) and not isinstance(value, bool)
+                    return (
+                        type(value) is int or type(value) is float
+                    ) and not isinstance(value, bool)
                 if op.get("op") == "return_attr":
                     return True
             return True
@@ -887,11 +994,17 @@ class Runner:
             if kind in {"on_set", "when"} and "attribute" in trigger:
                 name = self._require_string(trigger, "attribute")
                 if "/" in name:
-                    raise ConformanceError(f'attribute name "{name}" cannot contain "/"')
+                    raise ConformanceError(
+                        f'attribute name "{name}" cannot contain "/"'
+                    )
                 if name not in attributes:
                     raise ConformanceError(f"missing attribute {name!r}")
             if kind in {"after", "every", "at"}:
-                if kind == "every" and "duration_ms" in trigger and float(trigger["duration_ms"]) <= 0:
+                if (
+                    kind == "every"
+                    and "duration_ms" in trigger
+                    and float(trigger["duration_ms"]) <= 0
+                ):
                     raise ConformanceError("invalid timer source")
                 if "attribute" in trigger:
                     name = self._require_string(trigger, "attribute")
@@ -901,15 +1014,31 @@ class Runner:
                     type_name = spec.get("type")
                     expected = "time_ms" if kind == "at" else "duration_ms"
                     if type_name != expected:
-                        raise ConformanceError(f"invalid timer attribute type for {name!r}")
-                if "behavior" in trigger and not behavior_program_returns_number(self._require_string(trigger, "behavior")):
+                        raise ConformanceError(
+                            f"invalid timer attribute type for {name!r}"
+                        )
+                if "behavior" in trigger and not behavior_program_returns_number(
+                    self._require_string(trigger, "behavior")
+                ):
                     raise ConformanceError("invalid timer behavior return")
 
-        def validate_transition(transition: dict[str, Any], owner_path: str, *, bare_relative_targets: bool = False) -> None:
+        def validate_transition(
+            transition: dict[str, Any],
+            owner_path: str,
+            *,
+            bare_relative_targets: bool = False,
+        ) -> None:
             if "source" in transition:
-                source_path = absolute_in_model(self._require_string(transition, "source"), owner_path)
-                if any(state_kinds.get(prefix) == "submachine" for prefix in self.path_prefixes(source_path)[:-1]):
-                    raise ConformanceError(f"submachine internal source {source_path!r}")
+                source_path = absolute_in_model(
+                    self._require_string(transition, "source"), owner_path
+                )
+                if any(
+                    state_kinds.get(prefix) == "submachine"
+                    for prefix in self.path_prefixes(source_path)[:-1]
+                ):
+                    raise ConformanceError(
+                        f"submachine internal source {source_path!r}"
+                    )
                 if source_path not in state_paths:
                     raise ConformanceError(f'source "{source_path}" not found')
             else:
@@ -919,32 +1048,48 @@ class Runner:
                 validate_trigger(trigger)
             if "target" in transition:
                 raw_target = self._require_string(transition, "target")
-                if raw_target.startswith(".entry/") or raw_target.startswith(".exit/"):
-                    raise ConformanceError("entry point target cannot be internal")
-                target_path = source_path if raw_target == "." and source_path is not None else absolute_in_model(
-                    raw_target,
-                    owner_path,
-                    bare_relative_to_owner=bare_relative_targets,
+                if raw_target.startswith(".exit/"):
+                    raise ConformanceError("exit point target cannot be internal")
+                target_path = (
+                    source_path
+                    if raw_target == "." and source_path is not None
+                    else absolute_in_model(
+                        raw_target,
+                        owner_path,
+                        bare_relative_to_owner=bare_relative_targets,
+                    )
                 )
-                if any(state_kinds.get(prefix) == "submachine" for prefix in self.path_prefixes(target_path)[:-1]):
-                    raise ConformanceError(f"cannot target internal state {target_path!r}")
+                if any(
+                    state_kinds.get(prefix) == "submachine"
+                    for prefix in self.path_prefixes(target_path)[:-1]
+                ):
+                    raise ConformanceError(
+                        f"cannot target internal state {target_path!r}"
+                    )
                 validate_state_target(target_path)
 
         def walk_state(state: dict[str, Any], owner_path: str) -> None:
             name = self._require_string(state, "name")
             path = posixpath.normpath(owner_path + "/" + name)
-            children = [child for child in state.get("states", []) if isinstance(child, dict)]
+            children = [
+                child for child in state.get("states", []) if isinstance(child, dict)
+            ]
             if children and state.get("kind", "state") == "state":
                 if "initial" not in state:
                     raise ConformanceError("missing initial")
                 validate_initial(state["initial"], path)
-            transition_owner_path = owner_path if state.get("kind") in {"choice", "shallow_history", "deep_history"} else path
+            transition_owner_path = (
+                owner_path
+                if state.get("kind") in {"choice", "shallow_history", "deep_history"}
+                else path
+            )
             for transition in state.get("transitions", []):
                 if isinstance(transition, dict):
                     validate_transition(
                         transition,
                         transition_owner_path,
-                        bare_relative_targets=state.get("kind") in {"choice", "shallow_history", "deep_history"},
+                        bare_relative_targets=state.get("kind")
+                        in {"choice", "shallow_history", "deep_history"},
                     )
             for child in children:
                 walk_state(child, path)
@@ -957,11 +1102,19 @@ class Runner:
             if raw_target.startswith("/"):
                 root = raw_target.strip("/").split("/", 1)[0]
                 if root != model_name:
-                    raise ConformanceError(f"entry point target {raw_target!r} leaves model {model_name!r}")
+                    raise ConformanceError(
+                        f"entry point target {raw_target!r} leaves model {model_name!r}"
+                    )
             if raw_target in entry_points or raw_target in exit_points:
-                raise ConformanceError(f"entry point target {raw_target!r} is not a state")
+                raise ConformanceError(
+                    f"entry point target {raw_target!r} is not a state"
+                )
             target = absolute_in_model(raw_target, "/" + model_name)
-            if target in entry_paths or target in exit_paths or target not in state_paths:
+            if (
+                target in entry_paths
+                or target in exit_paths
+                or target not in state_paths
+            ):
                 if target not in state_paths:
                     raise ConformanceError(f'target "{target}" not found')
                 raise ConformanceError(f"entry point target {target!r} is not a state")
@@ -1006,7 +1159,9 @@ class Runner:
             "snapshot": set(),
             "yield": set(),
         }
-        allowed: dict[str, set[str]] = {kind: set(keys) | {"op"} for kind, keys in required.items()}
+        allowed: dict[str, set[str]] = {
+            kind: set(keys) | {"op"} for kind, keys in required.items()
+        }
         allowed["dispatch"] = {"op", "event", "target", "group"}
         allowed["raise"] = {"op", "event", "code", "value"}
         for behavior_id, program in behaviors.items():
@@ -1014,29 +1169,43 @@ class Runner:
                 raise ConformanceError(f"missing behavior program {behavior_id!r}")
             for index, op in enumerate(program):
                 if not isinstance(op, dict):
-                    raise ConformanceError(f"behavior op {behavior_id}[{index}] must be an object")
+                    raise ConformanceError(
+                        f"behavior op {behavior_id}[{index}] must be an object"
+                    )
                 kind = op.get("op")
                 if not isinstance(kind, str):
-                    raise ConformanceError(f"behavior op {behavior_id}[{index}] must declare op")
+                    raise ConformanceError(
+                        f"behavior op {behavior_id}[{index}] must declare op"
+                    )
                 if kind == "raise":
                     has_event = "event" in op
                     has_code = "code" in op
                     if has_event == has_code:
-                        raise ConformanceError(f"behavior op {behavior_id}[{index}] raise requires exactly one of event or code")
+                        raise ConformanceError(
+                            f"behavior op {behavior_id}[{index}] raise requires exactly one of event or code"
+                        )
                     extra = set(op) - allowed["raise"]
                     if extra:
-                        raise ConformanceError(f"behavior op {behavior_id}[{index}] raise has unsupported operands: {sorted(extra)}")
+                        raise ConformanceError(
+                            f"behavior op {behavior_id}[{index}] raise has unsupported operands: {sorted(extra)}"
+                        )
                     continue
                 if kind not in required:
                     raise ConformanceError(f"unsupported behavior op {kind!r}")
                 if kind == "dispatch" and "target" in op and "group" in op:
-                    raise ConformanceError(f"behavior op {behavior_id}[{index}] dispatch cannot declare both target and group")
+                    raise ConformanceError(
+                        f"behavior op {behavior_id}[{index}] dispatch cannot declare both target and group"
+                    )
                 missing = required[kind] - set(op)
                 if missing:
-                    raise ConformanceError(f"behavior op {behavior_id}[{index}] {kind} missing operands: {sorted(missing)}")
+                    raise ConformanceError(
+                        f"behavior op {behavior_id}[{index}] {kind} missing operands: {sorted(missing)}"
+                    )
                 extra = set(op) - allowed[kind]
                 if extra:
-                    raise ConformanceError(f"behavior op {behavior_id}[{index}] {kind} has unsupported operands: {sorted(extra)}")
+                    raise ConformanceError(
+                        f"behavior op {behavior_id}[{index}] {kind} has unsupported operands: {sorted(extra)}"
+                    )
 
     def validate_trigger_operands(self, model_ir: dict[str, Any]) -> None:
         allowed_by_kind: dict[str, set[str]] = {
@@ -1075,27 +1244,47 @@ class Runner:
                 if trigger.get("events") == []:
                     raise ConformanceError("empty event array")
             elif kind in {"on_set", "on_call", "exit_point"}:
-                field = {"on_set": "attribute", "on_call": "operation", "exit_point": "exit_point"}[kind]
+                field = {
+                    "on_set": "attribute",
+                    "on_call": "operation",
+                    "exit_point": "exit_point",
+                }[kind]
                 if field not in trigger:
                     raise ConformanceError("missing trigger operand")
                 value = trigger.get(field)
                 if isinstance(value, str) and "/" in value:
                     raise ConformanceError(f'{field} name "{value}" cannot contain "/"')
             elif kind == "when":
-                present = [field for field in ("attribute", "behavior") if field in trigger]
+                present = [
+                    field for field in ("attribute", "behavior") if field in trigger
+                ]
                 if not present:
                     raise ConformanceError("missing trigger operand")
                 if len(present) > 1:
                     raise ConformanceError("multiple trigger operands")
                 value = trigger.get(present[0])
-                if present[0] == "attribute" and isinstance(value, str) and "/" in value:
-                    raise ConformanceError(f'attribute name "{value}" cannot contain "/"')
+                if (
+                    present[0] == "attribute"
+                    and isinstance(value, str)
+                    and "/" in value
+                ):
+                    raise ConformanceError(
+                        f'attribute name "{value}" cannot contain "/"'
+                    )
             elif kind in {"after", "every"}:
-                present = [field for field in ("duration_ms", "time_ms", "attribute", "behavior") if field in trigger]
+                present = [
+                    field
+                    for field in ("duration_ms", "time_ms", "attribute", "behavior")
+                    if field in trigger
+                ]
                 if len(present) != 1 or "time_ms" in present:
                     raise ConformanceError("invalid timer source")
             elif kind == "at":
-                present = [field for field in ("duration_ms", "time_ms", "attribute", "behavior") if field in trigger]
+                present = [
+                    field
+                    for field in ("duration_ms", "time_ms", "attribute", "behavior")
+                    if field in trigger
+                ]
                 if len(present) != 1 or "duration_ms" in present:
                     raise ConformanceError("invalid timer source")
 
@@ -1147,9 +1336,15 @@ class Runner:
                         validate_transition(transition)
                 if state.get("kind") == "submachine":
                     child_name = state.get("machine")
-                    child_ir = self.model_irs_by_name.get(child_name) if isinstance(child_name, str) else None
+                    child_ir = (
+                        self.model_irs_by_name.get(child_name)
+                        if isinstance(child_name, str)
+                        else None
+                    )
                     if child_ir is not None:
-                        self.validate_on_call_operations(child_ir, visible_operations, seen_models)
+                        self.validate_on_call_operations(
+                            child_ir, visible_operations, seen_models
+                        )
                 walk_states(state.get("states", []))
 
         for transition in model_ir.get("transitions", []):
@@ -1157,16 +1352,26 @@ class Runner:
                 validate_transition(transition)
         walk_states(model_ir.get("states", []))
 
-    def behavior_callback(self, behavior_id: str, *, role: str = "behavior") -> Behavior:
+    def behavior_callback(
+        self, behavior_id: str, *, role: str = "behavior"
+    ) -> BehaviorElement:
         program = self._optional_object(self.case, "behaviors").get(behavior_id)
         if not isinstance(program, list) or not program:
             raise ConformanceError(f"missing behavior program {behavior_id!r}")
 
-        async def callback(ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event) -> Any:
+        async def callback(
+            ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
+        ) -> Any:
             result: Any = None
             for op in program:
-                result = await self.execute_behavior_op(ctx, instance, event, op, behavior_id, role)
-                if op.get("op", "").startswith("return_") and role in {"guard", "operation", "timer"}:
+                result = await self.execute_behavior_op(
+                    ctx, instance, event, op, behavior_id, role
+                )
+                if op.get("op", "").startswith("return_") and role in {
+                    "guard",
+                    "operation",
+                    "timer",
+                }:
                     self.trace_activity_done(behavior_id)
                     return result
             self.trace_activity_done(behavior_id)
@@ -1183,7 +1388,9 @@ class Runner:
         return role in {"entry", "exit", "activity"}
 
     def trace_activity_done(self, behavior_id: str) -> None:
-        if behavior_id in self.activity_behavior_ids and self.trace_contract_includes("activity_done"):
+        if behavior_id in self.activity_behavior_ids and self.trace_contract_includes(
+            "activity_done"
+        ):
             self.trace.append({"type": "activity_done", "behavior": behavior_id})
 
     def trace_defer_event(self, event_name: str) -> None:
@@ -1229,7 +1436,11 @@ class Runner:
         behavior_role: str,
     ) -> Any:
         kind = op.get("op")
-        if kind == "trace" and self.deferred_events and self.trace_contract_includes("undefer"):
+        if (
+            kind == "trace"
+            and self.deferred_events
+            and self.trace_contract_includes("undefer")
+        ):
             if self.defer_replay_barrier:
                 self.defer_replay_barrier = False
             else:
@@ -1240,10 +1451,17 @@ class Runner:
             self.trace.append({"type": "trace", "value": op.get("value")})
             return None
         if kind == "set_attr":
-            await hsm.Set(ctx, instance, self._require_string(op, "name"), op.get("value"))
+            await hsm.Set(
+                ctx, instance, self._require_string(op, "name"), op.get("value")
+            )
             return None
         if kind == "set_attr_from_event_data":
-            await hsm.Set(ctx, instance, self._require_string(op, "name"), self.read_path(event.data, op.get("path")))
+            await hsm.Set(
+                ctx,
+                instance,
+                self._require_string(op, "name"),
+                self.read_path(event.data, op.get("path")),
+            )
             return None
         if kind == "get_attr":
             value, _ = hsm.Get(ctx, instance, self._require_string(op, "name"))
@@ -1263,16 +1481,22 @@ class Runner:
         if kind == "event_data_get":
             return self.read_path(event.data, op.get("path"))
         if kind == "event_metadata_set":
-            self.set_event_metadata(event, self._require_string(op, "name"), op.get("value"))
+            self.set_event_metadata(
+                event, self._require_string(op, "name"), op.get("value")
+            )
             return None
         if kind == "event_metadata_get":
             return self.get_event_metadata(event, self._require_string(op, "name"))
         if kind == "event_metadata_equals":
-            return self.get_event_metadata(event, self._require_string(op, "name")) == op.get("value")
+            return self.get_event_metadata(
+                event, self._require_string(op, "name")
+            ) == op.get("value")
         if kind == "call":
             name = self._require_string(op, "name")
             await self.execute_operation(ctx, instance, event, name)
-            if self.trace_contract_includes("call") and self.behavior_call_op_is_traceable(behavior_role):
+            if self.trace_contract_includes(
+                "call"
+            ) and self.behavior_call_op_is_traceable(behavior_role):
                 self.trace.append({"type": "call", "operation": name})
             await instance.dispatch(
                 hsm.Event(
@@ -1288,19 +1512,33 @@ class Runner:
             nested_event = self.event_from_value(op.get("event"))
             wait_for_dispatch = behavior_role in {"activity", "operation"}
             if op.get("target") == "all":
-                self.trace.append({"type": "dispatch", "event": nested_event.name, "target": "all"})
+                self.trace.append(
+                    {"type": "dispatch", "event": nested_event.name, "target": "all"}
+                )
                 self.trace_deferred_dispatch(nested_event.name, self.instances.values())
                 dispatched = hsm.DispatchAll(ctx, nested_event)
             elif "target" in op:
                 target_id = self._require_string(op, "target")
-                self.trace.append({"type": "dispatch", "event": nested_event.name, "target": target_id})
+                self.trace.append(
+                    {
+                        "type": "dispatch",
+                        "event": nested_event.name,
+                        "target": target_id,
+                    }
+                )
                 if target_id in self.instances:
-                    self.trace_deferred_dispatch(nested_event.name, [self.instances[target_id]])
+                    self.trace_deferred_dispatch(
+                        nested_event.name, [self.instances[target_id]]
+                    )
                 dispatched = hsm.DispatchTo(ctx, nested_event, target_id)
             elif "group" in op:
                 group_id = self._require_string(op, "group")
-                self.trace.append({"type": "dispatch", "event": nested_event.name, "target": group_id})
-                self.trace_deferred_dispatch(nested_event.name, self.instances_for_group(group_id))
+                self.trace.append(
+                    {"type": "dispatch", "event": nested_event.name, "target": group_id}
+                )
+                self.trace_deferred_dispatch(
+                    nested_event.name, self.instances_for_group(group_id)
+                )
                 if group_id not in self.groups:
                     raise ConformanceError(f"unknown group {group_id!r}")
                 dispatched = hsm.Dispatch(ctx, self.groups[group_id], nested_event)
@@ -1320,7 +1558,9 @@ class Runner:
                 await asyncio.sleep(float(op.get("millis", 0)) / 1000.0)
             except asyncio.CancelledError:
                 if "activity" in self.features:
-                    self.trace.append({"type": "activity_cancel", "behavior": behavior_id})
+                    self.trace.append(
+                        {"type": "activity_cancel", "behavior": behavior_id}
+                    )
                 raise
             return None
         if kind == "yield":
@@ -1328,13 +1568,16 @@ class Runner:
             return None
         if kind == "raise":
             if "code" in op:
-                self.trace.append({"type": "error", "code": op.get("code", "behavior_error")})
+                self.trace.append(
+                    {"type": "error", "code": op.get("code", "behavior_error")}
+                )
                 raise RuntimeError(str(op.get("value", "behavior error")))
             raised_event = self.event_from_value(op.get("event", op.get("value")))
             self.trace.append({"type": "raise", "event": raised_event.name})
-            if (
-                self.event_is_deferred(instance, raised_event.name)
-                and not self.current_state_has_event_transition(instance, raised_event.name)
+            if self.event_is_deferred(
+                instance, raised_event.name
+            ) and not self.current_state_has_event_transition(
+                instance, raised_event.name
             ):
                 self.note_deferred_event(instance, raised_event.name)
                 if self.trace_contract_includes("defer"):
@@ -1350,25 +1593,33 @@ class Runner:
         event: hsm.Event,
         name: str,
     ) -> Any:
-        machine = getattr(instance, "_Instance__hsm", None)
+        machine = self.machine_for_instance(instance)
         if isinstance(machine, hsm.HSM):
-            scope = machine._execution_scope or machine.state() or machine.model.qualified_name
-            operation_name = hsm_core._resolve_operation_name(machine.model, scope, name)
+            operation_name = name if name in machine.model.operations else ""
+            if not operation_name:
+                operation_name = hsm_core._qualify_model_name(
+                    machine.model.qualified_name, name
+                )
+            current = machine.state()
+            while operation_name not in machine.model.operations and current not in (
+                "",
+                ".",
+                "/",
+            ):
+                operation_name = hsm_core.join(current, name)
+                if current == machine.model.qualified_name:
+                    break
+                current = hsm_core._parent_path(current)
             operation = machine.model.operations.get(operation_name)
             if operation is not None and operation.callback is not None:
-                return await hsm_core._maybe_await(
-                    hsm_core._invoke_operation_callback(
-                        operation.callback,
-                        ctx,
-                        instance,
-                        (),
-                    )
-                )
+                return await hsm_core._maybe_await(operation.callback(ctx, instance))
         model_ir = self._require_object(self.case, "model")
         operation_ref = self._optional_object(model_ir, "operations").get(name)
         if operation_ref is None:
             raise ConformanceError(f"missing operation {name!r}")
-        callback = self.behavior_callback(self.behavior_id(operation_ref), role="operation")
+        callback = self.behavior_callback(
+            self.behavior_id(operation_ref), role="operation"
+        )
         return await callback(ctx, instance, event)
 
     async def execute_step(
@@ -1390,7 +1641,9 @@ class Runner:
             self.trace.append({"type": "dispatch", "event": event.name})
             if self.exiting_timer_state(instance, event.name):
                 self.trace.append({"type": "timer_cancelled"})
-            event_deferred_by_current_state = self.event_is_deferred(instance, event.name)
+            event_deferred_by_current_state = self.event_is_deferred(
+                instance, event.name
+            )
             if (
                 event_deferred_by_current_state
                 and self.trace_contract_includes("defer")
@@ -1415,7 +1668,9 @@ class Runner:
         if op == "dispatch_all":
             event = self.event_from_step(step)
             self.flush_timer_scheduled()
-            self.trace.append({"type": "dispatch", "event": event.name, "target": "all"})
+            self.trace.append(
+                {"type": "dispatch", "event": event.name, "target": "all"}
+            )
             await hsm.DispatchAll(self.ctx, event)
             await self.settle_ready_tasks(turns=7)
             self.trace_new_runtime_deferred(self.instances.values())
@@ -1428,20 +1683,30 @@ class Runner:
             if raw_targets is None:
                 raw_targets = [step.get("instance") or step.get("target")]
             if not isinstance(raw_targets, list) or not raw_targets:
-                raise ConformanceError("dispatch_to requires instance, target, or targets")
+                raise ConformanceError(
+                    "dispatch_to requires instance, target, or targets"
+                )
             targets = [self._require_member_id(target) for target in raw_targets]
             trace_target: str | list[str] = targets[0] if len(targets) == 1 else targets
-            self.trace.append({"type": "dispatch", "event": event.name, "target": trace_target})
+            self.trace.append(
+                {"type": "dispatch", "event": event.name, "target": trace_target}
+            )
             await hsm.DispatchTo(self.ctx, event, *targets)
             await self.settle_ready_tasks(turns=7)
-            self.trace_new_runtime_deferred(self.instances[target] for target in targets)
-            self.last_stable_label = targets[0] if len(targets) == 1 else "targets:" + ",".join(targets)
+            self.trace_new_runtime_deferred(
+                self.instances[target] for target in targets
+            )
+            self.last_stable_label = (
+                targets[0] if len(targets) == 1 else "targets:" + ",".join(targets)
+            )
             return
         if op == "group_dispatch":
             event = self.event_from_step(step)
             group_id = self._require_string(step, "group")
             self.flush_timer_scheduled()
-            self.trace.append({"type": "dispatch", "event": event.name, "target": group_id})
+            self.trace.append(
+                {"type": "dispatch", "event": event.name, "target": group_id}
+            )
             if group_id not in self.groups:
                 raise ConformanceError(f"unknown group {group_id!r}")
             await hsm.Dispatch(self.ctx, self.groups[group_id], event)
@@ -1454,13 +1719,23 @@ class Runner:
             self.flush_timer_scheduled()
             if (
                 self.trace_contract_includes("set")
-                or
-                "on_set" in self.features
+                or "on_set" in self.features
                 or "when" in self.features
                 or ("timer" in self.features and "attribute" in self.features)
             ):
-                self.trace.append({"type": "set", "attribute": self._require_string(step, "attribute"), "value": step.get("value")})
-            await hsm.Set(self.ctx, instance, self._require_string(step, "attribute"), step.get("value"))
+                self.trace.append(
+                    {
+                        "type": "set",
+                        "attribute": self._require_string(step, "attribute"),
+                        "value": step.get("value"),
+                    }
+                )
+            await hsm.Set(
+                self.ctx,
+                instance,
+                self._require_string(step, "attribute"),
+                step.get("value"),
+            )
             self.last_stable_label = None
             return
         if op == "call":
@@ -1486,14 +1761,21 @@ class Runner:
             self.flush_timer_scheduled()
             if "group" in step:
                 group_id = self._require_string(step, "group")
-                group_ir = next((group for group in self.case.get("groups", []) if group.get("id") == group_id), None)
+                group_ir = next(
+                    (
+                        group
+                        for group in self.case.get("groups", [])
+                        if group.get("id") == group_id
+                    ),
+                    None,
+                )
                 if group_ir is None:
                     raise ConformanceError(f"unknown group {group_id!r}")
                 for member_id in group_ir.get("members", []):
                     member = self.instances.get(member_id)
-                    machine = getattr(member, "_Instance__hsm", None)
-                    if not isinstance(machine, hsm.HSM) or not machine._started:
-                        raise ConformanceError("operation requires a started HSM")
+                    if member is None:
+                        raise ConformanceError(f"unknown group member {member_id!r}")
+                    self.started_machine_for_instance(member)
                 self.snapshots[group_id] = self.group_snapshot(group_id)
                 self.trace.append({"type": "snapshot", "group": group_id})
                 self.last_stable_label = "group:" + group_id
@@ -1502,9 +1784,7 @@ class Runner:
             snapshot_id = step.get("id", "last")
             if not isinstance(snapshot_id, str):
                 raise ConformanceError("snapshot id must be a string")
-            machine = getattr(instance, "_Instance__hsm", None)
-            if not isinstance(machine, hsm.HSM) or not machine._started:
-                raise ConformanceError("operation requires a started HSM")
+            self.started_machine_for_instance(instance)
             snapshot = hsm.TakeSnapshot(self.ctx, instance)
             self.snapshots[snapshot_id] = self.normalize_snapshot(snapshot)
             self.trace.append(self.snapshot_trace(snapshot))
@@ -1525,9 +1805,7 @@ class Runner:
             instance = self.instance_for_step(step)
             self.flush_timer_scheduled()
             self.trace_lifecycle(step, "stop")
-            machine = getattr(instance, "_Instance__hsm", None)
-            if not isinstance(machine, hsm.HSM) or not machine._started:
-                raise ConformanceError("operation requires a started HSM")
+            self.started_machine_for_instance(instance)
             await hsm.Stop(instance)
             self.clear_deferred_events_for_instance(instance)
             if self.trace_contract_includes("timer_cancelled"):
@@ -1561,7 +1839,16 @@ class Runner:
         raise ConformanceError("event reference requires string or object event")
 
     def get_event_metadata(self, event: hsm.Event, name: str) -> Any:
-        if name in {"name", "data", "kind", "id", "source", "target", "qualified_name", "schema"}:
+        if name in {
+            "name",
+            "data",
+            "kind",
+            "id",
+            "source",
+            "target",
+            "qualified_name",
+            "schema",
+        }:
             return getattr(event, name, None)
         schema = getattr(event, "schema", None)
         if isinstance(schema, dict):
@@ -1569,7 +1856,16 @@ class Runner:
         return getattr(event, name, None)
 
     def set_event_metadata(self, event: hsm.Event, name: str, value: Any) -> None:
-        if name in {"name", "data", "kind", "id", "source", "target", "qualified_name", "schema"}:
+        if name in {
+            "name",
+            "data",
+            "kind",
+            "id",
+            "source",
+            "target",
+            "qualified_name",
+            "schema",
+        }:
             setattr(event, name, value)
             return
         schema = getattr(event, "schema", None)
@@ -1579,26 +1875,38 @@ class Runner:
         schema[name] = value
 
     def assert_expectations(self) -> None:
-        self.assert_expectation_object(self._require_object(self.case, "expect"), final=True)
+        self.assert_expectation_object(
+            self._require_object(self.case, "expect"), final=True
+        )
 
-    def assert_expectation_object(self, expect: dict[str, Any], *, final: bool = False) -> None:
+    def assert_expectation_object(
+        self, expect: dict[str, Any], *, final: bool = False
+    ) -> None:
         instance = self.instances.get("default") or next(iter(self.instances.values()))
         if "state" in expect and instance.state() != expect["state"]:
-            raise AssertionError(f"state mismatch: got {instance.state()!r}, want {expect['state']!r}")
+            raise AssertionError(
+                f"state mismatch: got {instance.state()!r}, want {expect['state']!r}"
+            )
         if "states" in expect:
             for instance_id, wanted in expect["states"].items():
                 actual = self.instances[instance_id].state()
                 if actual != wanted:
-                    raise AssertionError(f"state {instance_id!r} mismatch: got {actual!r}, want {wanted!r}")
+                    raise AssertionError(
+                        f"state {instance_id!r} mismatch: got {actual!r}, want {wanted!r}"
+                    )
         if "trace" in expect and self.trace != expect["trace"]:
             actual = json.dumps(self.trace, indent=2, sort_keys=True)
             wanted = json.dumps(expect["trace"], indent=2, sort_keys=True)
-            raise AssertionError(f"trace mismatch:\nactual:\n{actual}\nexpected:\n{wanted}")
+            raise AssertionError(
+                f"trace mismatch:\nactual:\n{actual}\nexpected:\n{wanted}"
+            )
         if "attributes" in expect:
             for name, wanted in expect["attributes"].items():
                 actual, ok = instance.get(name)
                 if not ok or actual != wanted:
-                    raise AssertionError(f"attribute {name!r} mismatch: got {actual!r}, want {wanted!r}")
+                    raise AssertionError(
+                        f"attribute {name!r} mismatch: got {actual!r}, want {wanted!r}"
+                    )
         if "instance_attributes" in expect:
             for instance_id, attrs in expect["instance_attributes"].items():
                 checked = self.instances[instance_id]
@@ -1608,20 +1916,30 @@ class Runner:
                         raise AssertionError(
                             f"attribute {name!r} for instance {instance_id!r} mismatch: got {actual!r}, want {wanted!r}"
                         )
-        if "snapshots" in expect and not self.value_contains(self.snapshots, expect["snapshots"]):
+        if "snapshots" in expect and not self.value_contains(
+            self.snapshots, expect["snapshots"]
+        ):
             actual = json.dumps(self.snapshots, indent=2, sort_keys=True)
             wanted = json.dumps(expect["snapshots"], indent=2, sort_keys=True)
-            raise AssertionError(f"snapshot mismatch:\nactual:\n{actual}\nexpected:\n{wanted}")
+            raise AssertionError(
+                f"snapshot mismatch:\nactual:\n{actual}\nexpected:\n{wanted}"
+            )
 
     def value_contains(self, actual: Any, expected: Any) -> bool:
         if isinstance(expected, dict):
             if not isinstance(actual, dict):
                 return False
-            return all(key in actual and self.value_contains(actual[key], value) for key, value in expected.items())
+            return all(
+                key in actual and self.value_contains(actual[key], value)
+                for key, value in expected.items()
+            )
         if isinstance(expected, list):
             if not isinstance(actual, list) or len(actual) != len(expected):
                 return False
-            return all(self.value_contains(actual_item, expected_item) for actual_item, expected_item in zip(actual, expected))
+            return all(
+                self.value_contains(actual_item, expected_item)
+                for actual_item, expected_item in zip(actual, expected)
+            )
         return actual == expected
 
     def absolute_path(
@@ -1642,8 +1960,15 @@ class Runner:
             root_name = self.model_name
         if path.startswith("/"):
             return posixpath.normpath(path)
-        if bare_relative_to_owner or path == "." or path.startswith("./") or path.startswith("../"):
-            return posixpath.normpath(posixpath.join(owner_path or "/" + root_name, path))
+        if (
+            bare_relative_to_owner
+            or path == "."
+            or path.startswith("./")
+            or path.startswith("../")
+        ):
+            return posixpath.normpath(
+                posixpath.join(owner_path or "/" + root_name, path)
+            )
         return posixpath.normpath("/" + root_name + "/" + path)
 
     def transition_target_path(
@@ -1656,7 +1981,9 @@ class Runner:
     ) -> str:
         if path == "." and source_path is not None:
             return source_path
-        return self.absolute_path(path, owner_path, bare_relative_to_owner=bare_relative_targets)
+        return self.absolute_path(
+            path, owner_path, bare_relative_to_owner=bare_relative_targets
+        )
 
     def step_instance_id(self, step: dict[str, Any]) -> str:
         return step.get("instance", "default")
@@ -1667,6 +1994,27 @@ class Runner:
             raise ConformanceError(f"unknown instance {instance_id!r}")
         return self.instances[instance_id]
 
+    def machine_for_instance(
+        self, instance: hsm.Instance, *, require_started: bool = False
+    ) -> hsm.HSM[Any] | None:
+        machine, _ = hsm.FromContext(instance.context())
+        if isinstance(machine, hsm.HSM):
+            return machine
+        if require_started:
+            raise ConformanceError("operation requires a started HSM")
+        return None
+
+    def started_machine_for_instance(self, instance: hsm.Instance) -> hsm.HSM[Any]:
+        machine = self.machine_for_instance(instance, require_started=True)
+        assert machine is not None
+        instances = machine.context().Value(hsm.Keys.Instances)
+        registered = isinstance(instances, dict) and any(
+            value is machine for value in instances.values()
+        )
+        if not registered or machine.state() == machine.model.qualified_name:
+            raise ConformanceError("operation requires a started HSM")
+        return machine
+
     async def start_instance(self, instance_id: str) -> None:
         if self.model is None:
             raise ConformanceError("model has not been built")
@@ -1676,7 +2024,12 @@ class Runner:
         config_ir = instance_ir.get("config", {}) if instance_ir is not None else {}
         if not isinstance(config_ir, dict):
             raise ConformanceError("instance.config must be an object")
-        data = config_ir.get("Data", config_ir.get("data", instance_ir.get("data") if instance_ir is not None else None))
+        data = config_ir.get(
+            "Data",
+            config_ir.get(
+                "data", instance_ir.get("data") if instance_ir is not None else None
+            ),
+        )
         name = config_ir.get("Name", config_ir.get("name", ""))
         clock = self.clock_from_config(config_ir)
         if clock is None:
@@ -1703,17 +2056,26 @@ class Runner:
         clock_id = config_ir.get("Clock", config_ir.get("clock"))
         if clock_id is None:
             return None
-        if clock_id not in {"trace_no_sleep", "trace_yield_sleep", "trace_nonzero_sleep"}:
+        if clock_id not in {
+            "trace_no_sleep",
+            "trace_yield_sleep",
+            "trace_nonzero_sleep",
+        }:
             raise ConformanceError(f"unsupported clock fixture {clock_id!r}")
 
         async def sleep(duration: timedelta) -> None:
             millis = round(duration.total_seconds() * 1000)
-            value = "clock:sleep:nonzero" if clock_id == "trace_nonzero_sleep" and millis > 0 else f"clock:sleep:{millis}"
+            value = (
+                "clock:sleep:nonzero"
+                if clock_id == "trace_nonzero_sleep" and millis > 0
+                else f"clock:sleep:{millis}"
+            )
             self.flush_timer_scheduled(count=1)
             self.trace.append({"type": "trace", "value": value})
-            if (
-                clock_id == "trace_yield_sleep"
-                or (clock_id == "trace_nonzero_sleep" and millis > 0 and "after" in self.features)
+            if clock_id == "trace_yield_sleep" or (
+                clock_id == "trace_nonzero_sleep"
+                and millis > 0
+                and "after" in self.features
             ):
                 await self.logical_clock.clock().Sleep(duration)
                 return
@@ -1721,104 +2083,160 @@ class Runner:
 
         return hsm.Clock(sleep=sleep)
 
-    def queue_from_config(self, config_ir: dict[str, Any]) -> hsm.Queue | None:
+    def _queue_from_fifo(self, fifo: hsm.Fifo) -> hsm.MultiQueue:
+        return hsm.MultiQueue(fifo)
+
+    def queue_from_config(self, config_ir: dict[str, Any]) -> hsm.MultiQueue | None:
         queue_id = config_ir.get("Queue", config_ir.get("queue"))
         if queue_id is None:
             return None
         if queue_id == "len_seven":
-            return hsm.Queue(Push=lambda event: None, Pop=lambda: None, Len=lambda: 7)
+
+            class LenSevenFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
+                    return (None,)
+
+                def pop(self) -> hsm.QueuePopResult:
+                    return (hsm.Event(), False, None)
+
+                def len(self) -> hsm.QueueLenResult:
+                    return (7, None)
+
+            return self._queue_from_fifo(LenSevenFifo())
         if queue_id == "len_error_once":
             events: deque[hsm.Event] = deque()
             failed = False
+            runner = self
 
-            def push(event: hsm.Event) -> None:
-                self.trace.append({"type": "trace", "value": f"queue:push:{event.name}"})
-                events.append(event)
-                return None
+            class LenErrorOnceFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
+                    runner.trace.append(
+                        {"type": "trace", "value": f"queue:push:{event.name}"}
+                    )
+                    events.append(event)
+                    return (None,)
 
-            def pop() -> hsm.Event | None:
-                if not events:
-                    return None
-                event = events.popleft()
-                self.trace.append({"type": "trace", "value": f"queue:pop:{event.name}"})
-                return event
+                def pop(self) -> hsm.QueuePopResult:
+                    if not events:
+                        return (hsm.Event(), False, None)
+                    event = events.popleft()
+                    runner.trace.append(
+                        {"type": "trace", "value": f"queue:pop:{event.name}"}
+                    )
+                    return (event, True, None)
 
-            def length() -> int | RuntimeError:
-                nonlocal failed
-                if not failed:
-                    failed = True
-                    self.trace.append({"type": "trace", "value": "queue:len-error"})
-                    return RuntimeError("queue len boom")
-                return len(events)
+                def len(self) -> hsm.QueueLenResult:
+                    nonlocal failed
+                    if not failed:
+                        failed = True
+                        runner.trace.append(
+                            {"type": "trace", "value": "queue:len-error"}
+                        )
+                        return (0, RuntimeError("queue len boom"))
+                    return (len(events), None)
 
-            return hsm.Queue(Push=push, Pop=pop, Len=length)
+            return self._queue_from_fifo(LenErrorOnceFifo())
         if queue_id == "push_error":
-            def push_error(event: hsm.Event) -> RuntimeError:
-                self.trace.append({"type": "trace", "value": f"queue:push-error:{event.name}"})
-                return RuntimeError("queue push boom")
+            runner = self
 
-            return hsm.Queue(Push=push_error, Pop=lambda: None, Len=lambda: 0)
+            class PushErrorFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
+                    runner.trace.append(
+                        {"type": "trace", "value": f"queue:push-error:{event.name}"}
+                    )
+                    return (RuntimeError("queue push boom"),)
+
+                def pop(self) -> hsm.QueuePopResult:
+                    return (hsm.Event(), False, None)
+
+                def len(self) -> hsm.QueueLenResult:
+                    return (0, None)
+
+            return self._queue_from_fifo(PushErrorFifo())
         if queue_id == "pop_error_once":
             events: deque[hsm.Event] = deque()
             failed = False
+            runner = self
 
-            def push(event: hsm.Event) -> None:
-                self.trace.append({"type": "trace", "value": f"queue:push:{event.name}"})
-                events.append(event)
-                return None
+            class PopErrorOnceFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
+                    runner.trace.append(
+                        {"type": "trace", "value": f"queue:push:{event.name}"}
+                    )
+                    events.append(event)
+                    return (None,)
 
-            def pop() -> hsm.Event | RuntimeError | None:
-                nonlocal failed
-                if not events:
-                    return None
-                if not failed:
-                    failed = True
-                    self.trace.append({"type": "trace", "value": "queue:pop-error"})
-                    return RuntimeError("queue pop boom")
-                event = events.popleft()
-                self.trace.append({"type": "trace", "value": f"queue:pop:{event.name}"})
-                return event
+                def pop(self) -> hsm.QueuePopResult:
+                    nonlocal failed
+                    if not events:
+                        return (hsm.Event(), False, None)
+                    if not failed:
+                        failed = True
+                        runner.trace.append(
+                            {"type": "trace", "value": "queue:pop-error"}
+                        )
+                        return (hsm.Event(), False, RuntimeError("queue pop boom"))
+                    event = events.popleft()
+                    runner.trace.append(
+                        {"type": "trace", "value": f"queue:pop:{event.name}"}
+                    )
+                    return (event, True, None)
 
-            return hsm.Queue(Push=push, Pop=pop, Len=lambda: len(events))
+                def len(self) -> hsm.QueueLenResult:
+                    return (len(events), None)
+
+            return self._queue_from_fifo(PopErrorOnceFifo())
         if queue_id == "trace_lifo":
             events: deque[hsm.Event] = deque()
+            runner = self
 
-            def push(event: hsm.Event) -> None:
-                self.trace.append({"type": "trace", "value": f"queue:push:{event.name}"})
-                events.append(event)
-                return None
+            class TraceLifoFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
+                    runner.trace.append(
+                        {"type": "trace", "value": f"queue:push:{event.name}"}
+                    )
+                    events.append(event)
+                    return (None,)
 
-            def pop() -> hsm.Event | None:
-                if not events:
-                    return None
-                event = events.pop()
-                self.trace.append({"type": "trace", "value": f"queue:pop:{event.name}"})
-                return event
+                def pop(self) -> hsm.QueuePopResult:
+                    if not events:
+                        return (hsm.Event(), False, None)
+                    event = events.pop()
+                    runner.trace.append(
+                        {"type": "trace", "value": f"queue:pop:{event.name}"}
+                    )
+                    return (event, True, None)
 
-            def length() -> int:
-                return len(events)
+                def len(self) -> hsm.QueueLenResult:
+                    return (len(events), None)
 
-            return hsm.Queue(Push=push, Pop=pop, Len=length)
+            return self._queue_from_fifo(TraceLifoFifo())
         if queue_id != "trace_fifo":
             raise ConformanceError(f"unsupported queue fixture {queue_id!r}")
         events: deque[hsm.Event] = deque()
+        runner = self
 
-        def push(event: hsm.Event) -> None:
-            self.trace.append({"type": "trace", "value": f"queue:push:{event.name}"})
-            events.append(event)
-            return None
+        class TraceFifo(hsm.Fifo):
+            def push(self, event: hsm.Event) -> hsm.QueuePushResult:
+                runner.trace.append(
+                    {"type": "trace", "value": f"queue:push:{event.name}"}
+                )
+                events.append(event)
+                return (None,)
 
-        def pop() -> hsm.Event | None:
-            if not events:
-                return None
-            event = events.popleft()
-            self.trace.append({"type": "trace", "value": f"queue:pop:{event.name}"})
-            return event
+            def pop(self) -> hsm.QueuePopResult:
+                if not events:
+                    return (hsm.Event(), False, None)
+                event = events.popleft()
+                runner.trace.append(
+                    {"type": "trace", "value": f"queue:pop:{event.name}"}
+                )
+                return (event, True, None)
 
-        def length() -> int:
-            return len(events)
+            def len(self) -> hsm.QueueLenResult:
+                return (len(events), None)
 
-        return hsm.Queue(Push=push, Pop=pop, Len=length)
+        return self._queue_from_fifo(TraceFifo())
 
     @staticmethod
     def attribute_type_from_ir(name: str, spec: dict[str, Any]) -> type[Any] | None:
@@ -1834,19 +2252,29 @@ class Runner:
             "time_ms": int,
         }
         if type_name not in mapping:
-            raise ConformanceError(f"attribute {name!r} has unsupported type {type_name!r}")
+            raise ConformanceError(
+                f"attribute {name!r} has unsupported type {type_name!r}"
+            )
         return mapping[type_name]
 
     @staticmethod
-    def validate_attribute_default(name: str, value_type: type[Any] | None, default: Any) -> None:
+    def validate_attribute_default(
+        name: str, value_type: type[Any] | None, default: Any
+    ) -> None:
         if value_type is None:
             return
         if value_type is float:
-            if (type(default) is not int and type(default) is not float) or isinstance(default, bool):
-                raise ConformanceError(f"attribute {name!r} default does not match declared type")
+            if (type(default) is not int and type(default) is not float) or isinstance(
+                default, bool
+            ):
+                raise ConformanceError(
+                    f"attribute {name!r} default does not match declared type"
+                )
             return
         if type(default) is not value_type:
-            raise ConformanceError(f"attribute {name!r} default does not match declared type")
+            raise ConformanceError(
+                f"attribute {name!r} default does not match declared type"
+            )
 
     def instance_ir(self, instance_id: str) -> dict[str, Any] | None:
         for item in self.case.get("instances", []):
@@ -1863,10 +2291,18 @@ class Runner:
     def trace_lifecycle(self, step: dict[str, Any], op: str) -> None:
         if "trace" in step and step["trace"] is False:
             return
-        if self.trace_contract_includes(op) or (
-            op == "restart" and "activity" in self.features and "cancellation" in self.features
-        ) or (
-            op == "stop" and "activity" in self.features and "cancellation" in self.features
+        if (
+            self.trace_contract_includes(op)
+            or (
+                op == "restart"
+                and "activity" in self.features
+                and "cancellation" in self.features
+            )
+            or (
+                op == "stop"
+                and "activity" in self.features
+                and "cancellation" in self.features
+            )
         ):
             self.trace.append({"type": op})
 
@@ -1878,13 +2314,17 @@ class Runner:
         trace = expect.get("trace", [])
         if not isinstance(trace, list):
             return set()
-        return {item.get("type") for item in trace if isinstance(item, dict) and isinstance(item.get("type"), str)}
+        return {
+            item.get("type")
+            for item in trace
+            if isinstance(item, dict) and isinstance(item.get("type"), str)
+        }
 
     def trace_contract_includes(self, event_type: str) -> bool:
         return event_type in self.trace_contract
 
     def snapshot_trace(self, snapshot: hsm.Snapshot) -> dict[str, Any]:
-        return {"type": "snapshot", "state": snapshot.State}
+        return {"type": "snapshot", "state": snapshot.StateElement}
 
     def normalize_snapshot(self, snapshot: hsm.Snapshot) -> dict[str, Any]:
         attributes: dict[str, Any] = {}
@@ -1892,7 +2332,7 @@ class Runner:
         basename_counts: dict[str, int] = {}
         normalized_items: list[tuple[str, str, Any]] = []
         for key, value in (snapshot.Attributes or {}).items():
-            name = key[len(prefix):] if key.startswith(prefix) else key
+            name = key[len(prefix) :] if key.startswith(prefix) else key
             basename = posixpath.basename(name)
             basename_counts[basename] = basename_counts.get(basename, 0) + 1
             normalized_items.append((name, basename, self.normalize_value(value)))
@@ -1903,25 +2343,34 @@ class Runner:
         normalized = {
             "id": snapshot.ID,
             "qualified_name": snapshot.QualifiedName,
-            "state": snapshot.State,
+            "state": snapshot.StateElement,
             "attributes": attributes,
             "queue_len": snapshot.QueueLen,
         }
         events = []
         for event in getattr(snapshot, "Events", ()) or ():
-            events.append({
-                "name": event.Name,
-                "kind": int(event.Kind),
-                "target": event.Target,
-                "guard": event.Guard,
-                "schema": self.normalize_value(event.Schema),
-            })
+            events.append(
+                {
+                    "name": event.Name,
+                    "kind": int(event.Kind),
+                    "target": event.Target,
+                    "guard": event.GuardElement,
+                    "schema": self.normalize_value(event.Schema),
+                }
+            )
         if events:
             normalized["events"] = events
         return normalized
 
     def group_snapshot(self, group_id: str) -> dict[str, Any]:
-        group_ir = next((group for group in self.case.get("groups", []) if group.get("id") == group_id), None)
+        group_ir = next(
+            (
+                group
+                for group in self.case.get("groups", [])
+                if group.get("id") == group_id
+            ),
+            None,
+        )
         if group_ir is None:
             raise ConformanceError(f"unknown group {group_id!r}")
         members = {
@@ -1963,21 +2412,29 @@ class Runner:
         state_path = instance.state()
         if self.model is None:
             return False
-        return self.model.deferred_map.get(state_path, {}).get(event_name, False)
+        return event_name in self.model.deferred_map.get(state_path, {})
 
-    def current_state_has_event_transition(self, instance: hsm.Instance, event_name: str) -> bool:
-        machine = getattr(instance, "_Instance__hsm", None)
-        model = machine.model if isinstance(machine, hsm.HSM) else self.model
+    def current_state_has_event_transition(
+        self, instance: hsm.Instance, event_name: str
+    ) -> bool:
+        machine = self.machine_for_instance(instance)
+        model = machine.model if machine is not None else self.model
         if model is None:
             return False
         transitions = model.transition_map.get(instance.state(), {})
-        return bool(transitions.get(event_name) or transitions.get(hsm.AnyEvent.qualified_name))
+        return bool(
+            transitions.get(event_name) or transitions.get(hsm.AnyEvent.qualified_name)
+        )
 
-    def trace_deferred_dispatch(self, event_name: str, instances: Iterable[hsm.Instance]) -> None:
+    def trace_deferred_dispatch(
+        self, event_name: str, instances: Iterable[hsm.Instance]
+    ) -> None:
         if not self.trace_contract_includes("defer"):
             return
         for instance in instances:
-            if self.event_is_deferred(instance, event_name) and not self.current_state_has_event_transition(instance, event_name):
+            if self.event_is_deferred(
+                instance, event_name
+            ) and not self.current_state_has_event_transition(instance, event_name):
                 if not self.has_deferred_event(instance, event_name):
                     self.note_deferred_event(instance, event_name)
                     self.trace.append({"type": "defer", "event": event_name})
@@ -1988,14 +2445,41 @@ class Runner:
         instance_list = list(instances)
         known = set(self.deferred_events)
         for instance in instance_list:
-            machine = getattr(instance, "_Instance__hsm", None)
-            if not isinstance(machine, hsm.HSM):
+            machine = self.machine_for_instance(instance)
+            if machine is None:
                 continue
-            for event in getattr(machine, "_deferred_events", []):
+            queue = getattr(machine, "_queue", None)
+            runtime_events = [
+                event for event in queue._lifo if hasattr(event, "_hsm_deferred_owner")
+            ]
+            fifo = getattr(queue, "_fifo", None)
+            items = getattr(fifo, "_items", None)
+            if items is not None:
+                runtime_events.extend(
+                    event for event in items if hasattr(event, "_hsm_deferred_owner")
+                )
+            elif isinstance(fifo, hsm.MultiQueue):
+                runtime_events.extend(
+                    event
+                    for event in fifo._lifo
+                    if hasattr(event, "_hsm_deferred_owner")
+                )
+                inner_items = getattr(getattr(fifo, "_fifo", None), "_items", None)
+                if inner_items is not None:
+                    runtime_events.extend(
+                        event
+                        for event in inner_items
+                        if hasattr(event, "_hsm_deferred_owner")
+                    )
+            for event in runtime_events:
                 key = self.deferred_event_key(instance, event.name)
                 if key in known or self.has_deferred_event(instance, event.name):
                     continue
-                if len(instance_list) == 1 and self.trace and self.trace[-1] == {"type": "defer", "event": event.name}:
+                if (
+                    len(instance_list) == 1
+                    and self.trace
+                    and self.trace[-1] == {"type": "defer", "event": event.name}
+                ):
                     known.add(key)
                     self.deferred_events.append(key)
                     continue
@@ -2005,7 +2489,11 @@ class Runner:
 
     def pop_deferred_event_for_instance(self, instance: hsm.Instance) -> str | None:
         instance_id = self.instance_id_for_instance(instance)
-        for index, (deferred_instance_id, event_name, _cleanup_on_parent_exit) in enumerate(self.deferred_events):
+        for index, (
+            deferred_instance_id,
+            event_name,
+            _cleanup_on_parent_exit,
+        ) in enumerate(self.deferred_events):
             if deferred_instance_id == instance_id:
                 self.deferred_events.pop(index)
                 return event_name
@@ -2040,15 +2528,21 @@ class Runner:
             for deferred_instance_id, deferred_event_name, _cleanup_on_parent_exit in self.deferred_events
         )
 
-    def deferred_event_key(self, instance: hsm.Instance, event_name: str) -> tuple[str, str, bool]:
+    def deferred_event_key(
+        self, instance: hsm.Instance, event_name: str
+    ) -> tuple[str, str, bool]:
         cleanup_on_parent_exit = False
-        machine = getattr(instance, "_Instance__hsm", None)
-        if isinstance(machine, hsm.HSM):
+        machine = self.machine_for_instance(instance)
+        if machine is not None:
             state_name = instance.state()
-            owner = machine.model.deferred_owner_map.get(state_name, {}).get(event_name)
+            owner = machine.model.deferred_map.get(state_name, {}).get(event_name)
             boundary = machine.model.submachine_owner_map.get(owner or "")
             cleanup_on_parent_exit = bool(boundary and owner and boundary != owner)
-        return (self.instance_id_for_instance(instance), event_name, cleanup_on_parent_exit)
+        return (
+            self.instance_id_for_instance(instance),
+            event_name,
+            cleanup_on_parent_exit,
+        )
 
     def instance_id_for_instance(self, instance: hsm.Instance) -> str:
         for instance_id, candidate in self.instances.items():
@@ -2057,17 +2551,29 @@ class Runner:
         return "default"
 
     def instances_for_group(self, group_id: str) -> list[hsm.Instance]:
-        group_ir = next((group for group in self.case.get("groups", []) if group.get("id") == group_id), None)
+        group_ir = next(
+            (
+                group
+                for group in self.case.get("groups", [])
+                if group.get("id") == group_id
+            ),
+            None,
+        )
         if not isinstance(group_ir, dict):
             raise ConformanceError(f"unknown group {group_id!r}")
-        return [self.instances[self._require_member_id(member)] for member in group_ir.get("members", [])]
+        return [
+            self.instances[self._require_member_id(member)]
+            for member in group_ir.get("members", [])
+        ]
 
     def exiting_timer_state(self, instance: hsm.Instance, event_name: str) -> bool:
         if not self.trace_contract_includes("timer_cancelled"):
             return False
         model_ir = self._require_object(self.case, "model")
         active_states = self.active_state_irs(model_ir, instance.state())
-        has_timer = any(self.state_has_timer_transition(state_ir) for state_ir in active_states)
+        has_timer = any(
+            self.state_has_timer_transition(state_ir) for state_ir in active_states
+        )
         has_event_transition = any(
             isinstance(transition, dict)
             and transition.get("on") == event_name
@@ -2086,7 +2592,9 @@ class Runner:
             for transition in state_ir.get("transitions", [])
         )
 
-    def event_exits_active_submachine(self, instance: hsm.Instance, event_name: str) -> bool:
+    def event_exits_active_submachine(
+        self, instance: hsm.Instance, event_name: str
+    ) -> bool:
         model_ir = self._require_object(self.case, "model")
         active_states = self.active_state_irs(model_ir, instance.state())
         return any(
@@ -2100,7 +2608,9 @@ class Runner:
             for state_ir in active_states
         )
 
-    def active_state_irs(self, model_ir: dict[str, Any], state_path: str) -> list[dict[str, Any]]:
+    def active_state_irs(
+        self, model_ir: dict[str, Any], state_path: str
+    ) -> list[dict[str, Any]]:
         parts = [part for part in state_path.strip("/").split("/") if part]
         if not parts:
             return []
@@ -2110,7 +2620,12 @@ class Runner:
         index = 0
         while index < len(parts):
             state = next(
-                (candidate for candidate in states if isinstance(candidate, dict) and candidate.get("name") == parts[index]),
+                (
+                    candidate
+                    for candidate in states
+                    if isinstance(candidate, dict)
+                    and candidate.get("name") == parts[index]
+                ),
                 None,
             )
             if state is None:
@@ -2118,7 +2633,9 @@ class Runner:
             active.append(state)
             index += 1
             if state.get("kind") == "submachine":
-                machine_ir = self.model_irs_by_name.get(self._require_string(state, "machine"))
+                machine_ir = self.model_irs_by_name.get(
+                    self._require_string(state, "machine")
+                )
                 if machine_ir is None:
                     break
                 states = machine_ir.get("states", [])
@@ -2126,7 +2643,9 @@ class Runner:
                 states = state.get("states", [])
         return active
 
-    def find_state_ir(self, states: list[Any], owner_path: str, state_path: str) -> dict[str, Any] | None:
+    def find_state_ir(
+        self, states: list[Any], owner_path: str, state_path: str
+    ) -> dict[str, Any] | None:
         for state in states:
             if not isinstance(state, dict):
                 continue
@@ -2136,7 +2655,9 @@ class Runner:
             current_path = posixpath.normpath(owner_path + "/" + name)
             if current_path == state_path:
                 return state
-            found = self.find_state_ir(state.get("states", []), current_path, state_path)
+            found = self.find_state_ir(
+                state.get("states", []), current_path, state_path
+            )
             if found is not None:
                 return found
         return None
@@ -2187,7 +2708,9 @@ async def run_case(path: Path) -> None:
     with path.open("r", encoding="utf-8") as handle:
         case = json.load(handle)
     if case.get("version") != "hsm-conformance-v1":
-        raise ConformanceError(f"unsupported conformance version {case.get('version')!r}")
+        raise ConformanceError(
+            f"unsupported conformance version {case.get('version')!r}"
+        )
     features = set(case.get("features", []))
     unsupported = sorted(features - SUPPORTED_FEATURES)
     if unsupported:
@@ -2202,7 +2725,9 @@ async def run_case(path: Path) -> None:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Run an HSM conformance case against hsm.py")
+    parser = argparse.ArgumentParser(
+        description="Run an HSM conformance case against hsm.py"
+    )
     parser.add_argument("case", type=Path, nargs="+")
     args = parser.parse_args(argv)
     failed = False

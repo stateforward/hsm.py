@@ -326,19 +326,18 @@ await hsm.Stop(instance)
 
 ## Groups And Broadcast
 
-`NewGroup` flattens nested groups and forwards runtime operations to all members. `MakeGroup` is also exported for DSL parity with TypeScript and `dsl.md`; `new_group` and `make_group` are the Python snake_case aliases.
+`NewGroup` flattens nested groups for broadcast dispatch and lifecycle operations. `MakeGroup` is also exported for DSL parity with TypeScript and `dsl.md`; `new_group` and `make_group` are the Python snake_case aliases.
 
 ```python
 group = hsm.MakeGroup(first, hsm.MakeGroup(second))
 
 await hsm.Dispatch(ctx, group, hsm.Event("refresh"))
-await hsm.Set(ctx, group, "temperature", 72)
 await hsm.Stop(group)
 ```
 
 `DispatchAll(ctx, event)` dispatches to all started machines registered in the context. `DispatchTo(ctx, event, *patterns)` dispatches to matching machine IDs. Patterns use `Match` wildcard semantics.
 
-Group `Restart(data)` deep-copies `data` once per member before startup entry handlers receive it. Group `Call` and `Get` use the first member.
+Group `Restart(data)` deep-copies `data` once per member before startup entry handlers receive it. Attribute `Get`/`Set` and operation `Call` are instance or HSM operations, not group operations.
 
 ## Snapshots And Identity
 

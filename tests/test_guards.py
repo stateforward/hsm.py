@@ -158,44 +158,26 @@ async def test_guards_with_event_access():
     await hsm.stop(instance)
 
 
-@pytest.mark.asyncio
-async def test_async_guards():
-    """Test asynchronous guard conditions"""
-    instance = GuardInstance()
-
-    async def async_guard(ctx: hsm.Context, inst: GuardInstance, event: hsm.Event) -> bool:
-        # Simulate async operation
-        await asyncio.sleep(0.001)
-        inst.log_action('async-guard-evaluated')
+def test_async_guards_are_rejected_at_build_time():
+    async def async_guard(
+        ctx: hsm.Context, inst: GuardInstance, event: hsm.Event
+    ) -> bool:
         return True
 
-    async def guard_effect(ctx: hsm.Context, inst: GuardInstance, event: hsm.Event) -> None:
-        inst.log_action('transition-executed')
-
-    model = hsm.define('AsyncGuardMachine',
-        hsm.initial(hsm.target('checking')),
-        hsm.state('checking',
-            hsm.transition(
-                hsm.on('check'),
-                hsm.guard(async_guard),
-                hsm.target('../passed'),
-                hsm.effect(guard_effect)
-            )
-        ),
-        hsm.state('passed')
-    )
-
-    ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
-
-    await instance.dispatch(hsm.Event(name='check'))
-    
-    # Async guard should have been evaluated
-    assert 'async-guard-evaluated' in instance.log
-    assert 'transition-executed' in instance.log
-    assert instance.state() == '/AsyncGuardMachine/passed'
-
-    await hsm.stop(instance)
+    with pytest.raises(hsm.ValidationError, match="guard must be a synchronous function"):
+        hsm.Define(
+            "AsyncGuardMachine",
+            hsm.Initial(hsm.Target("checking")),
+            hsm.State(
+                "checking",
+                hsm.Transition(
+                    hsm.On("check"),
+                    hsm.Guard(async_guard),
+                    hsm.Target("../passed"),
+                ),
+            ),
+            hsm.State("passed"),
+        )
 
 
 @pytest.mark.asyncio

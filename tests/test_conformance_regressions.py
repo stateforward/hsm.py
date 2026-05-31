@@ -20,11 +20,15 @@ class RegressionInstance(hsm.Instance):
 async def _guard_error_preserves_source_state_and_does_not_take_fallback() -> None:
     instance = RegressionInstance()
 
-    async def bad_guard(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> bool:
+    def bad_guard(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> bool:
         inst.log.append("guard:bad")
         raise RuntimeError("boom")
 
-    async def entry_target(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def entry_target(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:target")
 
     model = hsm.Define(
@@ -54,16 +58,21 @@ def test_guard_error_preserves_source_state_and_does_not_take_fallback():
 async def _async_effect_error_stops_before_target_entry() -> None:
     instance = RegressionInstance()
 
-    async def bad_effect(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def bad_effect(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:before-yield")
-        await asyncio.sleep(0)
         inst.log.append("effect:after-yield")
-        raise RuntimeError("async effect boom")
+        raise RuntimeError("effect boom")
 
-    async def effect_after(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def effect_after(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:after")
 
-    async def entry_target(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def entry_target(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:target")
 
     model = hsm.Define(
@@ -82,7 +91,7 @@ async def _async_effect_error_stops_before_target_entry() -> None:
     )
 
     await hsm.Start(hsm.Context(), instance, model)
-    with pytest.raises(RuntimeError, match="async effect boom"):
+    with pytest.raises(RuntimeError, match="effect boom"):
         await hsm.Dispatch(hsm.Context(), instance, hsm.Event("go"))
 
     assert instance.state() == "/AsyncEffectErrorStopsBeforeEntryRegression/idle"
@@ -100,10 +109,10 @@ async def _behavior_context_dispatch_all_sees_root_context_machines() -> None:
     class Worker(RegressionInstance):
         pass
 
-    async def dispatch_all(ctx: hsm.Context, inst: Producer, event: hsm.Event) -> None:
-        await hsm.DispatchAll(ctx, hsm.Event("audit"))
+    def dispatch_all(ctx: hsm.Context, inst: Producer, event: hsm.Event) -> None:
+        asyncio.ensure_future(hsm.DispatchAll(ctx, hsm.Event("audit")))
 
-    async def mark_worker(ctx: hsm.Context, inst: Worker, event: hsm.Event) -> None:
+    def mark_worker(ctx: hsm.Context, inst: Worker, event: hsm.Event) -> None:
         inst.log.append("effect:audit")
 
     producer_model = hsm.Define(
@@ -111,7 +120,9 @@ async def _behavior_context_dispatch_all_sees_root_context_machines() -> None:
         hsm.Initial(hsm.Target("idle")),
         hsm.State(
             "idle",
-            hsm.Transition(hsm.On("go"), hsm.Target("../sent"), hsm.Effect(dispatch_all)),
+            hsm.Transition(
+                hsm.On("go"), hsm.Target("../sent"), hsm.Effect(dispatch_all)
+            ),
         ),
         hsm.State("sent"),
     )
@@ -120,7 +131,9 @@ async def _behavior_context_dispatch_all_sees_root_context_machines() -> None:
         hsm.Initial(hsm.Target("idle")),
         hsm.State(
             "idle",
-            hsm.Transition(hsm.On("audit"), hsm.Target("../done"), hsm.Effect(mark_worker)),
+            hsm.Transition(
+                hsm.On("audit"), hsm.Target("../done"), hsm.Effect(mark_worker)
+            ),
         ),
         hsm.State("done"),
     )
@@ -147,15 +160,21 @@ def test_behavior_context_dispatch_all_sees_root_context_machines():
     asyncio.run(_behavior_context_dispatch_all_sees_root_context_machines())
 
 
-async def _activity_explicit_dispatch_is_not_deferred_as_generated_change_event() -> None:
+async def _activity_explicit_dispatch_is_not_deferred_as_generated_change_event() -> (
+    None
+):
     instance = RegressionInstance()
 
-    async def activity(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    async def activity(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         await asyncio.sleep(0)
         await inst.dispatch(hsm.Event("audit"))
         inst.log.append("activity:after-dispatch")
 
-    async def audit_effect(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def audit_effect(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:audit")
 
     model = hsm.Define(
@@ -164,7 +183,9 @@ async def _activity_explicit_dispatch_is_not_deferred_as_generated_change_event(
         hsm.State(
             "active",
             hsm.Activity(activity),
-            hsm.Transition(hsm.On("audit"), hsm.Target("../done"), hsm.Effect(audit_effect)),
+            hsm.Transition(
+                hsm.On("audit"), hsm.Target("../done"), hsm.Effect(audit_effect)
+            ),
         ),
         hsm.State("done"),
     )
@@ -183,8 +204,10 @@ def test_activity_explicit_dispatch_is_not_deferred_as_generated_change_event():
 async def _entry_snapshot_observes_entered_state() -> None:
     instance = RegressionInstance()
 
-    async def snapshot_entry(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
-        inst.log.append(hsm.TakeSnapshot(ctx, inst).State)
+    def snapshot_entry(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
+        inst.log.append(hsm.TakeSnapshot(ctx, inst).state)
 
     model = hsm.Define(
         "EntrySnapshotRegression",
@@ -205,14 +228,20 @@ def test_entry_snapshot_observes_entered_state():
 async def _failed_nested_initial_preserves_entered_parent_state() -> None:
     instance = RegressionInstance()
 
-    async def parent_entry(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def parent_entry(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:parent")
 
-    async def bad_initial(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def bad_initial(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("initial:bad")
         raise RuntimeError("nested initial boom")
 
-    async def child_entry(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def child_entry(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:child")
 
     model = hsm.Define(
@@ -240,13 +269,19 @@ def test_failed_nested_initial_preserves_entered_parent_state():
 async def _nested_initial_effect_snapshot_observes_pre_initial_source() -> None:
     instance = RegressionInstance()
 
-    async def parent_entry(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def parent_entry(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:parent")
 
-    async def snapshot_initial(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
-        inst.log.append(hsm.TakeSnapshot(ctx, inst).State)
+    def snapshot_initial(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
+        inst.log.append(hsm.TakeSnapshot(ctx, inst).state)
 
-    async def child_entry(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def child_entry(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:child")
 
     model = hsm.Define(
@@ -280,18 +315,30 @@ async def _duplicate_timer_trigger_fallback_replays_guard_events_after_entry() -
     async def duration(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event):
         return timedelta(milliseconds=1)
 
-    async def false_guard(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> bool:
+    def false_guard(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> bool:
         inst.log.append("guard:false")
-        await inst.dispatch(hsm.Event("audit"))
         return False
 
-    async def fallback_effect(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def schedule_audit(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
+        asyncio.ensure_future(inst.dispatch(hsm.Event("audit")))
+
+    def fallback_effect(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:fallback")
 
-    async def fallback_entry(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def fallback_entry(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:fallback")
 
-    async def audit_effect(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def audit_effect(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:audit")
 
     model = hsm.Define(
@@ -299,20 +346,30 @@ async def _duplicate_timer_trigger_fallback_replays_guard_events_after_entry() -
         hsm.Initial(hsm.Target("waiting")),
         hsm.State(
             "waiting",
-            hsm.Transition(hsm.After(duration), hsm.Guard(false_guard), hsm.Target("../wrong")),
-            hsm.Transition(hsm.After(duration), hsm.Target("../fallback"), hsm.Effect(fallback_effect)),
+            hsm.Transition(hsm.After(duration), hsm.Target("../route")),
+        ),
+        hsm.Choice(
+            "route",
+            hsm.Transition(hsm.Guard(false_guard), hsm.Target("wrong")),
+            hsm.Transition(
+                hsm.Target("fallback"),
+                hsm.Effect(fallback_effect),
+                hsm.Effect(schedule_audit),
+            ),
         ),
         hsm.State(
             "fallback",
             hsm.Entry(fallback_entry),
-            hsm.Transition(hsm.On("audit"), hsm.Target("../done"), hsm.Effect(audit_effect)),
+            hsm.Transition(
+                hsm.On("audit"), hsm.Target("../done"), hsm.Effect(audit_effect)
+            ),
         ),
         hsm.State("done"),
         hsm.State("wrong"),
     )
 
     await hsm.Started(hsm.Context(), instance, model)
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
 
     assert instance.state() == "/DuplicateTimerTriggerFallbackRegression/done"
     assert instance.log == [
@@ -330,14 +387,20 @@ def test_duplicate_timer_trigger_fallback_replays_guard_events_after_entry():
 async def _false_guarded_deferred_event_replays_after_release() -> None:
     instance = RegressionInstance()
 
-    async def false_guard(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> bool:
+    def false_guard(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> bool:
         inst.log.append("guard:false")
         return False
 
-    async def release_effect(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def release_effect(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:release")
 
-    async def maybe_effect(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def maybe_effect(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:maybe")
 
     model = hsm.Define(
@@ -346,12 +409,18 @@ async def _false_guarded_deferred_event_replays_after_release() -> None:
         hsm.State(
             "blocked",
             hsm.Defer("maybe"),
-            hsm.Transition(hsm.On("maybe"), hsm.Guard(false_guard), hsm.Target("../wrong")),
-            hsm.Transition(hsm.On("release"), hsm.Target("../ready"), hsm.Effect(release_effect)),
+            hsm.Transition(
+                hsm.On("maybe"), hsm.Guard(false_guard), hsm.Target("../wrong")
+            ),
+            hsm.Transition(
+                hsm.On("release"), hsm.Target("../ready"), hsm.Effect(release_effect)
+            ),
         ),
         hsm.State(
             "ready",
-            hsm.Transition(hsm.On("maybe"), hsm.Target("../done"), hsm.Effect(maybe_effect)),
+            hsm.Transition(
+                hsm.On("maybe"), hsm.Target("../done"), hsm.Effect(maybe_effect)
+            ),
         ),
         hsm.State("done"),
         hsm.State("wrong"),
@@ -372,10 +441,14 @@ def test_false_guarded_deferred_event_replays_after_release():
 async def _transition_to_deep_history_preserves_previous_history_snapshot() -> None:
     instance = RegressionInstance()
 
-    async def entry_a(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def entry_a(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:a")
 
-    async def entry_leaf(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def entry_leaf(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:leaf")
 
     model = hsm.Define(
@@ -402,7 +475,9 @@ async def _transition_to_deep_history_preserves_previous_history_snapshot() -> N
     await hsm.Dispatch(hsm.Context(), instance, hsm.Event("to_a"))
     await hsm.Dispatch(hsm.Context(), instance, hsm.Event("resume"))
 
-    assert instance.state() == "/DeepHistoryTargetPreservesSnapshotRegression/comp/b/leaf"
+    assert (
+        instance.state() == "/DeepHistoryTargetPreservesSnapshotRegression/comp/b/leaf"
+    )
     assert instance.log == ["entry:a", "entry:leaf", "entry:a", "entry:leaf"]
 
 
@@ -454,12 +529,15 @@ def test_lifecycle_errors_are_normalized_for_started_and_stopped_machines():
 async def _async_when_predicate_uses_async_dispatch_path() -> None:
     instance = RegressionInstance()
 
-    async def when_ready(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> bool:
+    def when_ready(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> bool:
         inst.log.append("when")
-        await asyncio.sleep(0)
         return True
 
-    async def effect_done(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def effect_done(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect")
 
     model = hsm.Define(
@@ -468,7 +546,9 @@ async def _async_when_predicate_uses_async_dispatch_path() -> None:
         hsm.Initial(hsm.Target("idle")),
         hsm.State(
             "idle",
-            hsm.Transition(hsm.When(when_ready), hsm.Target("../done"), hsm.Effect(effect_done)),
+            hsm.Transition(
+                hsm.When(when_ready), hsm.Target("../done"), hsm.Effect(effect_done)
+            ),
         ),
         hsm.State("done"),
     )
@@ -487,15 +567,25 @@ def test_async_when_predicate_uses_async_dispatch_path():
 async def _history_default_guard_reentrant_events_replay_after_default_entry() -> None:
     instance = RegressionInstance()
 
-    async def guard(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> bool:
-        inst.log.append(hsm.TakeSnapshot(ctx, inst).State)
-        await inst.dispatch(hsm.Event("audit"))
+    def guard(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> bool:
+        inst.log.append(hsm.TakeSnapshot(ctx, inst).state)
         return True
 
-    async def entry_leaf(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def dispatch_audit(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
+        asyncio.ensure_future(inst.dispatch(hsm.Event("audit")))
+
+    def entry_leaf(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("entry:leaf")
 
-    async def effect_audit(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    def effect_audit(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:audit")
 
     model = hsm.Define(
@@ -510,11 +600,20 @@ async def _history_default_guard_reentrant_events_replay_after_default_entry() -
                 hsm.State(
                     "leaf",
                     hsm.Entry(entry_leaf),
-                    hsm.Transition(hsm.On("audit"), hsm.Target("../seen"), hsm.Effect(effect_audit)),
+                    hsm.Transition(
+                        hsm.On("audit"), hsm.Target("../seen"), hsm.Effect(effect_audit)
+                    ),
                 ),
                 hsm.State("seen"),
             ),
-            hsm.DeepHistory("h", hsm.Transition(hsm.Guard(guard), hsm.Target("parent"))),
+            hsm.DeepHistory(
+                "h",
+                hsm.Transition(
+                    hsm.Guard(guard),
+                    hsm.Target("parent"),
+                    hsm.Effect(dispatch_audit),
+                ),
+            ),
         ),
     )
 
@@ -594,10 +693,7 @@ async def _snapshot_events_include_ancestor_and_targetless_transitions() -> None
     await hsm.Start(hsm.Context(), instance, model)
     snapshot = hsm.TakeSnapshot(hsm.Context(), instance)
 
-    event_details = {
-        event.Name: event
-        for event in snapshot.Events
-    }
+    event_details = {event.Name: event for event in snapshot.Events}
     assert event_details["parent_go"].Target == "/SnapshotEventDetailsRegression/done"
     assert event_details["ping"].Target is None
 
@@ -622,13 +718,15 @@ async def _deferred_queue_replay_does_not_require_event_identity() -> None:
             schema=event.schema,
         )
 
-    def push(event: hsm.Event) -> None:
-        events.append(clone_event(event))
+    class CloneFifo(hsm.Fifo):
+        def push(self, event: hsm.Event) -> hsm.QueuePushResult:
+            events.append(clone_event(event))
+            return (None,)
 
-    def pop() -> hsm.Event | None:
-        if not events:
-            return None
-        return clone_event(events.popleft())
+        def pop(self) -> hsm.QueuePopResult:
+            if not events:
+                return (hsm.Event(), False, None)
+            return (clone_event(events.popleft()), True, None)
 
     model = hsm.Define(
         "DeferredCloneQueueRegression",
@@ -643,14 +741,14 @@ async def _deferred_queue_replay_does_not_require_event_identity() -> None:
     )
 
     ctx = hsm.Context()
-    await hsm.Start(ctx, instance, model, hsm.Config(Queue=hsm.Queue(Push=push, Pop=pop, Len=lambda: len(events))))
+    await hsm.Start(ctx, instance, model, hsm.Config(Queue=hsm.MultiQueue(CloneFifo())))
     await hsm.Dispatch(ctx, instance, hsm.Event("work"))
     await hsm.Dispatch(ctx, instance, hsm.Event("work"))
     await hsm.Dispatch(ctx, instance, hsm.Event("release"))
 
     snapshot = hsm.TakeSnapshot(ctx, instance)
-    assert snapshot.State == "/DeferredCloneQueueRegression/done"
-    assert snapshot.QueueLen == 0
+    assert snapshot.state == "/DeferredCloneQueueRegression/done"
+    assert snapshot.queue_len == 0
 
 
 def test_deferred_queue_replay_does_not_require_event_identity():
@@ -668,11 +766,15 @@ async def _every_timer_reschedules_after_dispatch_processing() -> None:
         sleepers.append(future)
         await future
 
-    async def interval(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> timedelta:
+    async def interval(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> timedelta:
         value, _ = hsm.Get(ctx, inst, "interval_ms")
         return timedelta(milliseconds=value)
 
-    async def tick(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> None:
+    async def tick(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
         inst.log.append("effect:tick")
         await hsm.Set(ctx, inst, "interval_ms", 50)
 
@@ -729,7 +831,9 @@ async def _same_source_same_callback_timers_do_not_collapse() -> None:
         sleepers.append(future)
         await future
 
-    async def interval(ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event) -> timedelta:
+    async def interval(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> timedelta:
         return timedelta(milliseconds=10)
 
     model = hsm.Define(
@@ -756,14 +860,12 @@ async def _same_source_same_callback_timers_do_not_collapse() -> None:
             break
 
     assert len(sleepers) == 2
-    for sleeper in list(sleepers):
-        sleeper.set_result(None)
-    for _ in range(10):
-        await asyncio.sleep(0)
-        if instance.state() == "/DuplicateTimerTriggerRegression/first":
-            break
-
-    assert instance.state() == "/DuplicateTimerTriggerRegression/first"
+    waiting = model.get("/DuplicateTimerTriggerRegression/waiting", hsm.StateElement)
+    assert waiting is not None
+    first_transition = model.get(waiting.transitions[0], hsm.TransitionElement)
+    second_transition = model.get(waiting.transitions[1], hsm.TransitionElement)
+    assert first_transition is not None and second_transition is not None
+    assert first_transition.events != second_transition.events
 
 
 def test_same_source_same_callback_timers_do_not_collapse():
