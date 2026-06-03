@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import builtins
+import collections.abc
+import typing
 
 length = 64
 id_length = 8
@@ -10,7 +12,10 @@ id_mask = (1 << id_length) - 1
 _counter = 0
 
 
-def _extract_id(kind_value: int, depth: int) -> int:
+Kind: typing.TypeAlias = int
+
+
+def _extract_id(kind_value: Kind, depth: int) -> int:
     return (int(kind_value) >> (depth * id_length)) & id_mask
 
 
@@ -21,24 +26,11 @@ def _next_id() -> int:
     return id_
 
 
-def List(kind_value: int) -> builtins.list[int]:
+def List(kind_value: Kind) -> builtins.list[Kind]:
     return [_extract_id(kind_value, depth) for depth in range(1, depth_max)]
 
 
-list_kind = List
-
-
-def Bases(kind_value: int) -> builtins.list[int]:
-    return List(kind_value)
-
-
-bases = Bases
-
-
-subkinds = Bases
-
-
-def MakeKind(*base_kinds: int) -> int:
+def Make(*base_kinds: Kind) -> Kind:
     id_ = _next_id()
     ids: set[int] = set()
     for base in base_kinds:
@@ -53,15 +45,9 @@ def MakeKind(*base_kinds: int) -> int:
     return id_
 
 
-Make = MakeKind
-make = MakeKind
-make_kind = MakeKind
-kind = MakeKind
-
-
-def IsKind(kind_value: int, *base_kinds: int) -> bool:
+def Is(kind_value: Kind, *bases: Kind) -> bool:
     kind_int = int(kind_value)
-    for base in base_kinds:
+    for base in bases:
         base_id = int(base) & id_mask
         if kind_int == base_id:
             return True
@@ -75,26 +61,8 @@ def IsKind(kind_value: int, *base_kinds: int) -> bool:
     return False
 
 
-is_kind = IsKind
-list = List
-
-
 __all__ = [
-    "Bases",
-    "IsKind",
     "List",
     "Make",
-    "MakeKind",
-    "bases",
-    "depth_max",
-    "id_length",
-    "id_mask",
-    "is_kind",
-    "kind",
-    "length",
-    "list",
-    "list_kind",
-    "make",
-    "make_kind",
-    "subkinds",
+    "Is",
 ]
