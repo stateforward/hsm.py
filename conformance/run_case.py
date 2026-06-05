@@ -95,13 +95,19 @@ class ConformanceInstance(hsm.Instance):
     pass
 
 
-class TransitionKindOverride(hsm_core.PartialElement):
+class TransitionKindOverride(hsm_core.RedefinableElement):
     def __init__(self, kind_value: int, transition: Any | None = None):
         super().__init__(qualified_name="")
         self.kind_value = kind_value
         self.transition = transition
 
-    def apply(self, model: hsm_core.Model, stack: list[hsm_core.NamedElement]) -> None:
+    def redefine(
+        self,
+        model: hsm_core.Model,
+        stack: list[hsm_core.Element],
+        element: hsm_core.Element | None = None,
+    ) -> hsm_core.Element | None:
+        del element
         transition = self.transition
         if transition is None:
             transition = hsm_core.find(stack, hsm_core.TransitionElement)
@@ -109,13 +115,10 @@ class TransitionKindOverride(hsm_core.PartialElement):
                 raise ConformanceError(
                     "transition kind must be used within a transition"
                 )
-            model.add(TransitionKindOverride(self.kind_value, transition))
-            return
+            model.owned_elements.append(TransitionKindOverride(self.kind_value, transition))
+            return transition
         transition.kind = self.kind_value
-        transition.paths.clear()
-        hsm_core.ResolvePaths(transition=transition, traceback=self.traceback).apply(
-            model, []
-        )
+        return transition
 
 
 class LogicalClock:

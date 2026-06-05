@@ -26,7 +26,7 @@ async def test_single_effect_execution():
     """Test single effect execution on transitions"""
     instance = EffectInstance()
 
-    async def test_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def test_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('effect-executed')
         inst.data['effect_called'] = True
 
@@ -43,15 +43,15 @@ async def test_single_effect_execution():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
-    await instance.dispatch(hsm.Event(name='trigger'))
+    await instance.dispatch(ctx, hsm.Event(name='trigger'))
 
     assert 'effect-executed' in instance.log
     assert instance.data.get('effect_called') is True
     assert instance.state() == '/SingleEffectMachine/state2'
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -59,13 +59,13 @@ async def test_multiple_effects_execution_order():
     """Test multiple effects execution in correct order"""
     instance = EffectInstance()
 
-    async def effect1(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def effect1(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('effect1')
 
-    async def effect2(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def effect2(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('effect2')
 
-    async def effect3(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def effect3(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('effect3')
 
     model = hsm.define('MultipleEffectMachine',
@@ -83,16 +83,16 @@ async def test_multiple_effects_execution_order():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
-    await instance.dispatch(hsm.Event(name='trigger'))
+    await instance.dispatch(ctx, hsm.Event(name='trigger'))
 
     # Effects should be executed in order
     expected_order = ['effect1', 'effect2', 'effect3']
     assert instance.log == expected_order
     assert instance.state() == '/MultipleEffectMachine/state2'
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -100,7 +100,7 @@ async def test_effect_with_event_access():
     """Test effects with access to event information"""
     instance = EffectInstance()
 
-    async def event_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def event_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action(f'effect-for-{event.name}')
         inst.data['event_name'] = event.name
         inst.data['event_kind'] = event.kind
@@ -118,15 +118,15 @@ async def test_effect_with_event_access():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
-    await instance.dispatch(hsm.Event(name='testEvent'))
+    await instance.dispatch(ctx, hsm.Event(name='testEvent'))
 
     assert 'effect-for-testEvent' in instance.log
     assert instance.data.get('event_name') == 'testEvent'
-    assert instance.data.get('event_kind') == hsm.Kinds.Event
+    assert instance.data.get('event_kind') == hsm.EventKind
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 def test_async_effects_are_rejected_at_build_time():
@@ -158,7 +158,7 @@ async def test_effects_on_internal_transitions():
     """Test effects on internal transitions"""
     instance = EffectInstance()
 
-    async def internal_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def internal_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('internal-effect')
         inst.data['internal_count'] = inst.data.get('internal_count', 0) + 1
 
@@ -174,21 +174,21 @@ async def test_effects_on_internal_transitions():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Internal transition should execute effect but not change state
-    await instance.dispatch(hsm.Event(name='internal'))
+    await instance.dispatch(ctx, hsm.Event(name='internal'))
     assert 'internal-effect' in instance.log
     assert instance.data.get('internal_count') == 1
     assert instance.state() == '/InternalEffectMachine/active'
 
     # Can be triggered multiple times
     instance.log.clear()
-    await instance.dispatch(hsm.Event(name='internal'))
+    await instance.dispatch(ctx, hsm.Event(name='internal'))
     assert 'internal-effect' in instance.log
     assert instance.data.get('internal_count') == 2
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -196,12 +196,12 @@ async def test_effects_with_state_mutation():
     """Test effects that modify instance state"""
     instance = EffectInstance()
 
-    async def state_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def state_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('modifying-state')
         inst.data['modified'] = True
         inst.data['counter'] = inst.data.get('counter', 0) + 1
 
-    async def read_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def read_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action(f'counter-is-{inst.data.get("counter", 0)}')
 
     model = hsm.define('StateMutationMachine',
@@ -224,17 +224,17 @@ async def test_effects_with_state_mutation():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
-    await instance.dispatch(hsm.Event(name='modify'))
+    await instance.dispatch(ctx, hsm.Event(name='modify'))
     assert 'modifying-state' in instance.log
     assert instance.data.get('modified') is True
     assert instance.data.get('counter') == 1
 
-    await instance.dispatch(hsm.Event(name='read'))
+    await instance.dispatch(ctx, hsm.Event(name='read'))
     assert 'counter-is-1' in instance.log
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -245,7 +245,7 @@ async def test_effects_execution_timing():
     async def state1_exit(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('state1-exit')
 
-    async def transition_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def transition_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('transition-effect')
 
     async def state2_entry(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
@@ -267,13 +267,13 @@ async def test_effects_execution_timing():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
     instance.log.clear()
 
-    await instance.dispatch(hsm.Event(name='move'))
+    await instance.dispatch(ctx, hsm.Event(name='move'))
 
     # Verify order: exit -> effect -> entry
     expected_order = ['state1-exit', 'transition-effect', 'state2-entry']
     assert instance.log == expected_order
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)

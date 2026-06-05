@@ -1,53 +1,42 @@
 import hsm
 import hsm.kind as kind_module
-from hsm.kind import IsKind, List, Make, MakeKind, is_kind, kind, make, make_kind
-from hsm import Kinds
+from hsm.kind import Is, List, Make
 
 
 def test_hsm():
-    assert is_kind(Kinds.Choice, Kinds.Pseudostate)
+    assert hsm.kind.Is(hsm.ChoiceKind, hsm.PseudostateKind)
 
 
 def test_make_kind_builds_hierarchy_without_manual_ids():
-    element = MakeKind()
-    namespace = MakeKind(element)
-    vertex = MakeKind(element)
-    state = MakeKind(vertex, namespace)
+    element = Make()
+    namespace = Make(element)
+    vertex = Make(element)
+    state = Make(vertex, namespace)
 
-    assert IsKind(state, state)
-    assert IsKind(state, vertex)
-    assert IsKind(state, namespace)
-    assert IsKind(state, element)
+    assert Is(state, state)
+    assert Is(state, vertex)
+    assert Is(state, namespace)
+    assert Is(state, element)
 
 
-def test_snake_case_and_kind_aliases_match_pascal_case():
-    assert Make is MakeKind
-    assert make is MakeKind
-    assert make_kind is MakeKind
-    assert kind is MakeKind
-    assert kind_module.list is List
-    assert "list" in kind_module.__all__
-    assert is_kind is IsKind
+def test_kind_exports_match_current_api():
+    assert kind_module.Make is Make
+    assert kind_module.Is is Is
+    assert kind_module.List is List
+    assert kind_module.__all__ == ["List", "Make", "Is"]
 
-    base = MakeKind()
-    child = make(base)
-    sibling = kind(base)
-    named = make_kind(base)
+    base = Make()
+    child = Make(base)
 
-    assert is_kind(child, base)
-    assert IsKind(sibling, base)
-    assert IsKind(named, base)
+    assert Is(child, base)
 
 
 def test_list_exposes_base_ids():
-    base = MakeKind()
-    child = MakeKind(base)
+    base = Make()
+    child = Make(base)
 
     assert List(child)[0] == base
 
 
-def test_kind_helpers_are_exported_from_top_level_module():
-    assert hsm.MakeKind is MakeKind
-    assert hsm.make_kind is make_kind
-    assert hsm.IsKind is IsKind
-    assert hsm.is_kind is is_kind
+def test_kind_module_is_exported_from_top_level_package():
+    assert hsm.kind is kind_module

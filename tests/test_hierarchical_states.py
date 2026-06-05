@@ -36,12 +36,12 @@ async def test_nested_states():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Should reach the deepest level
     assert instance.state() == '/NestedMachine/parent/child1'
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -89,7 +89,7 @@ async def test_hierarchical_entry_exit_order():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Initial entry order: parent first, then child1
     assert 'parent-entry' in instance.log
@@ -101,7 +101,7 @@ async def test_hierarchical_entry_exit_order():
     instance.log.clear()
 
     # Transition from child1 to child2
-    await instance.dispatch(hsm.Event(name='toChild2'))
+    await instance.dispatch(ctx, hsm.Event(name='toChild2'))
 
     # Should exit child1, then enter child2 (parent remains active)
     assert 'child1-exit' in instance.log
@@ -112,7 +112,7 @@ async def test_hierarchical_entry_exit_order():
     child2_entry_idx = instance.log.index('child2-entry')
     assert child1_exit_idx < child2_entry_idx
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -120,10 +120,10 @@ async def test_event_bubbling():
     """Test event bubbling up the hierarchy"""
     instance = HierarchicalInstance()
 
-    async def parent_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def parent_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('parent-handled')
 
-    async def child_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child-handled')
 
     model = hsm.define('EventBubblingMachine',
@@ -146,21 +146,21 @@ async def test_event_bubbling():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Child should handle its own event
-    await instance.dispatch(hsm.Event(name='childEvent'))
+    await instance.dispatch(ctx, hsm.Event(name='childEvent'))
     assert 'child-handled' in instance.log
     assert 'parent-handled' not in instance.log
 
     instance.log.clear()
 
     # Parent should handle event not handled by child
-    await instance.dispatch(hsm.Event(name='parentEvent'))
+    await instance.dispatch(ctx, hsm.Event(name='parentEvent'))
     assert 'parent-handled' in instance.log
     assert 'child-handled' not in instance.log
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -192,7 +192,7 @@ async def test_transition_between_hierarchical_states():
     async def child2_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child2-exit')
 
-    async def transition_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def transition_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('transition-effect')
 
     model = hsm.define('HierarchicalTransitionMachine',
@@ -223,7 +223,7 @@ async def test_transition_between_hierarchical_states():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Should start in grandchild1
     assert instance.state() == '/HierarchicalTransitionMachine/child1/grandchild1'
@@ -231,7 +231,7 @@ async def test_transition_between_hierarchical_states():
     instance.log.clear()
 
     # Transition to grandchild2 in different branch
-    await instance.dispatch(hsm.Event(name='moveToOtherBranch'))
+    await instance.dispatch(ctx, hsm.Event(name='moveToOtherBranch'))
 
     # Should exit grandchild1 and child1, then enter child2 and grandchild2
     expected_sequence = [
@@ -253,7 +253,7 @@ async def test_transition_between_hierarchical_states():
 
     assert instance.state() == '/HierarchicalTransitionMachine/child2/grandchild2'
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -261,10 +261,10 @@ async def test_deep_nested_relative_and_absolute_transitions():
     """Test path resolution through deeply nested states"""
     instance = HierarchicalInstance()
 
-    async def record_jump(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def record_jump(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action("deep-jump")
 
-    async def record_reset(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def record_reset(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action("absolute-reset")
 
     model = hsm.define(
@@ -291,7 +291,7 @@ async def test_deep_nested_relative_and_absolute_transitions():
                             ),
                             hsm.transition(
                                 hsm.on("reset"),
-                                hsm.target("/l1/l2/l3/l4/l5"),
+                                hsm.target("/DeepNestedMachine/l1/l2/l3/l4/l5"),
                                 hsm.effect(record_reset),
                             ),
                         ),
@@ -300,7 +300,7 @@ async def test_deep_nested_relative_and_absolute_transitions():
                         "sibling",
                         hsm.transition(
                             hsm.on("reset"),
-                            hsm.target("/l1/l2/l3/l4/l5"),
+                            hsm.target("/DeepNestedMachine/l1/l2/l3/l4/l5"),
                             hsm.effect(record_reset),
                         ),
                     ),
@@ -310,19 +310,19 @@ async def test_deep_nested_relative_and_absolute_transitions():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
     assert instance.state() == "/DeepNestedMachine/l1/l2/l3/l4/l5"
 
-    await instance.dispatch(hsm.Event(name="jump"))
+    await instance.dispatch(ctx, hsm.Event(name="jump"))
     assert instance.state() == "/DeepNestedMachine/l1/l2/l3/sibling"
     assert instance.log == ["deep-jump"]
 
-    await instance.dispatch(hsm.Event(name="reset"))
+    await instance.dispatch(ctx, hsm.Event(name="reset"))
     assert instance.state() == "/DeepNestedMachine/l1/l2/l3/l4/l5"
     assert instance.log == ["deep-jump", "absolute-reset"]
-    assert hsm.take_snapshot(ctx, instance).queue_len == 0
+    assert instance.take_snapshot().queue_len == 0
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -357,7 +357,7 @@ async def test_multiple_initial_states():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Should follow initial chain to deepest level
     assert instance.state() == '/MultipleInitialMachine/level1/level2a/level3a'
@@ -373,7 +373,7 @@ async def test_multiple_initial_states():
         idx2 = instance.log.index(expected_sequence[i + 1])
         assert idx1 < idx2
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -393,10 +393,10 @@ async def test_hierarchical_self_transitions():
     async def child_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child-exit')
 
-    async def parent_self_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def parent_self_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('parent-self-effect')
 
-    async def child_self_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child_self_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child-self-effect')
 
     model = hsm.define('HierarchicalSelfTransitionMachine',
@@ -423,14 +423,14 @@ async def test_hierarchical_self_transitions():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     assert instance.state() == '/HierarchicalSelfTransitionMachine/parent/child'
 
     instance.log.clear()
 
     # Child self transition - should exit and re-enter child, but not parent
-    await instance.dispatch(hsm.Event(name='childSelf'))
+    await instance.dispatch(ctx, hsm.Event(name='childSelf'))
     
     assert 'child-exit' in instance.log
     assert 'child-self-effect' in instance.log
@@ -441,7 +441,7 @@ async def test_hierarchical_self_transitions():
     instance.log.clear()
 
     # Parent self transition - should exit entire parent subtree and re-enter
-    await instance.dispatch(hsm.Event(name='parentSelf'))
+    await instance.dispatch(ctx, hsm.Event(name='parentSelf'))
     
     assert 'child-exit' in instance.log
     assert 'parent-exit' in instance.log
@@ -449,7 +449,7 @@ async def test_hierarchical_self_transitions():
     assert 'parent-entry' in instance.log
     assert 'child-entry' in instance.log
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -457,10 +457,10 @@ async def test_event_priority_in_hierarchy():
     """Test that deeper states have priority for event handling"""
     instance = HierarchicalInstance()
 
-    async def parent_handler(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def parent_handler(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('handled-by-parent')
 
-    async def child_handler(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child_handler(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('handled-by-child')
 
     model = hsm.define('EventPriorityMachine',
@@ -483,11 +483,11 @@ async def test_event_priority_in_hierarchy():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Child should handle the event, not parent
-    await instance.dispatch(hsm.Event(name='sharedEvent'))
+    await instance.dispatch(ctx, hsm.Event(name='sharedEvent'))
     assert 'handled-by-child' in instance.log
     assert 'handled-by-parent' not in instance.log
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)

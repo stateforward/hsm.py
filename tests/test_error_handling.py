@@ -29,7 +29,7 @@ async def test_error_event_from_activity_exception():
         inst.log_action('activity-starting')
         raise Exception('Activity failed!')
 
-    async def error_effect(ctx, inst, event):
+    def error_effect(ctx, inst, event):
         inst.log_action('error-caught')
         inst.data['error_message'] = str(event.data)
         inst.data['error_type'] = type(event.data).__name__
@@ -54,7 +54,7 @@ async def test_error_event_from_activity_exception():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(error_entered.wait(), timeout=1)
 
@@ -78,10 +78,10 @@ async def test_error_event_handled_at_different_hierarchy_levels():
         inst.log_action('child-activity-error')
         raise Exception('Child error')
 
-    async def parent_error_effect(ctx, inst, event):
+    def parent_error_effect(ctx, inst, event):
         inst.log_action('parent-handled-error')
 
-    async def child_error_effect(ctx, inst, event):
+    def child_error_effect(ctx, inst, event):
         inst.log_action('child-handled-error')
 
     async def child_error_entry(ctx, inst, event):
@@ -117,7 +117,7 @@ async def test_error_event_handled_at_different_hierarchy_levels():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(child_error_entered.wait(), timeout=1)
 
@@ -153,7 +153,7 @@ async def test_unhandled_error_events():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(activity_failed.wait(), timeout=1)
     await asyncio.sleep(0)
@@ -175,7 +175,7 @@ async def test_error_in_entry_actions():
         inst.log_action('entry-will-fail')
         raise Exception('Entry action failed!')
 
-    async def error_effect(ctx, inst, event):
+    def error_effect(ctx, inst, event):
         inst.log_action('caught-entry-error')
         inst.data['entry_error'] = str(event.data)
         error_caught.set()
@@ -194,16 +194,16 @@ async def test_error_in_entry_actions():
         hsm.state('error'),
         hsm.transition(
             hsm.on('hsm_error'),
-            hsm.target('/error'),
+            hsm.target('error'),
             hsm.effect(error_effect)
         )
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Trigger transition to failing state
-    await sm.dispatch(Event('go'))
+    await sm.dispatch(ctx, Event(name='go'))
     await asyncio.wait_for(error_caught.wait(), timeout=1)
 
     assert 'entry-will-fail' in instance.log
@@ -223,7 +223,7 @@ async def test_error_in_exit_actions():
         inst.log_action('exit-will-fail')
         raise Exception('Exit action failed!')
 
-    async def error_effect(ctx, inst, event):
+    def error_effect(ctx, inst, event):
         inst.log_action('caught-exit-error')
         inst.data['exit_error'] = str(event.data)
         error_caught.set()
@@ -241,16 +241,16 @@ async def test_error_in_exit_actions():
         hsm.state('error'),
         hsm.transition(
             hsm.on('hsm_error'),
-            hsm.target('/error'),
+            hsm.target('error'),
             hsm.effect(error_effect)
         )
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Trigger transition that will cause exit action to fail
-    await sm.dispatch(Event('leave'))
+    await sm.dispatch(ctx, Event(name='leave'))
     await asyncio.wait_for(error_caught.wait(), timeout=1)
 
     assert 'exit-will-fail' in instance.log
@@ -266,11 +266,11 @@ async def test_error_in_transition_effects():
     instance = ErrorInstance()
     error_caught = asyncio.Event()
 
-    async def failing_effect(ctx, inst, event):
+    def failing_effect(ctx, inst, event):
         inst.log_action('effect-will-fail')
         raise Exception('Effect failed!')
 
-    async def error_effect(ctx, inst, event):
+    def error_effect(ctx, inst, event):
         inst.log_action('caught-effect-error')
         inst.data['effect_error'] = str(event.data)
         error_caught.set()
@@ -288,16 +288,16 @@ async def test_error_in_transition_effects():
         hsm.state('error'),
         hsm.transition(
             hsm.on('hsm_error'),
-            hsm.target('/error'),
+            hsm.target('error'),
             hsm.effect(error_effect)
         )
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Trigger transition with failing effect
-    await sm.dispatch(Event('trigger'))
+    await sm.dispatch(ctx, Event(name='trigger'))
     await asyncio.wait_for(error_caught.wait(), timeout=1)
 
     assert 'effect-will-fail' in instance.log
@@ -321,10 +321,10 @@ async def test_multiple_error_events_in_sequence():
         inst.log_action('second-error')
         raise Exception('Second error!')
 
-    async def first_error_effect(ctx, inst, event):
+    def first_error_effect(ctx, inst, event):
         inst.log_action('handled-first-error')
 
-    async def second_error_effect(ctx, inst, event):
+    def second_error_effect(ctx, inst, event):
         inst.log_action('handled-second-error')
         final_reached.set()
 
@@ -350,7 +350,7 @@ async def test_multiple_error_events_in_sequence():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(final_reached.wait(), timeout=1)
 
@@ -374,20 +374,20 @@ async def test_error_event_with_guard_conditions():
         inst.log_action('error-activity')
         raise Exception('Routed error!')
 
-    async def critical_guard(ctx, inst, event):
+    def critical_guard(ctx, inst, event):
         return inst.data['error_type'] == 'critical'
 
-    async def warning_guard(ctx, inst, event):
+    def warning_guard(ctx, inst, event):
         return inst.data['error_type'] == 'warning'
 
-    async def critical_effect(ctx, inst, event):
+    def critical_effect(ctx, inst, event):
         inst.log_action('critical-error-handled')
         critical_handled.set()
 
-    async def warning_effect(ctx, inst, event):
+    def warning_effect(ctx, inst, event):
         inst.log_action('warning-error-handled')
 
-    async def general_effect(ctx, inst, event):
+    def general_effect(ctx, inst, event):
         inst.log_action('general-error-handled')
 
     model = hsm.define('GuardedErrorMachine',
@@ -418,7 +418,7 @@ async def test_error_event_with_guard_conditions():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(critical_handled.wait(), timeout=1)
 

@@ -44,7 +44,7 @@ async def test_external_transitions():
     async def child2_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('child2-exit')
 
-    async def transition_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def transition_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('transition-effect')
 
     model = hsm.define('ExternalTransitionMachine',
@@ -70,11 +70,11 @@ async def test_external_transitions():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
     instance.log.clear()  # Clear initial entry logs
 
     # External transition between sibling states
-    await instance.dispatch(hsm.Event(name='toChild2'))
+    await instance.dispatch(ctx, hsm.Event(name='toChild2'))
 
     # Should exit child1, execute effect, then enter child2
     # Parent should remain active (not exit/enter)
@@ -93,7 +93,7 @@ async def test_external_transitions():
     assert 'parent-exit' not in instance.log
     assert 'parent-entry' not in instance.log
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -108,7 +108,7 @@ async def test_self_transitions():
     async def state_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action(f'state-exit-{inst.data["entry_count"]}')
 
-    async def self_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def self_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('self-effect')
 
     model = hsm.define('SelfTransitionMachine',
@@ -125,7 +125,7 @@ async def test_self_transitions():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Initial entry
     assert instance.data['entry_count'] == 1
@@ -134,7 +134,7 @@ async def test_self_transitions():
     instance.log.clear()
 
     # Self transition should exit and re-enter
-    await instance.dispatch(hsm.Event(name='selfEvent'))
+    await instance.dispatch(ctx, hsm.Event(name='selfEvent'))
 
     assert instance.data['entry_count'] == 2
     expected_sequence = ['state-exit-1', 'self-effect', 'state-entry-2']
@@ -148,7 +148,7 @@ async def test_self_transitions():
         idx2 = instance.log.index(expected_sequence[i + 1])
         assert idx1 < idx2
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -163,7 +163,7 @@ async def test_internal_transitions():
     async def state_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('state-exit')
 
-    async def internal_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def internal_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('internal-effect')
 
     model = hsm.define('InternalTransitionMachine',
@@ -180,7 +180,7 @@ async def test_internal_transitions():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     # Initial entry
     assert instance.data['entry_count'] == 1
@@ -189,14 +189,14 @@ async def test_internal_transitions():
     instance.log.clear()
 
     # Internal transition should not exit/enter state
-    await instance.dispatch(hsm.Event(name='internalEvent'))
+    await instance.dispatch(ctx, hsm.Event(name='internalEvent'))
 
     assert instance.data['entry_count'] == 1  # Should not re-enter
     assert 'internal-effect' in instance.log
     assert 'state-exit' not in instance.log
     assert 'state-entry' not in instance.log
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -204,13 +204,13 @@ async def test_transition_with_multiple_effects():
     """Test transitions can have multiple effects"""
     instance = TransitionInstance()
 
-    async def effect1(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def effect1(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('effect1')
 
-    async def effect2(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def effect2(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('effect2')
 
-    async def effect3(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def effect3(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('effect3')
 
     model = hsm.define('MultipleEffectMachine',
@@ -228,9 +228,9 @@ async def test_transition_with_multiple_effects():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
-    await instance.dispatch(hsm.Event(name='multiEffect'))
+    await instance.dispatch(ctx, hsm.Event(name='multiEffect'))
 
     # All effects should be executed
     assert 'effect1' in instance.log
@@ -240,7 +240,7 @@ async def test_transition_with_multiple_effects():
     # Should transition to state2
     assert instance.state() == '/MultipleEffectMachine/state2'
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -248,10 +248,10 @@ async def test_transition_priority():
     """Test transition priority - first matching transition wins"""
     instance = TransitionInstance()
 
-    async def effect1(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def effect1(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('effect1-executed')
 
-    async def effect2(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def effect2(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('effect2-executed')
 
     model = hsm.define('TransitionPriorityMachine',
@@ -273,16 +273,16 @@ async def test_transition_priority():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
-    await instance.dispatch(hsm.Event(name='sameEvent'))
+    await instance.dispatch(ctx, hsm.Event(name='sameEvent'))
 
     # First transition should be taken
     assert 'effect1-executed' in instance.log
     assert 'effect2-executed' not in instance.log
     assert instance.state() == '/TransitionPriorityMachine/target1'
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -302,7 +302,7 @@ async def test_transitions_between_different_levels():
     async def sibling_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('sibling-entry')
 
-    async def cross_transition_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def cross_transition_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('cross-transition-effect')
 
     model = hsm.define('CrossLevelTransitionMachine',
@@ -329,14 +329,14 @@ async def test_transitions_between_different_levels():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     assert instance.state() == '/CrossLevelTransitionMachine/parent/child/grandchild'
 
     instance.log.clear()
 
     # Transition from deep nested state to top-level sibling
-    await sm.dispatch(hsm.Event(name='crossLevel'))
+    await sm.dispatch(ctx, hsm.Event(name='crossLevel'))
 
     # Should exit the source state hierarchy and execute the transition
     assert 'grandchild-exit' in instance.log
@@ -361,10 +361,10 @@ async def test_transition_to_initial_state():
     async def child_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('child-entry')
 
-    async def initial_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def initial_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('initial-effect')
 
-    async def transition_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def transition_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('transition-effect')
 
     model = hsm.define('InitialTargetMachine',
@@ -389,14 +389,14 @@ async def test_transition_to_initial_state():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     assert instance.state() == '/InitialTargetMachine/start'
 
     instance.log.clear()
 
     # Transition to parent should enter parent and follow initial to child
-    await instance.dispatch(hsm.Event(name='goToParent'))
+    await instance.dispatch(ctx, hsm.Event(name='goToParent'))
 
     expected_sequence = [
         'transition-effect',
@@ -416,7 +416,7 @@ async def test_transition_to_initial_state():
 
     assert instance.state() == '/InitialTargetMachine/parent/child'
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)
 
 
 @pytest.mark.asyncio
@@ -442,13 +442,13 @@ async def test_compound_transition_paths():
     async def d_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('d-entry')
 
-    async def ab_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def ab_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('a-to-b-effect')
 
-    async def bc_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def bc_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('b-to-c-effect')
 
-    async def cd_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def cd_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('c-to-d-effect')
 
     model = hsm.define('CompoundTransitionMachine',
@@ -485,14 +485,14 @@ async def test_compound_transition_paths():
     )
 
     ctx = hsm.Context()
-    await hsm.start(ctx, instance, model)
+    await hsm.started(ctx, instance, model)
 
     assert instance.state() == '/CompoundTransitionMachine/a'
 
     instance.log.clear()
 
     # Chain of transitions: a -> b -> c -> d
-    await instance.dispatch(hsm.Event(name='chain'))
+    await instance.dispatch(ctx, hsm.Event(name='chain'))
     assert 'a-exit' in instance.log
     assert 'a-to-b-effect' in instance.log
     assert 'b-entry' in instance.log
@@ -500,7 +500,7 @@ async def test_compound_transition_paths():
 
     instance.log.clear()
 
-    await instance.dispatch(hsm.Event(name='chain'))
+    await instance.dispatch(ctx, hsm.Event(name='chain'))
     assert 'b-exit' in instance.log
     assert 'b-to-c-effect' in instance.log
     assert 'c-entry' in instance.log
@@ -508,10 +508,10 @@ async def test_compound_transition_paths():
 
     instance.log.clear()
 
-    await instance.dispatch(hsm.Event(name='chain'))
+    await instance.dispatch(ctx, hsm.Event(name='chain'))
     assert 'c-exit' in instance.log
     assert 'c-to-d-effect' in instance.log
     assert 'd-entry' in instance.log
     assert instance.state() == '/CompoundTransitionMachine/d'
 
-    await hsm.stop(instance)
+    await instance.stop(ctx)

@@ -33,8 +33,15 @@ def _guard_true(*_args: object) -> bool:
     return True
 
 
-class _NullPartial(core.PartialElement):
-    def apply(self, model: core.Model, stack: list[core.NamedElement]) -> None:
+class _NullPartial(core.RedefinableElement):
+    def redefine(
+        self,
+        model: core.Model,
+        stack: list[core.Element],
+        element: core.Element | None = None,
+    ) -> core.Element | None:
+        del model, stack
+        return element
         return None
 
 
@@ -49,7 +56,7 @@ def test_helper_and_factory_branches(capsys: pytest.CaptureFixture[str]):
     assert core.NamedElement(qualified_name="/").owner() == ""
     assert core.NamedElement(qualified_name="/Bare/idle").name() == "idle"
     assert core.find([], core.StateElement) is None
-    assert core.PartialElement().apply(model, []) is None
+    assert core.RedefinableElement().redefine(model, []) is None
     assert model.get(state.qualified_name, core.TransitionElement) is None
     assert core.LCA("", "/Bare/idle") == "/Bare/idle"
     assert core.least_common_ancestor("/Bare/a", "/Bare/b") == "/Bare"
@@ -175,40 +182,28 @@ async def test_context_waitable_queue_and_instance_branches():
     ctx = core.Context().WithValue(core.Keys.Instances, {})
     seen: list[str] = []
 
-    def failing_listener() -> None:
-        seen.append("boom")
-        raise RuntimeError("fail")
-
-    def ok_listener() -> None:
+    def ok_listener(_) -> None:
         seen.append("ok")
 
-    ctx.add_listener("other", lambda: seen.append("ignored"))
-    ctx.add_listener("done", failing_listener)
-    ctx.add_listener("done", ok_listener)
-    waiting = asyncio.create_task(ctx.wait_done())
-    await asyncio.sleep(0)
+    ctx.Done().add_done_callback(ok_listener)
+    waiting = asyncio.wrap_future(ctx.Done())
     ctx.cancel()
     await waiting
     ctx.cancel()
-    assert ctx.done is True
-    assert seen == ["boom", "ok"]
+    assert ctx.Done().done() is True
+    assert seen == ["ok"]
 
     immediate: list[str] = []
 
-    def immediate_listener() -> None:
+    def immediate_listener(_) -> None:
         immediate.append("now")
 
-    ctx.add_listener("done", immediate_listener)
-    ctx.add_listener("done", failing_listener)
+    ctx.Done().add_done_callback(immediate_listener)
     assert immediate == ["now"]
 
     other = core.Context()
-    other_listener = lambda: None
-    other.add_listener("done", other_listener)
-    other.remove_listener("done", other_listener)
-    other.remove_listener("other", other_listener)
     other.cancel()
-    await other.wait_done()
+    await asyncio.wrap_future(other.Done())
 
     assert core.context is core.Context
     assert core.context_key is core.ContextKey
@@ -804,8 +799,8 @@ def test_direct_validation_branches():
         ).apply(model, [core.StateElement("s", qualified_name="/Bare/s")])
         while model.owned_elements:
             partial = model.owned_elements.pop()
-            if isinstance(partial, core.PartialElement):
-                partial.apply(model, [])
+            if isinstance(partial, core.RedefinableElement):
+                partial.redefine(model, [])
 
     with pytest.raises(
         core.ValidationError, match="after must be called within a TransitionElement"

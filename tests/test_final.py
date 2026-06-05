@@ -27,7 +27,7 @@ async def test_basic_final_state_terminal_state():
     async def working_entry(ctx, inst, event):
         inst.log_action('working-entry')
 
-    async def completing_effect(ctx, inst, event):
+    def completing_effect(ctx, inst, event):
         inst.log_action('completing')
 
     model = hsm.define('BasicFinalMachine',
@@ -44,17 +44,17 @@ async def test_basic_final_state_terminal_state():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
     assert instance.log == ['working-entry']
     assert sm.state() == '/BasicFinalMachine/working'
 
     # Transition to final state
-    await sm.dispatch(Event('complete'))
+    await sm.dispatch(ctx, Event(name='complete'))
     assert instance.log == ['working-entry', 'completing']
     assert sm.state() == '/BasicFinalMachine/done'
 
     # Final states should not accept events
-    await sm.dispatch(Event('any-event'))
+    await sm.dispatch(ctx, Event(name='any-event'))
     assert sm.state() == '/BasicFinalMachine/done'
 
     await hsm.stop(sm)
@@ -114,7 +114,7 @@ async def test_final_state_in_hierarchical_structure():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
     assert instance.log == [
         'container-entry',
         'subprocess-entry',
@@ -123,15 +123,15 @@ async def test_final_state_in_hierarchical_structure():
     assert sm.state() == '/HierarchicalFinalMachine/container/subprocess/step1'
 
     # Progress through subprocess
-    await sm.dispatch(Event('next'))
+    await sm.dispatch(ctx, Event(name='next'))
     assert sm.state() == '/HierarchicalFinalMachine/container/subprocess/step2'
 
     # Complete subprocess
-    await sm.dispatch(Event('finish'))
+    await sm.dispatch(ctx, Event(name='finish'))
     assert sm.state() == '/HierarchicalFinalMachine/container/subprocess/completed'
 
     # Events can still be handled by parent
-    await sm.dispatch(Event('abort'))
+    await sm.dispatch(ctx, Event(name='abort'))
     assert sm.state() == '/HierarchicalFinalMachine/aborted'
     assert 'aborted-entry' in instance.log
 
@@ -172,24 +172,24 @@ async def test_multiple_final_states_in_same_container():
 
     # Test success path
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
-    await sm.dispatch(Event('success'))
+    sm = await hsm.started(ctx, instance, model)
+    await sm.dispatch(ctx, Event(name='success'))
     assert sm.state() == '/MultipleFinalMachine/process/success'
     await hsm.stop(sm)
 
     # Test error path
     instance.log = []
     ctx2 = hsm.Context()
-    sm2 = await hsm.start(ctx2, instance, model)
-    await sm2.dispatch(Event('error'))
+    sm2 = await hsm.started(ctx2, instance, model)
+    await sm2.dispatch(ctx, Event(name='error'))
     assert sm2.state() == '/MultipleFinalMachine/process/error'
     await hsm.stop(sm2)
 
     # Test cancel path
     instance.log = []
     ctx3 = hsm.Context()
-    sm3 = await hsm.start(ctx3, instance, model)
-    await sm3.dispatch(Event('cancel'))
+    sm3 = await hsm.started(ctx3, instance, model)
+    await sm3.dispatch(ctx, Event(name='cancel'))
     assert sm3.state() == '/MultipleFinalMachine/process/cancelled'
     await hsm.stop(sm3)
 
@@ -199,7 +199,7 @@ async def test_transition_to_final_state_with_effect():
     """Transition to final state with effect"""
     instance = FinalInstance()
 
-    async def transition_effect(ctx, inst, event):
+    def transition_effect(ctx, inst, event):
         inst.log_action('transition-to-final')
 
     async def final_entry(ctx, inst, event):
@@ -211,7 +211,7 @@ async def test_transition_to_final_state_with_effect():
         hsm.state('active',
             hsm.transition(
                 hsm.on('end'),
-                hsm.target('/finished'),
+                hsm.target('../finished'),
                 hsm.effect(transition_effect)
             )
         ),
@@ -219,10 +219,10 @@ async def test_transition_to_final_state_with_effect():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Transition to final state
-    await sm.dispatch(Event('end'))
+    await sm.dispatch(ctx, Event(name='end'))
 
     assert instance.log == [
         'transition-to-final'
@@ -246,17 +246,17 @@ async def test_final_state_behavior_during_stop():
             hsm.exit(normal_exit),
             hsm.transition(
                 hsm.on('finish'),
-                hsm.target('/terminal')
+                hsm.target('../terminal')
             )
         ),
         hsm.final('terminal')
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Move to final state
-    await sm.dispatch(Event('finish'))
+    await sm.dispatch(ctx, Event(name='finish'))
     assert sm.state() == '/FinalStopMachine/terminal'
 
     # Stop from final state
@@ -284,15 +284,15 @@ async def test_transition_from_final_state_should_not_be_possible():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Go to final state
-    await sm.dispatch(Event('end'))
+    await sm.dispatch(ctx, Event(name='end'))
     assert sm.state() == '/FinalTransitionMachine/final'
 
     # Try to send events - should be ignored
-    await sm.dispatch(Event('restart'))
-    await sm.dispatch(Event('anything'))
+    await sm.dispatch(ctx, Event(name='restart'))
+    await sm.dispatch(ctx, Event(name='anything'))
 
     # Should remain in final state
     assert sm.state() == '/FinalTransitionMachine/final'
@@ -350,12 +350,12 @@ async def test_complex_final_state_scenario_with_cleanup():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Execute workflow
-    await sm.dispatch(Event('proceed'))
-    await sm.dispatch(Event('complete'))
-    await sm.dispatch(Event('done'))
+    await sm.dispatch(ctx, Event(name='proceed'))
+    await sm.dispatch(ctx, Event(name='complete'))
+    await sm.dispatch(ctx, Event(name='done'))
 
     assert instance.log == [
         'resources-allocated',

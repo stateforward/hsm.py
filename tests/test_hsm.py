@@ -25,8 +25,8 @@ async def test_complex_hsm():
     sm = THSM()  # Create an instance
     after_triggered = False
 
-    def mock_action(name: str, is_async: bool = False) -> hsm.Operation[THSM]:
-        async def action(
+    def mock_action(name: str, is_async: bool = False):
+        def action(
             ctx: hsm.Context, sm: THSM, event: hsm.Event
         ) -> None:  # Renamed data to instance
             # instance here refers to hsm_instance
@@ -38,7 +38,7 @@ async def test_complex_hsm():
 
         return action
 
-    async def guard_foo_eq_1(
+    def guard_foo_eq_1(
         ctx: hsm.Context, sm: THSM, event: hsm.Event
     ) -> bool:  # Renamed data to instance
         check = sm.foo == 1
@@ -46,7 +46,7 @@ async def test_complex_hsm():
         print(f"Guard foo == 1: {check}")
         return check
 
-    async def guard_foo_eq_0(
+    def guard_foo_eq_0(
         ctx: hsm.Context, sm: THSM, event: hsm.Event
     ) -> bool:  # Renamed data to instance
         check = sm.foo == 0
@@ -63,7 +63,7 @@ async def test_complex_hsm():
         print(f"Guard after: {triggered}")
         return triggered
 
-    async def choice_guard_foo_eq_0(
+    def choice_guard_foo_eq_0(
         ctx: hsm.Context, sm: THSM, event: hsm.Event
     ) -> bool:  # Renamed data to instance
         check = sm.foo == 0
@@ -74,7 +74,7 @@ async def test_complex_hsm():
         ctx: hsm.Context, sm: THSM, event: hsm.Event
     ) -> None:  # Renamed data to instance
         trace["sync"].append("s11.J.transition.effect")
-        await sm.dispatch(hsm.Event(name="K"))  # Potential async dispatch
+        await sm.dispatch(ctx, hsm.Event(name="K"))  # Potential async dispatch
 
     # Define the model (assuming Python library supports similar features)
     # Note: Activities and After/Every might require async support in the library
@@ -105,14 +105,14 @@ async def test_complex_hsm():
                 ),
                 hsm.transition(
                     hsm.on("A"),
-                    hsm.target("/s/s1"),
+                    hsm.target("/TestHSM/s/s1"),
                     hsm.effect(mock_action("s1.A.transition.effect")),
                 ),  # Self transition
             ),
             hsm.transition(
                 hsm.on("D"),
-                hsm.source("/s/s1/s11"),
-                hsm.target("/s/s1"),
+                hsm.source("/TestHSM/s/s1/s11"),
+                hsm.target("/TestHSM/s/s1"),
                 hsm.effect(mock_action("s11.D.transition.effect")),
                 hsm.guard(guard_foo_eq_1),
             ),
@@ -136,7 +136,7 @@ async def test_complex_hsm():
                         hsm.exit(mock_action("s211.exit")),
                         hsm.transition(
                             hsm.on("G"),
-                            hsm.target("/s/s1/s11"),
+                            hsm.target("/TestHSM/s/s1/s11"),
                             hsm.effect(mock_action("s211.G.transition.effect")),
                         ),
                     ),
@@ -145,7 +145,7 @@ async def test_complex_hsm():
                         hsm.effect(mock_action("s21.initial.effect")),
                     ),
                     hsm.transition(
-                        hsm.on("A"), hsm.target("/s/s2/s21")
+                        hsm.on("A"), hsm.target("/TestHSM/s/s2/s21")
                     ),  # Self transition
                 ),
                 hsm.initial(
@@ -153,7 +153,7 @@ async def test_complex_hsm():
                 ),
                 hsm.transition(
                     hsm.on("C"),
-                    hsm.target("/s/s1"),
+                    hsm.target("/TestHSM/s/s1"),
                     hsm.effect(mock_action("s2.C.transition.effect")),
                 ),
             ),
@@ -172,7 +172,7 @@ async def test_complex_hsm():
                 # Assuming choice takes a list of transitions
                 hsm.choice(
                     hsm.transition(
-                        hsm.target("/s/s2"),
+                        hsm.target("/TestHSM/s/s2"),
                     )  # No guard needed, always taken
                 )
             ),
@@ -180,65 +180,65 @@ async def test_complex_hsm():
         ),
         hsm.transition(
             hsm.on("D"),
-            hsm.source("/s/s1"),
-            hsm.target("/s"),
+            hsm.source("/TestHSM/s/s1"),
+            hsm.target("/TestHSM/s"),
             hsm.effect(mock_action("s1.D.transition.effect")),
             hsm.guard(guard_foo_eq_0),
         ),
-        # hsm.transition("wildcard", hsm.trigger("abcd*"), hsm.source("/s"), hsm.target("/s")), # Wildcard support?
+        # hsm.transition("wildcard", hsm.trigger("abcd*"), hsm.source("/TestHSM/s"), hsm.target("/TestHSM/s")), # Wildcard support?
         hsm.transition(
             hsm.on("D"),
-            hsm.source("/s"),
-            hsm.target("/s"),
+            hsm.source("/TestHSM/s"),
+            hsm.target("/TestHSM/s"),
             hsm.effect(mock_action("s.D.transition.effect")),
         ),  # Duplicate trigger 'D' - check priority/behavior
         hsm.transition(
             hsm.on("C"),
-            hsm.source("/s/s1"),
-            hsm.target("/s/s2"),
+            hsm.source("/TestHSM/s/s1"),
+            hsm.target("/TestHSM/s/s2"),
             hsm.effect(mock_action("s1.C.transition.effect")),
         ),
         hsm.transition(
             hsm.on("E"),
-            hsm.source("/s"),
-            hsm.target("/s/s1/s11"),
+            hsm.source("/TestHSM/s"),
+            hsm.target("/TestHSM/s/s1/s11"),
             hsm.effect(mock_action("s.E.transition.effect")),
         ),
         hsm.transition(
             hsm.on("G"),
-            hsm.source("/s/s1/s11"),
-            hsm.target("/s/s2/s21/s211"),
+            hsm.source("/TestHSM/s/s1/s11"),
+            hsm.target("/TestHSM/s/s2/s21/s211"),
             hsm.effect(mock_action("s11.G.transition.effect")),
         ),
         hsm.transition(
             hsm.on("I"),
-            hsm.source("/s"),
+            hsm.source("/TestHSM/s"),
             hsm.effect(mock_action("s.I.transition.effect")),
             hsm.guard(guard_foo_eq_0),
         ),
-        # hsm.transition(hsm.after(2), hsm.source("/s/s2/s21/s211"), hsm.target("/s/s1/s11"), hsm.effect(mock_action("s211.after.transition.effect")), hsm.guard(guard_after)), # Assuming hsm.after(seconds) syntax
+        # hsm.transition(hsm.after(2), hsm.source("/TestHSM/s/s2/s21/s211"), hsm.target("/TestHSM/s/s1/s11"), hsm.effect(mock_action("s211.after.transition.effect")), hsm.guard(guard_after)), # Assuming hsm.after(seconds) syntax
         hsm.transition(
             hsm.on("H"),
-            hsm.source("/s/s1/s11"),
+            hsm.source("/TestHSM/s/s1/s11"),
             hsm.target(
                 hsm.choice(
                     # Order matters: First matching guard wins
                     hsm.transition(
-                        hsm.target("/s/s1"), hsm.guard(choice_guard_foo_eq_0)
+                        hsm.target("/TestHSM/s/s1"), hsm.guard(choice_guard_foo_eq_0)
                     ),
                     hsm.transition(
-                        hsm.target("/s/s2"),
+                        hsm.target("/TestHSM/s/s2"),
                         hsm.effect(mock_action("s11.H.choice.transition.effect")),
                     ),
                 )
             ),
             hsm.effect(mock_action("s11.H.transition.effect")),
         ),
-        # hsm.transition(hsm.trigger("J"), hsm.source("/s/s2/s21/s211"), hsm.target("/s/s1/s11"), hsm.effect(effect_dispatch_k)), # Effect needs access to sm instance
+        # hsm.transition(hsm.trigger("J"), hsm.source("/TestHSM/s/s2/s21/s211"), hsm.target("/TestHSM/s/s1/s11"), hsm.effect(effect_dispatch_k)), # Effect needs access to sm instance
         hsm.transition(
             hsm.on("K"),
-            hsm.source("/s/s1/s11"),
-            hsm.target("/s/s3"),
+            hsm.source("/TestHSM/s/s1/s11"),
+            hsm.target("/TestHSM/s/s3"),
             hsm.effect(mock_action("s11.K.transition.effect")),
         ),
         hsm.transition(
@@ -246,8 +246,8 @@ async def test_complex_hsm():
         ),  # Global transition?
         hsm.transition(
             hsm.on("X"),
-            hsm.source("/s/s3"),
-            hsm.target("/exit"),
+            hsm.source("/TestHSM/s/s3"),
+            hsm.target("/TestHSM/exit"),
             hsm.effect(mock_action("X.transition.effect")),
         ),
     )
@@ -255,7 +255,7 @@ async def test_complex_hsm():
     # Pass hsm_data as the initial data object
     # Assuming hsm.start returns an awaitable or the instance directly
     ctx = hsm.Context()
-    await hsm.start(ctx, sm, model)
+    await hsm.started(ctx, sm, model)
     # If start is async or involves async setup, await it
     # await sm.wait_for_ready() # Or similar, if needed
 
@@ -284,7 +284,7 @@ async def test_complex_hsm():
     trace["async"].clear()
 
     print("Dispatching G")
-    await sm.dispatch(hsm.Event(name="G"))
+    await sm.dispatch(ctx, hsm.Event(name="G"))
     print("State after G:", sm.state())
     print("Trace after G:", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -307,7 +307,7 @@ async def test_complex_hsm():
     # internal dispatch (J->K), and potential differences in library behavior.
 
     print("Dispatching I")
-    await sm.dispatch(hsm.Event(name="I"))
+    await sm.dispatch(ctx, hsm.Event(name="I"))
     print("State after I:", sm.state())
     print("Trace after I:", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -320,7 +320,7 @@ async def test_complex_hsm():
     trace["sync"].clear()
 
     print("Dispatching A")
-    await sm.dispatch(hsm.Event(name="A"))
+    await sm.dispatch(ctx, hsm.Event(name="A"))
     print("State after A:", sm.state())
     print("Trace after A:", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -340,7 +340,7 @@ async def test_complex_hsm():
 
     # First D: Guard foo==1 is true (foo=1). Transition /s/s1/s11 -> /s/s1 happens. foo becomes 0.
     print("Dispatching D (1st)")
-    await sm.dispatch(hsm.Event(name="D"))
+    await sm.dispatch(ctx, hsm.Event(name="D"))
     print("State after D (1st):", sm.state())
     print("Trace after D (1st):", trace)
     assert sm.state() == "/TestHSM/s/s1"  # Target is /s/s1
@@ -354,7 +354,7 @@ async def test_complex_hsm():
 
     # Second D: Source /s/s1 matches. Guard foo==0 is true. Transition /s/s1 -> /s happens. foo becomes 1.
     print("Dispatching D (2nd)")
-    await sm.dispatch(hsm.Event(name="D"))
+    await sm.dispatch(ctx, hsm.Event(name="D"))
     print("State after D (2nd):", sm.state())
     print("Trace after D (2nd):", trace)
     assert sm.state() == "/TestHSM/s"
@@ -374,7 +374,7 @@ async def test_complex_hsm():
     # It does NOT trigger entry/exit of /s, but triggers the effect.
     # It then enters the initial state of /s -> s1 -> s11
     print("Dispatching D (3rd)")
-    await sm.dispatch(hsm.Event(name="D"))
+    await sm.dispatch(ctx, hsm.Event(name="D"))
     print("State after D (3rd):", sm.state())
     print("Trace after D (3rd):", trace)
     # Go trace: ["s.exit", "s.D.transition.effect", "s.entry", "s.initial.effect", "s1.entry", "s11.entry"] (implies external transition?)
@@ -394,7 +394,7 @@ async def test_complex_hsm():
 
     # Fourth D: Back in /s/s1/s11. foo=1. Guard foo==1 is true. Transition /s/s1/s11 -> /s/s1. foo becomes 0.
     print("Dispatching D (4th)")
-    await sm.dispatch(hsm.Event(name="D"))
+    await sm.dispatch(ctx, hsm.Event(name="D"))
     print("State after D (4th):", sm.state())
     print("Trace after D (4th):", trace)
     assert sm.state() == "/TestHSM/s/s1"
@@ -406,7 +406,7 @@ async def test_complex_hsm():
     trace["sync"].clear()
 
     print("Dispatching C")
-    await sm.dispatch(hsm.Event(name="C"))
+    await sm.dispatch(ctx, hsm.Event(name="C"))
     print("State after C:", sm.state())
     print("Trace after C:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"
@@ -426,7 +426,7 @@ async def test_complex_hsm():
 
     # First E: From /s -> /s/s1/s11. Exits s211, s21, s2. Effect. Enters s1, s11.
     print("Dispatching E (1st)")
-    await sm.dispatch(hsm.Event(name="E"))
+    await sm.dispatch(ctx, hsm.Event(name="E"))
     print("State after E (1st):", sm.state())
     print("Trace after E (1st):", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -445,7 +445,7 @@ async def test_complex_hsm():
 
     # Second E: From /s -> /s/s1/s11. Exits s11, s1. Effect. Enters s1, s11.
     print("Dispatching E (2nd)")
-    await sm.dispatch(hsm.Event(name="E"))
+    await sm.dispatch(ctx, hsm.Event(name="E"))
     print("State after E (2nd):", sm.state())
     print("Trace after E (2nd):", trace)
     assert sm.state() == "/TestHSM/s/s1/s11"
@@ -463,7 +463,7 @@ async def test_complex_hsm():
 
     # G: From /s/s1/s11 -> /s/s2/s21/s211. Exits s11, s1. Effect. Enters s2, s21, s211.
     print("Dispatching G")
-    await sm.dispatch(hsm.Event(name="G"))
+    await sm.dispatch(ctx, hsm.Event(name="G"))
     print("State after G:", sm.state())
     print("Trace after G:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"
@@ -484,7 +484,7 @@ async def test_complex_hsm():
 
     # I: From /s. Guard foo==0 is true. Effect. foo becomes 1. Stays in /s/s2/s21/s211.
     print("Dispatching I")
-    await sm.dispatch(hsm.Event(name="I"))
+    await sm.dispatch(ctx, hsm.Event(name="I"))
     print("State after I:", sm.state())
     print("Trace after I:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"
@@ -509,12 +509,12 @@ async def test_complex_hsm():
     # H: From /s/s1/s11 -> choice. foo=1. Guard foo==0 is false. Takes second choice transition -> /s/s2.
     # Need to be in /s/s1/s11 first. Let's add a G dispatch again.
     # Reset state to /s/s1/s11
-    await sm.dispatch(hsm.Event(name="G"))  # s211->s11
+    await sm.dispatch(ctx, hsm.Event(name="G"))  # s211->s11
     trace["sync"].clear()
     sm.foo = 1  # Set foo on the instance
 
     print("Dispatching H")
-    await sm.dispatch(hsm.Event(name="H"))
+    await sm.dispatch(ctx, hsm.Event(name="H"))
     print("State after H:", sm.state())
     print("Trace after H:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"  # Target is /s/s2, then enters initial chain
@@ -561,7 +561,7 @@ async def test_complex_hsm():
     # Z: Global transition? Assume it triggers in any '/s' substate. Current state /s/s2/s21/s11.
     # Let's assume Z triggers, effect runs, stays in state.
     print("Dispatching Z")
-    await sm.dispatch(hsm.Event(name="Z"))
+    await sm.dispatch(ctx, hsm.Event(name="Z"))
     print("State after Z:", sm.state())
     print("Trace after Z:", trace)
     assert sm.state() == "/TestHSM/s/s2/s21/s211"  # No target specified, stays in state
@@ -599,17 +599,17 @@ async def test_simple_hsm():
         hsm.state("s3"),
     )
     ctx = hsm.Context()
-    sm = await hsm.start(ctx, THSM(), model)
+    sm = await hsm.started(ctx, THSM(), model)
     assert sm.state() == "/SimpleHSM/s1"
-    await sm.dispatch(hsm.Event(name="A"))
+    await sm.dispatch(ctx, hsm.Event(name="A"))
     assert sm.state() == "/SimpleHSM/s2"
     await hsm.stop(sm)
     
     # Test the B transition
     ctx2 = hsm.Context()
-    sm2 = await hsm.start(ctx2, THSM(), model)
+    sm2 = await hsm.started(ctx2, THSM(), model)
     assert sm2.state() == "/SimpleHSM/s1"
-    await sm2.dispatch(hsm.Event(name="B"))
+    await sm2.dispatch(ctx, hsm.Event(name="B"))
     assert sm2.state() == "/SimpleHSM/s3"
     await hsm.stop(sm2)
 

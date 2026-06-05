@@ -24,16 +24,16 @@ async def test_basic_choice_pseudostate_with_guards():
     instance = ChoiceInstance()
     instance.data['value'] = 5
 
-    async def going_to_choice_effect(ctx, inst, event):
+    def going_to_choice_effect(ctx, inst, event):
         inst.log_action('going-to-choice')
 
-    async def chose_low_effect(ctx, inst, event):
+    def chose_low_effect(ctx, inst, event):
         inst.log_action('chose-low')
 
-    async def chose_medium_effect(ctx, inst, event):
+    def chose_medium_effect(ctx, inst, event):
         inst.log_action('chose-medium')
 
-    async def chose_high_effect(ctx, inst, event):
+    def chose_high_effect(ctx, inst, event):
         inst.log_action('chose-high')
 
     async def low_entry(ctx, inst, event):
@@ -45,10 +45,10 @@ async def test_basic_choice_pseudostate_with_guards():
     async def high_entry(ctx, inst, event):
         inst.log_action('high-entry')
 
-    async def low_guard(ctx, inst, event):
+    def low_guard(ctx, inst, event):
         return inst.data['value'] < 3
 
-    async def medium_guard(ctx, inst, event):
+    def medium_guard(ctx, inst, event):
         return inst.data['value'] >= 3 and inst.data['value'] < 7
 
     model = hsm.define('BasicChoiceMachine',
@@ -82,10 +82,10 @@ async def test_basic_choice_pseudostate_with_guards():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Trigger choice evaluation
-    await sm.dispatch(Event('decide'))
+    await sm.dispatch(ctx, Event(name='decide'))
 
     # Should choose medium branch
     assert instance.log == [
@@ -113,19 +113,19 @@ async def test_choice_pseudostate_with_different_guard_outcomes():
         instance.data['value'] = test_case['value']
         instance.log = []
 
-        async def low_guard(ctx, inst, event):
+        def low_guard(ctx, inst, event):
             return inst.data['value'] < 3
 
-        async def medium_guard(ctx, inst, event):
+        def medium_guard(ctx, inst, event):
             return inst.data['value'] >= 3 and inst.data['value'] < 7
 
-        async def chose_low_effect(ctx, inst, event):
+        def chose_low_effect(ctx, inst, event):
             inst.log_action('chose-low')
 
-        async def chose_medium_effect(ctx, inst, event):
+        def chose_medium_effect(ctx, inst, event):
             inst.log_action('chose-medium')
 
-        async def chose_high_effect(ctx, inst, event):
+        def chose_high_effect(ctx, inst, event):
             inst.log_action('chose-high')
 
         model = hsm.define('ChoiceTestMachine',
@@ -152,7 +152,7 @@ async def test_choice_pseudostate_with_different_guard_outcomes():
         )
 
         ctx = Context()
-        sm = await hsm.start(ctx, instance, model)
+        sm = await hsm.started(ctx, instance, model)
 
         assert test_case['expected_effect'] in instance.log
         assert sm.state() == f'/ChoiceTestMachine/{test_case["expected_state"]}'
@@ -166,19 +166,19 @@ async def test_choice_in_hierarchical_state():
     instance = ChoiceInstance()
     instance.data['direction'] = 'left'
 
-    async def left_guard(ctx, inst, event):
+    def left_guard(ctx, inst, event):
         return inst.data['direction'] == 'left'
 
-    async def right_guard(ctx, inst, event):
+    def right_guard(ctx, inst, event):
         return inst.data['direction'] == 'right'
 
-    async def routed_left_effect(ctx, inst, event):
+    def routed_left_effect(ctx, inst, event):
         inst.log_action('routed-left')
 
-    async def routed_right_effect(ctx, inst, event):
+    def routed_right_effect(ctx, inst, event):
         inst.log_action('routed-right')
 
-    async def routed_center_effect(ctx, inst, event):
+    def routed_center_effect(ctx, inst, event):
         inst.log_action('routed-center')
 
     async def left_entry(ctx, inst, event):
@@ -217,7 +217,7 @@ async def test_choice_in_hierarchical_state():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     assert instance.log == [
         'routed-left',
@@ -238,28 +238,28 @@ async def test_choice_with_complex_guard_conditions():
         'mode': 'auto'
     }
 
-    async def disabled_guard(ctx, inst, event):
+    def disabled_guard(ctx, inst, event):
         cfg = inst.data['config']
         return not cfg['enabled']
 
-    async def high_priority_guard(ctx, inst, event):
+    def high_priority_guard(ctx, inst, event):
         cfg = inst.data['config']
         return cfg['enabled'] and cfg['priority'] > 5 and cfg['mode'] == 'manual'
 
-    async def auto_guard(ctx, inst, event):
+    def auto_guard(ctx, inst, event):
         cfg = inst.data['config']
         return cfg['enabled'] and cfg['mode'] == 'auto'
 
-    async def disabled_effect(ctx, inst, event):
+    def disabled_effect(ctx, inst, event):
         inst.log_action('disabled-path')
 
-    async def high_priority_effect(ctx, inst, event):
+    def high_priority_effect(ctx, inst, event):
         inst.log_action('high-priority-manual')
 
-    async def automatic_effect(ctx, inst, event):
+    def automatic_effect(ctx, inst, event):
         inst.log_action('automatic-mode')
 
-    async def default_effect(ctx, inst, event):
+    def default_effect(ctx, inst, event):
         inst.log_action('default-fallback')
 
     model = hsm.define('ComplexChoiceMachine',
@@ -292,7 +292,7 @@ async def test_choice_with_complex_guard_conditions():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Should choose automatic mode
     assert instance.log == ['automatic-mode']
@@ -306,19 +306,19 @@ async def test_choice_with_event_data_evaluation():
     """Choice with event data evaluation"""
     instance = ChoiceInstance()
 
-    async def urgent_guard(ctx, inst, event):
+    def urgent_guard(ctx, inst, event):
         return hasattr(event, 'data') and event.data and event.data.get('type') == 'urgent'
 
-    async def normal_guard(ctx, inst, event):
+    def normal_guard(ctx, inst, event):
         return hasattr(event, 'data') and event.data and event.data.get('type') == 'normal'
 
-    async def urgent_effect(ctx, inst, event):
+    def urgent_effect(ctx, inst, event):
         inst.log_action('urgent-processing')
 
-    async def normal_effect(ctx, inst, event):
+    def normal_effect(ctx, inst, event):
         inst.log_action('normal-processing')
 
-    async def fallback_effect(ctx, inst, event):
+    def fallback_effect(ctx, inst, event):
         inst.log_action('fallback-processing')
 
     model = hsm.define('EventChoiceMachine',
@@ -351,11 +351,11 @@ async def test_choice_with_event_data_evaluation():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Send event with urgent data
-    event = Event('process', {'type': 'urgent', 'priority': 1})
-    await sm.dispatch(event)
+    event = Event(name='process', data={'type': 'urgent', 'priority': 1})
+    await sm.dispatch(ctx, event)
 
     assert instance.log == ['urgent-processing']
     assert sm.state() == '/EventChoiceMachine/urgent'
@@ -368,7 +368,7 @@ async def test_choice_with_no_matching_guards_should_raise_error():
     """Choice with no matching guards - should raise error"""
     instance = ChoiceInstance()
 
-    async def always_false_guard(ctx, inst, event):
+    def always_false_guard(ctx, inst, event):
         return False
 
     # Should raise validation error at definition time since choice lacks guardless fallback
@@ -392,28 +392,28 @@ async def test_nested_choice_pseudostates():
     instance.data['level1'] = True
     instance.data['level2'] = 'b'
 
-    async def level1_guard(ctx, inst, event):
+    def level1_guard(ctx, inst, event):
         return inst.data['level1']
 
-    async def level2a_guard(ctx, inst, event):
+    def level2a_guard(ctx, inst, event):
         return inst.data['level2'] == 'a'
 
-    async def level2b_guard(ctx, inst, event):
+    def level2b_guard(ctx, inst, event):
         return inst.data['level2'] == 'b'
 
-    async def level1_true_effect(ctx, inst, event):
+    def level1_true_effect(ctx, inst, event):
         inst.log_action('level1-true')
 
-    async def level1_false_effect(ctx, inst, event):
+    def level1_false_effect(ctx, inst, event):
         inst.log_action('level1-false')
 
-    async def level2a_effect(ctx, inst, event):
+    def level2a_effect(ctx, inst, event):
         inst.log_action('level2-a')
 
-    async def level2b_effect(ctx, inst, event):
+    def level2b_effect(ctx, inst, event):
         inst.log_action('level2-b')
 
-    async def level2_other_effect(ctx, inst, event):
+    def level2_other_effect(ctx, inst, event):
         inst.log_action('level2-other')
 
     model = hsm.define('NestedChoiceMachine',
@@ -452,7 +452,7 @@ async def test_nested_choice_pseudostates():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Should follow level1 choice then level2 choice
     assert instance.log == [
@@ -469,11 +469,11 @@ async def test_choice_guard_evaluation_order():
     """Choice with side effects in guards"""
     instance = ChoiceInstance()
 
-    async def guard1(ctx, inst, event):
+    def guard1(ctx, inst, event):
         inst.log_action('guard1-evaluated')
         return False
 
-    async def guard2(ctx, inst, event):
+    def guard2(ctx, inst, event):
         inst.log_action('guard2-evaluated')
         return True
 
@@ -481,7 +481,7 @@ async def test_choice_guard_evaluation_order():
         inst.log_action('guard3-evaluated')
         return True
 
-    async def path2_effect(ctx, inst, event):
+    def path2_effect(ctx, inst, event):
         inst.log_action('path2-effect')
 
     model = hsm.define('SideEffectChoiceMachine',
@@ -506,7 +506,7 @@ async def test_choice_guard_evaluation_order():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     # Should evaluate guards in order until first true
     assert instance.log == [

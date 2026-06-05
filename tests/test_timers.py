@@ -39,6 +39,9 @@ class ManualClock:
             self.cancelled += 1
             raise
 
+    def After(self, duration: timedelta) -> asyncio.Task[None]:
+        return asyncio.create_task(self.sleep(duration))
+
     def _prune_done(self) -> None:
         self.sleeps = [(duration, future) for duration, future in self.sleeps if not future.done()]
 
@@ -85,7 +88,7 @@ async def test_basic_after_timer_fires_once_after_delay():
     async def waiting_entry(ctx, inst, event):
         inst.log_action('waiting-entry')
 
-    async def timer_triggered_effect(ctx, inst, event):
+    def timer_triggered_effect(ctx, inst, event):
         inst.log_action('timer-triggered')
 
     async def done_entry(ctx, inst, event):
@@ -100,7 +103,7 @@ async def test_basic_after_timer_fires_once_after_delay():
             hsm.entry(waiting_entry),
             hsm.transition(
                 hsm.after(after_delay),
-                hsm.target('/done'),
+                hsm.target('../done'),
                 hsm.effect(timer_triggered_effect)
             )
         ),
@@ -110,7 +113,7 @@ async def test_basic_after_timer_fires_once_after_delay():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
     assert instance.log == ['waiting-entry']
     assert sm.state() == '/BasicAfterMachine/waiting'
 
@@ -134,10 +137,10 @@ async def test_after_timer_aborted_on_state_exit():
     instance = TimerInstance()
     clock = ManualClock()
 
-    async def timeout_effect(ctx, inst, event):
+    def timeout_effect(ctx, inst, event):
         inst.log_action('timeout-fired')
 
-    async def cancel_effect(ctx, inst, event):
+    def cancel_effect(ctx, inst, event):
         inst.log_action('manual-cancel')
 
     async def long_delay(ctx, inst, event):
@@ -148,12 +151,12 @@ async def test_after_timer_aborted_on_state_exit():
         hsm.state('timed',
             hsm.transition(
                 hsm.after(long_delay),
-                hsm.target('/timeout'),
+                hsm.target('../timeout'),
                 hsm.effect(timeout_effect)
             ),
             hsm.transition(
                 hsm.on('cancel'),
-                hsm.target('/cancelled'),
+                hsm.target('../cancelled'),
                 hsm.effect(cancel_effect)
             )
         ),
@@ -162,10 +165,10 @@ async def test_after_timer_aborted_on_state_exit():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep()
-    await sm.dispatch(Event(name='cancel'))
+    await sm.dispatch(ctx, Event(name='cancel'))
 
     assert instance.log == ['manual-cancel']
     assert sm.state() == '/AbortedAfterMachine/cancelled'
@@ -188,11 +191,11 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
         inst.data['count'] = 0
         inst.log_action('counting-entry')
 
-    async def tick_effect(ctx, inst, event):
+    def tick_effect(ctx, inst, event):
         inst.data['count'] += 1
         inst.log_action(f'tick-{inst.data["count"]}')
 
-    async def stop_effect(ctx, inst, event):
+    def stop_effect(ctx, inst, event):
         inst.log_action(f'stopped-at-{inst.data["count"]}')
 
     async def every_interval(ctx, inst, event):
@@ -208,7 +211,7 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
             ),
             hsm.transition(
                 hsm.on('stop'),
-                hsm.target('/stopped'),
+                hsm.target('../stopped'),
                 hsm.effect(stop_effect)
             )
         ),
@@ -216,7 +219,7 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
     assert instance.log == ['counting-entry']
 
     await clock.wait_for_sleep()
@@ -229,7 +232,7 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
     assert 'tick-1' in instance.log
     assert 'tick-2' in instance.log
 
-    await sm.dispatch(Event(name='stop'))
+    await sm.dispatch(ctx, Event(name='stop'))
 
     final_count = instance.data['count']
     assert f'stopped-at-{final_count}' in instance.log
@@ -248,10 +251,10 @@ async def test_multiple_timers_in_same_state():
     instance = TimerInstance()
     clock = ManualClock()
 
-    async def timer1_effect(ctx, inst, event):
+    def timer1_effect(ctx, inst, event):
         inst.log_action('timer1-fired')
 
-    async def timer2_effect(ctx, inst, event):
+    def timer2_effect(ctx, inst, event):
         inst.log_action('timer2-fired')
 
     async def delay1(ctx, inst, event):
@@ -265,12 +268,12 @@ async def test_multiple_timers_in_same_state():
         hsm.state('multi',
             hsm.transition(
                 hsm.after(delay1),
-                hsm.target('/path1'),
+                hsm.target('../path1'),
                 hsm.effect(timer1_effect)
             ),
             hsm.transition(
                 hsm.after(delay2),
-                hsm.target('/path2'),
+                hsm.target('../path2'),
                 hsm.effect(timer2_effect)
             )
         ),
@@ -279,7 +282,7 @@ async def test_multiple_timers_in_same_state():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep(2)
     assert sorted(duration for duration, _ in clock.sleeps) == [
@@ -309,7 +312,7 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
     async def waiting_entry(ctx, inst, event):
         inst.log_action(f'waiting-with-delay-{inst.data["delay"]}')
 
-    async def dynamic_timer_effect(ctx, inst, event):
+    def dynamic_timer_effect(ctx, inst, event):
         inst.log_action('dynamic-timer-fired')
 
     async def dynamic_delay(ctx, inst, event):
@@ -321,7 +324,7 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
             hsm.entry(waiting_entry),
             hsm.transition(
                 hsm.after(dynamic_delay),
-                hsm.target('/finished'),
+                hsm.target('../finished'),
                 hsm.effect(dynamic_timer_effect)
             )
         ),
@@ -329,7 +332,7 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
     assert instance.log == ['waiting-with-delay-60']
 
     await clock.wait_for_sleep()
@@ -359,19 +362,19 @@ async def test_timer_with_event_data_access():
         hsm.state('timed',
             hsm.transition(
                 hsm.after(event_data_timer),
-                hsm.target('/triggered')
+                hsm.target('../triggered')
             )
         ),
         hsm.state('triggered')
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep()
 
     assert instance.data['timer_event'] is not None
-    assert instance.data['timer_event'].name == 'hsm_initial'
+    assert instance.data['timer_event'].name == 'hsm/initial'
 
     assert clock.release_next() == timedelta(milliseconds=50)
     await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/EventDataTimerMachine/triggered"), timeout=1)
@@ -386,7 +389,7 @@ async def test_zero_or_negative_timer_duration():
     instance = TimerInstance()
     clock = ManualClock()
 
-    async def immediate_effect(ctx, inst, event):
+    def immediate_effect(ctx, inst, event):
         inst.log_action('immediate-timer')
 
     async def zero_delay(ctx, inst, event):
@@ -397,7 +400,7 @@ async def test_zero_or_negative_timer_duration():
         hsm.state('immediate',
             hsm.transition(
                 hsm.after(zero_delay),
-                hsm.target('/done'),
+                hsm.target('../done'),
                 hsm.effect(immediate_effect)
             )
         ),
@@ -405,7 +408,7 @@ async def test_zero_or_negative_timer_duration():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await asyncio.sleep(0)
 
@@ -422,7 +425,7 @@ async def test_timer_in_hierarchical_state():
     instance = TimerInstance()
     clock = ManualClock()
 
-    async def parent_timeout_effect(ctx, inst, event):
+    def parent_timeout_effect(ctx, inst, event):
         inst.log_action('parent-handled-timeout')
 
     async def hier_delay(ctx, inst, event):
@@ -434,7 +437,7 @@ async def test_timer_in_hierarchical_state():
             hsm.state('child',
                 hsm.transition(
                     hsm.after(hier_delay),
-                    hsm.target('/done'),
+                    hsm.target('../../done'),
                     hsm.effect(parent_timeout_effect)
                 )
             )
@@ -443,7 +446,7 @@ async def test_timer_in_hierarchical_state():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
     assert sm.state() == '/HierarchicalTimerMachine/parent/child'
 
     await clock.wait_for_sleep()
@@ -467,7 +470,7 @@ async def test_every_timer_with_abort_signal_handling():
         if 'tick_count' not in inst.data:
             inst.data['tick_count'] = 0
 
-    async def every_tick_effect(ctx, inst, event):
+    def every_tick_effect(ctx, inst, event):
         inst.data['tick_count'] += 1
         inst.log_action(f'tick-{inst.data["tick_count"]}')
 
@@ -497,7 +500,7 @@ async def test_every_timer_with_abort_signal_handling():
     )
 
     ctx = hsm.Context()
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=clock.sleep)))
+    sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep()
     assert clock.release_next() == timedelta(milliseconds=25)
@@ -507,7 +510,7 @@ async def test_every_timer_with_abort_signal_handling():
     await wait_until(lambda: instance.data['tick_count'] >= 2, "second self-transition tick did not fire")
 
     cancelled_before_finish = clock.cancelled
-    await sm.dispatch(Event(name='finish'))
+    await sm.dispatch(ctx, Event(name='finish'))
     final_tick = instance.data['tick_count']
 
     await wait_until(

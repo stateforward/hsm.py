@@ -65,13 +65,13 @@ async def test_basic_activity_starts_on_entry_stops_on_exit():
         hsm.state(
             "active",
             hsm.activity(basic_activity),
-            hsm.transition(hsm.on("stop"), hsm.target("/inactive")),
+            hsm.transition(hsm.on("stop"), hsm.target("../inactive")),
         ),
         hsm.state("inactive"),
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx=ctx, instance=instance, model=model)
+    sm = await hsm.started(ctx=ctx, instance=instance, model=model)
 
     await asyncio.wait_for(started.wait(), timeout=1)
 
@@ -80,7 +80,7 @@ async def test_basic_activity_starts_on_entry_stops_on_exit():
     assert instance.data["activity_started"] == 1
 
     # Exit state before activity completes
-    await sm.dispatch(Event(name="stop"))
+    await sm.dispatch(ctx, Event(name="stop"))
 
     await asyncio.wait_for(cancelled.wait(), timeout=1)
 
@@ -135,13 +135,13 @@ async def test_multiple_concurrent_activities():
         hsm.state(
             "busy",
             hsm.activity(activity1, activity2, activity3),
-            hsm.transition(hsm.on("stop"), hsm.target("/done")),
+            hsm.transition(hsm.on("stop"), hsm.target("../done")),
         ),
         hsm.state("done"),
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(activity1_started.wait(), timeout=1)
     await asyncio.wait_for(activity2_started.wait(), timeout=1)
@@ -157,7 +157,7 @@ async def test_multiple_concurrent_activities():
     assert "activity1-completed" in instance.log
     assert "activity2-completed" not in instance.log
 
-    await sm.dispatch(Event("stop"))
+    await sm.dispatch(ctx, Event(name="stop"))
     await asyncio.wait_for(activity2_cancelled.wait(), timeout=1)
 
     # Activity2 should be aborted
@@ -178,7 +178,7 @@ async def test_activity_error_handling():
         inst.log_action("activity-throwing")
         raise Exception("Activity error!")
 
-    async def error_effect(ctx: Context, inst: ActivityInstance, event: Event):
+    def error_effect(ctx: Context, inst: ActivityInstance, event: Event):
         nonlocal error_event_received
         inst.log_action("error-handled")
         inst.data["error_data"] = event.data
@@ -199,7 +199,7 @@ async def test_activity_error_handling():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(error_handled.wait(), timeout=1)
 
@@ -267,7 +267,7 @@ async def test_activities_in_hierarchical_states():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(parent_started.wait(), timeout=1)
     await asyncio.wait_for(child_started.wait(), timeout=1)
@@ -278,7 +278,7 @@ async def test_activities_in_hierarchical_states():
     assert instance.data["child_activity_active"] is True
 
     # Exit child state
-    await sm.dispatch(Event("up"))
+    await sm.dispatch(ctx, Event(name="up"))
     await asyncio.wait_for(child_aborted.wait(), timeout=1)
 
     # Only child activity should be aborted
@@ -287,7 +287,7 @@ async def test_activities_in_hierarchical_states():
     assert instance.data["parent_activity_active"] is True
 
     # Exit parent state
-    await sm.dispatch(Event("out"))
+    await sm.dispatch(ctx, Event(name="out"))
     await asyncio.wait_for(parent_aborted.wait(), timeout=1)
 
     # Parent activity should now be aborted
@@ -317,14 +317,14 @@ async def test_activity_with_event_data_access():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(activity_started.wait(), timeout=1)
 
     # Activity should receive the initial event
-    assert instance.data["activity_event"].name == "hsm_initial"
+    assert instance.data["activity_event"].name == "hsm/initial"
     assert instance.data["processed_trigger"] == "test-value"
-    assert instance.log == ["activity-event-hsm_initial"]
+    assert instance.log == ["activity-event-hsm/initial"]
 
     await hsm.stop(sm)
 
@@ -360,7 +360,7 @@ async def test_long_running_activity_completion():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(completed.wait(), timeout=1)
 
@@ -407,7 +407,7 @@ async def test_activity_reentry_behavior():
     )
 
     ctx = Context()
-    sm = await hsm.start(ctx, instance, model)
+    sm = await hsm.started(ctx, instance, model)
 
     await wait_for_activity_count(1)
 
@@ -415,14 +415,14 @@ async def test_activity_reentry_behavior():
     assert instance.log == ["activity-run-1"]
 
     # Self transition should restart activity
-    await sm.dispatch(Event("restart"))
+    await sm.dispatch(ctx, Event(name="restart"))
     await wait_for_activity_count(2)
 
     assert instance.data["activity_count"] == 2
     assert "activity-run-2" in instance.log
 
     # Another restart
-    await sm.dispatch(Event("restart"))
+    await sm.dispatch(ctx, Event(name="restart"))
     await wait_for_activity_count(3)
 
     assert instance.data["activity_count"] == 3
