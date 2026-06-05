@@ -242,13 +242,13 @@ async def test_effects_execution_timing():
     """Test effects execution timing relative to state changes"""
     instance = EffectInstance()
 
-    async def state1_exit(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def state1_exit(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('state1-exit')
 
     def transition_effect(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('transition-effect')
 
-    async def state2_entry(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
+    def state2_entry(ctx: hsm.Context, inst: EffectInstance, event: hsm.Event) -> None:
         inst.log_action('state2-entry')
 
     model = hsm.define('EffectTimingMachine',

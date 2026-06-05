@@ -14,6 +14,7 @@ import datetime
 import abc
 import re
 import weakref
+import inspect
 
 from hsm import muid
 from . import context
@@ -349,7 +350,6 @@ class TransitionElement(Element, kind=TransitionKind):
     guard: str | None = None
     effect: list[str] = dataclasses.field(default_factory=list)
     events: list[str] = dataclasses.field(default_factory=list)
-    # paths: dict[str, TransitionPath] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -412,7 +412,6 @@ class DefaultModelValidator(ModelValidator):
         return member
 
     def _validate_model(self, model: "Model", member: Model) -> None:
-        del model
         model_name = member.qualified_name.removeprefix("/")
         if "/" in model_name:
             raise ErrorValidatingModel(
@@ -434,6 +433,121 @@ class DefaultModelValidator(ModelValidator):
                 member.location,
                 "exit actions are not allowed on top level state machine",
             )
+        self._validate_state(model, member)
+
+    def _validate_state(self, model: "Model", state: StateElement) -> None:
+        initial_vertices = [
+            member
+            for member in model.members.values()
+            if isinstance(member, InitialElement)
+            and member.owner() == state.qualified_name
+        ]
+        if len(initial_vertices) > 1:
+            raise ErrorValidatingModel(
+                state.location,
+                f"state '{state.qualified_name}' has more than one initial vertex",
+            )
+        if state.initial:
+            _ = self._validate_member(
+                model,
+                state.initial,
+                InitialElement,
+                state.location,
+                "initial",
+                f"state '{state.qualified_name}'",
+            )
+        shallow_history_vertices = [
+            member
+            for member in model.members.values()
+            if isinstance(member, ShallowHistoryElement)
+            and member.owner() == state.qualified_name
+        ]
+        if len(shallow_history_vertices) > 1:
+            raise ErrorValidatingModel(
+                state.location,
+                f"state '{state.qualified_name}' has more than one shallow history vertex",
+            )
+        deep_history_vertices = [
+            member
+            for member in model.members.values()
+            if isinstance(member, DeepHistoryElement)
+            and member.owner() == state.qualified_name
+        ]
+        if len(deep_history_vertices) > 1:
+            raise ErrorValidatingModel(
+                state.location,
+                f"state '{state.qualified_name}' has more than one deep history vertex",
+            )
+        nested_states = [
+            member
+            for member in model.members.values()
+            if isinstance(member, StateElement)
+            and member.owner() == state.qualified_name
+        ]
+        if state.submachine is not None and (state.initial or nested_states):
+            raise ErrorValidatingModel(
+                state.location,
+                "state cannot have both a submachine and nested states",
+            )
+        for entry in state.entry:
+            behavior = self._validate_member(
+                model,
+                entry,
+                BehaviorElement,
+                state.location,
+                "entry",
+                f"state '{state.qualified_name}'",
+            )
+            if inspect.iscoroutinefunction(
+                typing.cast(BehaviorElement[typing.Any], behavior).operation
+            ):
+                raise ErrorValidatingModel(
+                    behavior.location,
+                    "entry must be a synchronous function",
+                )
+        for exit in state.exit:
+            behavior = self._validate_member(
+                model,
+                exit,
+                BehaviorElement,
+                state.location,
+                "exit",
+                f"state '{state.qualified_name}'",
+            )
+            if inspect.iscoroutinefunction(
+                typing.cast(BehaviorElement[typing.Any], behavior).operation
+            ):
+                raise ErrorValidatingModel(
+                    behavior.location,
+                    "exit must be a synchronous function",
+                )
+        for activity in state.activity:
+            _ = self._validate_member(
+                model,
+                activity,
+                BehaviorElement,
+                state.location,
+                "activity",
+                f"state '{state.qualified_name}'",
+            )
+
+    def _validate_pseudostate(
+        self, model: "Model", pseudostate: PseudostateElement
+    ) -> None:
+        del model
+        if isinstance(pseudostate, InitialElement) and len(pseudostate.transitions) > 1:
+            raise ErrorValidatingModel(
+                pseudostate.location,
+                f"initial vertex '{pseudostate.qualified_name}' has more than one outgoing transition",
+            )
+        if (
+            isinstance(pseudostate, (ShallowHistoryElement, DeepHistoryElement))
+            and len(pseudostate.transitions) > 1
+        ):
+            raise ErrorValidatingModel(
+                pseudostate.location,
+                f"history vertex '{pseudostate.qualified_name}' has more than one outgoing transition",
+            )
 
     def _validate_transition(
         self, model: "Model", transition: TransitionElement
@@ -451,10 +565,29 @@ class DefaultModelValidator(ModelValidator):
             "source",
             f"transition '{transition.qualified_name}'",
         )
-        if transition.target == "" and isinstance(source, InitialElement):
+        if transition.target == "" and isinstance(source, PseudostateElement):
             raise ErrorValidatingModel(
                 transition.location,
                 f"target is required for transition '{transition.qualified_name}'",
+            )
+        if isinstance(source, InitialElement):
+            extra_events = [
+                event for event in transition.events if event != InitialEvent.name
+            ]
+            if extra_events:
+                raise ErrorValidatingModel(
+                    transition.location,
+                    f"initial transition '{transition.qualified_name}' cannot have triggers",
+                )
+            if transition.guard is not None:
+                raise ErrorValidatingModel(
+                    transition.location,
+                    f"initial transition '{transition.qualified_name}' cannot have a guard",
+                )
+        elif isinstance(source, PseudostateElement) and transition.events:
+            raise ErrorValidatingModel(
+                transition.location,
+                f"transition '{transition.qualified_name}' outgoing pseudostate '{source.qualified_name}' cannot have triggers",
             )
         if transition.target != "":
             _ = self._validate_member(
@@ -466,7 +599,7 @@ class DefaultModelValidator(ModelValidator):
                 f"transition '{transition.qualified_name}'",
             )
         if transition.guard is not None:
-            _ = self._validate_member(
+            guard = self._validate_member(
                 model,
                 transition.guard,
                 ConstraintElement,
@@ -474,8 +607,15 @@ class DefaultModelValidator(ModelValidator):
                 "guard",
                 f"transition '{transition.qualified_name}'",
             )
+            if inspect.iscoroutinefunction(
+                typing.cast(ConstraintElement[typing.Any], guard).expression
+            ):
+                raise ErrorValidatingModel(
+                    guard.location,
+                    "guard must be a synchronous function",
+                )
         for effect in transition.effect:
-            _ = self._validate_member(
+            behavior = self._validate_member(
                 model,
                 effect,
                 BehaviorElement,
@@ -483,6 +623,13 @@ class DefaultModelValidator(ModelValidator):
                 "effect",
                 f"transition '{transition.qualified_name}'",
             )
+            if inspect.iscoroutinefunction(
+                typing.cast(BehaviorElement[typing.Any], behavior).operation
+            ):
+                raise ErrorValidatingModel(
+                    behavior.location,
+                    "effect must be a synchronous function",
+                )
         for event in transition.events:
             if event not in model.events:
                 raise ErrorValidatingModel(
@@ -494,23 +641,70 @@ class DefaultModelValidator(ModelValidator):
                 transition.location,
                 f"transition '{transition.qualified_name}' has no events",
             )
+        if kind.Is(transition.kind, ExternalKind) and isinstance(
+            source, EntryPointElement
+        ):
+            raise ErrorValidatingModel(
+                transition.location,
+                f"external transition '{transition.qualified_name}' cannot source an entry point",
+            )
+        if kind.Is(transition.kind, InternalKind) and not isinstance(
+            source, StateElement
+        ):
+            raise ErrorValidatingModel(
+                transition.location,
+                f"internal transition '{transition.qualified_name}' must source a state",
+            )
 
     def _validate_choice(self, model: "Model", choice: ChoiceElement) -> None:
-        del model
         if not choice.transitions:
             raise ErrorValidatingModel(
                 choice.location,
                 f"choice '{choice.qualified_name}' has no transitions",
             )
+        incoming = [
+            transition
+            for transition in model.members.values()
+            if isinstance(transition, TransitionElement)
+            and transition.target == choice.qualified_name
+        ]
+        if not incoming:
+            raise ErrorValidatingModel(
+                choice.location,
+                f"choice '{choice.qualified_name}' has no incoming transitions",
+            )
+        last_transition = model.members.get(choice.transitions[-1])
+        if (
+            isinstance(last_transition, TransitionElement)
+            and last_transition.guard is not None
+        ):
+            raise ErrorValidatingModel(
+                last_transition.location,
+                f"the last transition of choice state '{choice.qualified_name}' cannot have a guard",
+            )
 
     def _validate_final_state(
         self, model: "Model", final_state: FinalStateElement
     ) -> None:
-        del model
         if final_state.transitions:
             raise ErrorValidatingModel(
                 final_state.location,
                 "final state cannot have transitions",
+            )
+        if final_state.initial or any(
+            isinstance(member, (VertexElement, TransitionElement))
+            and member is not final_state
+            and member.owner() == final_state.qualified_name
+            for member in model.members.values()
+        ):
+            raise ErrorValidatingModel(
+                final_state.location,
+                "final state cannot have regions",
+            )
+        if final_state.submachine is not None:
+            raise ErrorValidatingModel(
+                final_state.location,
+                "final state cannot reference a submachine",
             )
         if final_state.entry:
             raise ErrorValidatingModel(
@@ -535,6 +729,7 @@ class Model(StateElement):
     events: dict[str, Event[typing.Any]] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         self.members[self.qualified_name] = self
 
 
@@ -545,6 +740,12 @@ class FinalizedModel(Model):
     )
     deferred_map: dict[str, dict[str, bool]] = dataclasses.field(default_factory=dict)
     transition_paths: dict[str, dict[str, TransitionPath]] = dataclasses.field(
+        default_factory=dict
+    )
+    history_paths: dict[tuple[str, str], tuple[str, ...]] = dataclasses.field(
+        default_factory=dict
+    )
+    history_targets: dict[tuple[str, str | None], dict[str, str]] = dataclasses.field(
         default_factory=dict
     )
 
@@ -885,7 +1086,14 @@ class RedefinableHistory(
                 self.location,
                 "history must be called within a State()",
             )
-        qualified_name = join(namespace.qualified_name, self.name())
+        name = self.name()
+        if not name:
+            name = (
+                f"shallow_history_{len(model.members)}"
+                if self.kind == ShallowHistoryKind
+                else f"deep_history_{len(model.members)}"
+            )
+        qualified_name = join(namespace.qualified_name, name)
         if model.members.get(qualified_name) is not None:
             raise ErrorValidatingModel(
                 self.location,
@@ -943,7 +1151,10 @@ class DefaultModelFinalizer(ModelFinalizer):
         finalized.transition_map.clear()
         finalized.deferred_map.clear()
         finalized.transition_paths.clear()
+        finalized.history_paths.clear()
+        finalized.history_targets.clear()
         self._finalize_transitions(finalized)
+        self._finalize_history_paths(finalized)
         self._finalize_scheduled_events(finalized)
         self._finalize_deferred_map(finalized)
         self._finalize_transition_map(finalized)
@@ -1052,6 +1263,49 @@ class DefaultModelFinalizer(ModelFinalizer):
             exit_path.append(exiting)
             exiting = posixpath.dirname(exiting)
         return exit_path
+
+    def _finalize_history_paths(self, model: FinalizedModel) -> None:
+        history_elements = [
+            element
+            for element in model.members.values()
+            if isinstance(element, (ShallowHistoryElement, DeepHistoryElement))
+        ]
+        history_targets: dict[str, dict[str, str]] = {}
+        history_owners = {
+            history.owner() for history in history_elements if history.owner()
+        }
+        for history in history_elements:
+            owner = history.owner()
+            if not owner:
+                continue
+            for target, element in model.members.items():
+                if not isinstance(element, StateElement):
+                    continue
+                if target == owner or not IsAncestor(owner, target):
+                    continue
+                model.history_paths[(owner, target)] = tuple(
+                    self._finalize_enter_path(model, owner, target)
+                )
+                history_target = target
+                if isinstance(history, ShallowHistoryElement):
+                    while posixpath.dirname(history_target) != owner:
+                        history_target = posixpath.dirname(history_target)
+                        if history_target in ("", ".", "/"):
+                            break
+                if history_target not in ("", ".", "/"):
+                    history_targets.setdefault(target, {})[
+                        history.qualified_name
+                    ] = history_target
+        for target, targets in history_targets.items():
+            model.history_targets[(target, None)] = targets
+            for owner in history_owners:
+                filtered = {
+                    history_name: history_target
+                    for history_name, history_target in targets.items()
+                    if posixpath.dirname(history_name) != owner
+                }
+                if filtered:
+                    model.history_targets[(target, owner)] = filtered
 
     def _finalize_scheduled_events(self, model: FinalizedModel) -> None:
         for transition in (
@@ -1310,13 +1564,15 @@ class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
         self,
         model: Model,
         owner: Element,
+        *,
+        kind: int | None = None,
     ) -> list[BehaviorElement[TInstance]]:
         behaviors: list[BehaviorElement[TInstance]] = []
         for behavior_or_method in self.behaviors:
             behavior: BehaviorElement[TInstance] | None = None
             if isinstance(behavior_or_method, BehaviorElement):
                 behavior = BehaviorElement(
-                    kind=behavior_or_method.kind,
+                    kind=kind if kind is not None else behavior_or_method.kind,
                     qualified_name=join(
                         owner.qualified_name, behavior_or_method.name()
                     ),
@@ -1330,6 +1586,7 @@ class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
                     f"behavior_{len(model.members)}",
                 )
                 behavior = BehaviorElement(
+                    kind=kind if kind is not None else BehaviorKind,
                     qualified_name=join(owner.qualified_name, name),
                     operation=behavior_or_method,
                     location=self.location,
@@ -1439,7 +1696,8 @@ class RedefinableActivityBehavior(RedefinableBehaviors[TInstance]):
                 "activity must be called within a State",
             )
         state.activity.extend(
-            behavior.qualified_name for behavior in self.redefine_all(model, state)
+            behavior.qualified_name
+            for behavior in self.redefine_all(model, state, kind=ConcurrentKind)
         )
 
 
@@ -1515,6 +1773,7 @@ class RedefinableTransitionWithTimeEvent(
         )
         transition.events.append(event_name)
         return element
+
 
 @dataclasses.dataclass(kw_only=True)
 class RedefinableTransitionWithAfterEvent(
@@ -1614,9 +1873,7 @@ class RedefinableTransitionWithEveryEvent(
 
 
 @dataclasses.dataclass(kw_only=True)
-class RedefinableTransitionWithWhenEvent(
-    RedefinableTransitionWithTimeEvent[TInstance]
-):
+class RedefinableTransitionWithWhenEvent(RedefinableTransitionWithTimeEvent[TInstance]):
     expression: Expression[TInstance, typing.Any]
 
     @typing.override
@@ -1965,14 +2222,14 @@ class HSM(BehaviorElement[TInstance]):
     ):
         config = config or Config()
 
-        async def operation(
-            ctx: context.Context, instance: TInstance, event: Event
-        ) -> None:
+        def operation(ctx: context.Context, instance: TInstance, event: Event) -> None:
             del instance
+            if not self._processing.try_lock():
+                return None
             state = self._enter(ctx, self.model, event, True)
             if state is not None:
                 self._state = state
-            await self._process(ctx)
+            _ = asyncio.create_task(self._process(ctx))
 
         super().__init__(
             kind=StateMachineKind,
@@ -1995,8 +2252,7 @@ class HSM(BehaviorElement[TInstance]):
         self._active = {}
         self._cancel = lambda: None
         # self._attributes = _default_attribute_values(model)
-        # self._history_shallow: dict[str, str] = {}
-        # self._history_deep: dict[str, str] = {}
+        self._history: dict[str, str] = {}
         self._context = ctx or context.Context()
         self._clock = config.Clock or DefaultClock()
         setattr(self._instance, "_Instance__hsm", self)
@@ -2011,27 +2267,27 @@ class HSM(BehaviorElement[TInstance]):
         return self._clock
 
     async def _start(self, ctx: context.Context, data: TData = None) -> typing.Self:
-        async with self._processing:
-            maybe_instances = ctx.value(Keys.Instances)
-            if not isinstance(maybe_instances, weakref.WeakValueDictionary):
-                instances = weakref.WeakValueDictionary[str, Instance]()
-            else:
-                instances = typing.cast(
-                    weakref.WeakValueDictionary[str, Instance], maybe_instances
-                )
-            instances[self.id] = self._instance
-            self._context, self._cancel = context.with_cancel(
-                context.with_value(
-                    context.with_value(
-                        context.with_value(ctx, Keys.Instances, instances),
-                        Keys.HSM,
-                        self,
-                    ),
-                    Keys.Owner,
-                    ctx.value(Keys.HSM),
-                )
+        maybe_instances = ctx.value(Keys.Instances)
+        if not isinstance(maybe_instances, weakref.WeakValueDictionary):
+            instances = weakref.WeakValueDictionary[str, Instance]()
+        else:
+            instances = typing.cast(
+                weakref.WeakValueDictionary[str, Instance], maybe_instances
             )
-            self._execute(self._context, self, InitialEvent.WithData(data))
+        instances[self.id] = self._instance
+        self._context, self._cancel = context.with_cancel(
+            context.with_value(
+                context.with_value(
+                    context.with_value(ctx, Keys.Instances, instances),
+                    Keys.HSM,
+                    self,
+                ),
+                Keys.Owner,
+                ctx.value(Keys.HSM),
+            )
+        )
+        self._history.clear()
+        self._execute(self._context, self, InitialEvent.WithData(data))
         return self
 
     def _enter(
@@ -2041,8 +2297,8 @@ class HSM(BehaviorElement[TInstance]):
         event: Event[TData],
         default_entry: bool,
     ) -> VertexElement | None:
-        if kind.Is(vertex.kind, StateKind):
-            state = typing.cast(StateElement, vertex)
+        if isinstance(vertex, StateElement):
+            state = vertex
             for behavior_name in (*state.entry, *state.activity):
                 behavior = typing.cast(
                     BehaviorElement[TInstance], self.model.members[behavior_name]
@@ -2058,7 +2314,7 @@ class HSM(BehaviorElement[TInstance]):
                 )
                 return self._transition(ctx, state, transition, event)
             return state
-        elif kind.Is(vertex.kind, ChoiceKind):
+        elif isinstance(vertex, ChoiceElement):
             for transition_name in vertex.transitions:
                 transition = typing.cast(
                     TransitionElement, self.model.members[transition_name]
@@ -2072,6 +2328,32 @@ class HSM(BehaviorElement[TInstance]):
                         continue
                 return self._transition(ctx, vertex, transition, event)
             return vertex
+        elif isinstance(vertex, (ShallowHistoryElement, DeepHistoryElement)):
+            owner = vertex.owner()
+            remembered = self._history.get(vertex.qualified_name)
+            if remembered is not None:
+                current: VertexElement | None = None
+                for entering in self.model.history_paths.get((owner, remembered), []):
+                    entry_vertex = typing.cast(
+                        VertexElement, self.model.members[entering]
+                    )
+                    current = self._enter(
+                        ctx, entry_vertex, event, entering == remembered
+                    )
+                return current
+            if not vertex.transitions:
+                return None
+            transition = typing.cast(
+                TransitionElement, self.model.members[vertex.transitions[0]]
+            )
+            if transition.guard is not None:
+                guard = typing.cast(
+                    ConstraintElement[TInstance],
+                    self.model.members[transition.guard],
+                )
+                if not self._evaluate(ctx, guard, event):
+                    return None
+            return self._transition(ctx, vertex, transition, event)
         return None
 
     def _exit(
@@ -2226,6 +2508,18 @@ class HSM(BehaviorElement[TInstance]):
         )
         if path is None:
             return
+        target = get(self.model, transition.target, VertexElement)
+        skip_history_owner = (
+            target.owner()
+            if isinstance(target, (ShallowHistoryElement, DeepHistoryElement))
+            else None
+        )
+        if path.exit and (
+            history_targets := self.model.history_targets.get(
+                (current.qualified_name, skip_history_owner)
+            )
+        ):
+            self._history.update(history_targets)
         for exiting in path.exit:
             vertex = typing.cast(StateElement, self.model.members[exiting])
             if not self._exit(ctx, vertex, event):
@@ -3266,38 +3560,38 @@ def Choice(
     return RedefinableChoice(qualified_name=name, owned_elements=owned_elements)
 
 
-# def ShallowHistory(
-#     element_or_name: str | PartialTransition,
-#     *partials: NamedElement,
-# ) -> PartialHistory:
-#     name = ""
-#     owned_elements = list(partials)
-#     if isinstance(element_or_name, str):
-#         name = element_or_name
-#     else:
-#         owned_elements.insert(0, element_or_name)
-#     return PartialHistory(
-#         qualified_name=name,
-#         owned_elements=owned_elements,
-#         history_type=ShallowHistoryElement,
-#     )
+def ShallowHistory(
+    element_or_name: str | Element,
+    *elements: Element,
+) -> RedefinableHistory:
+    name = ""
+    owned_elements = list(elements)
+    if isinstance(element_or_name, str):
+        name = element_or_name
+    else:
+        owned_elements.insert(0, element_or_name)
+    return RedefinableHistory(
+        kind=ShallowHistoryKind,
+        qualified_name=name,
+        owned_elements=owned_elements,
+    )
 
 
-# def DeepHistory(
-#     element_or_name: str | PartialTransition,
-#     *partials: NamedElement,
-# ) -> PartialHistory:
-#     name = ""
-#     owned_elements = list(partials)
-#     if isinstance(element_or_name, str):
-#         name = element_or_name
-#     else:
-#         owned_elements.insert(0, element_or_name)
-#     return PartialHistory(
-#         qualified_name=name,
-#         owned_elements=owned_elements,
-#         history_type=DeepHistoryElement,
-#     )
+def DeepHistory(
+    element_or_name: str | Element,
+    *elements: Element,
+) -> RedefinableHistory:
+    name = ""
+    owned_elements = list(elements)
+    if isinstance(element_or_name, str):
+        name = element_or_name
+    else:
+        owned_elements.insert(0, element_or_name)
+    return RedefinableHistory(
+        kind=DeepHistoryKind,
+        qualified_name=name,
+        owned_elements=owned_elements,
+    )
 
 
 def Final(name_or_element: str | Element) -> RedefinableFinalState:
@@ -3397,6 +3691,8 @@ every = Every
 when = When
 defer = Defer
 choice = Choice
+shallow_history = ShallowHistory
+deep_history = DeepHistory
 final = Final
 validator = Validator
 finalizer = Finalizer
@@ -3431,6 +3727,7 @@ __all__ = [
     "ConstraintKind",
     "Context",
     "ContextKey",
+    "DeepHistory",
     "DeepHistoryElement",
     "DeepHistoryKind",
     "DefaultClock",
@@ -3498,6 +3795,7 @@ __all__ = [
     "RedefinableElement",
     "SelfKind",
     "SequentialKind",
+    "ShallowHistory",
     "ShallowHistoryElement",
     "ShallowHistoryKind",
     "Snapshot",
@@ -3528,6 +3826,7 @@ __all__ = [
     "after",
     "at",
     "choice",
+    "deep_history",
     "define",
     "defer",
     "dispatch",
@@ -3542,6 +3841,7 @@ __all__ = [
     "guard",
     "initial",
     "on",
+    "shallow_history",
     "source",
     "start",
     "started",

@@ -49,22 +49,22 @@ async def test_hierarchical_entry_exit_order():
     """Test entry and exit order in hierarchical states"""
     instance = HierarchicalInstance()
 
-    async def parent_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def parent_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('parent-entry')
 
-    async def parent_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def parent_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('parent-exit')
 
-    async def child1_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child1_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child1-entry')
 
-    async def child1_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child1_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child1-exit')
 
-    async def child2_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child2_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child2-entry')
 
-    async def child2_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child2_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child2-exit')
 
     model = hsm.define('HierarchicalEntryExitMachine',
@@ -168,28 +168,28 @@ async def test_transition_between_hierarchical_states():
     """Test transitions between different branches of hierarchy"""
     instance = HierarchicalInstance()
 
-    async def grandchild1_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def grandchild1_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('grandchild1-entry')
 
-    async def grandchild1_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def grandchild1_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('grandchild1-exit')
 
-    async def grandchild2_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def grandchild2_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('grandchild2-entry')
 
-    async def grandchild2_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def grandchild2_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('grandchild2-exit')
 
-    async def child1_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child1_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child1-entry')
 
-    async def child1_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child1_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child1-exit')
 
-    async def child2_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child2_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child2-entry')
 
-    async def child2_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child2_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child2-exit')
 
     def transition_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
@@ -330,13 +330,13 @@ async def test_multiple_initial_states():
     """Test multiple initial states at different levels"""
     instance = HierarchicalInstance()
 
-    async def level1_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def level1_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('level1-entry')
 
-    async def level2a_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def level2a_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('level2a-entry')
 
-    async def level3a_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def level3a_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('level3a-entry')
 
     model = hsm.define('MultipleInitialMachine',
@@ -381,16 +381,16 @@ async def test_hierarchical_self_transitions():
     """Test self transitions at different hierarchy levels"""
     instance = HierarchicalInstance()
 
-    async def parent_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def parent_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('parent-entry')
 
-    async def parent_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def parent_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('parent-exit')
 
-    async def child_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child_entry(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child-entry')
 
-    async def child_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
+    def child_exit(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:
         inst.log_action('child-exit')
 
     def parent_self_effect(ctx: hsm.Context, inst: HierarchicalInstance, event: hsm.Event) -> None:

@@ -34,7 +34,7 @@ async def test_error_event_from_activity_exception():
         inst.data['error_message'] = str(event.data)
         inst.data['error_type'] = type(event.data).__name__
 
-    async def error_entry(ctx, inst, event):
+    def error_entry(ctx, inst, event):
         inst.log_action('error-state-entry')
         error_entered.set()
 
@@ -84,11 +84,11 @@ async def test_error_event_handled_at_different_hierarchy_levels():
     def child_error_effect(ctx, inst, event):
         inst.log_action('child-handled-error')
 
-    async def child_error_entry(ctx, inst, event):
+    def child_error_entry(ctx, inst, event):
         inst.log_action('child-error-entry')
         child_error_entered.set()
 
-    async def parent_error_entry(ctx, inst, event):
+    def parent_error_entry(ctx, inst, event):
         inst.log_action('parent-error-entry')
 
     model = hsm.define('HierarchicalErrorMachine',
@@ -171,7 +171,7 @@ async def test_error_in_entry_actions():
     instance = ErrorInstance()
     error_caught = asyncio.Event()
 
-    async def failing_entry(ctx, inst, event):
+    def failing_entry(ctx, inst, event):
         inst.log_action('entry-will-fail')
         raise Exception('Entry action failed!')
 
@@ -219,7 +219,7 @@ async def test_error_in_exit_actions():
     instance = ErrorInstance()
     error_caught = asyncio.Event()
 
-    async def failing_exit(ctx, inst, event):
+    def failing_exit(ctx, inst, event):
         inst.log_action('exit-will-fail')
         raise Exception('Exit action failed!')
 

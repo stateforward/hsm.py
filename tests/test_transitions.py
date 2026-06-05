@@ -26,22 +26,22 @@ async def test_external_transitions():
     """Test external transitions correctly exit and enter states"""
     instance = TransitionInstance()
 
-    async def parent_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def parent_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('parent-entry')
 
-    async def parent_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def parent_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('parent-exit')
 
-    async def child1_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def child1_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('child1-entry')
 
-    async def child1_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def child1_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('child1-exit')
 
-    async def child2_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def child2_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('child2-entry')
 
-    async def child2_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def child2_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('child2-exit')
 
     def transition_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
@@ -101,11 +101,11 @@ async def test_self_transitions():
     """Test self transitions exit and re-enter the same state"""
     instance = TransitionInstance()
 
-    async def state_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def state_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.data['entry_count'] = inst.data.get('entry_count', 0) + 1
         inst.log_action(f'state-entry-{inst.data["entry_count"]}')
 
-    async def state_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def state_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action(f'state-exit-{inst.data["entry_count"]}')
 
     def self_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
@@ -156,11 +156,11 @@ async def test_internal_transitions():
     """Test internal transitions do not exit/enter states"""
     instance = TransitionInstance()
 
-    async def state_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def state_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.data['entry_count'] = inst.data.get('entry_count', 0) + 1
         inst.log_action('state-entry')
 
-    async def state_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def state_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('state-exit')
 
     def internal_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
@@ -290,16 +290,16 @@ async def test_transitions_between_different_levels():
     """Test transitions between states at different hierarchy levels"""
     instance = TransitionInstance()
 
-    async def grandchild_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def grandchild_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('grandchild-exit')
 
-    async def child_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def child_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('child-exit')
 
-    async def parent_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def parent_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('parent-exit')
 
-    async def sibling_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def sibling_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('sibling-entry')
 
     def cross_transition_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
@@ -355,10 +355,10 @@ async def test_transition_to_initial_state():
     """Test transitions that target states with initial substates"""
     instance = TransitionInstance()
 
-    async def parent_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def parent_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('parent-entry')
 
-    async def child_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def child_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('child-entry')
 
     def initial_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
@@ -424,22 +424,22 @@ async def test_compound_transition_paths():
     """Test complex transition paths through multiple states"""
     instance = TransitionInstance()
 
-    async def a_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def a_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('a-exit')
 
-    async def b_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def b_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('b-entry')
 
-    async def b_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def b_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('b-exit')
 
-    async def c_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def c_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('c-entry')
 
-    async def c_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def c_exit(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('c-exit')
 
-    async def d_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
+    def d_entry(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:
         inst.log_action('d-entry')
 
     def ab_effect(ctx: hsm.Context, inst: TransitionInstance, event: hsm.Event) -> None:

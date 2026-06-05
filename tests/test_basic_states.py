@@ -66,10 +66,10 @@ async def test_state_machine_lifecycle_start_and_stop():
     """Test state machine lifecycle - start and stop"""
     instance = BasicInstance()
 
-    async def active_entry(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
+    def active_entry(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
         inst.log_action('active-entry')
 
-    async def active_exit(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
+    def active_exit(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
         inst.log_action('active-exit')
 
     model = hsm.define('LifecycleMachine',
@@ -152,11 +152,11 @@ async def test_self_transitions():
     """Test self transitions"""
     instance = BasicInstance()
 
-    async def counter_entry(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
+    def counter_entry(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
         inst.data['count'] = inst.data.get('count', 0) + 1
         inst.log_action(f'counter-entry-{inst.data["count"]}')
 
-    async def counter_exit(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
+    def counter_exit(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
         inst.log_action(f'counter-exit-{inst.data["count"]}')
 
     def increment_effect(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
@@ -199,11 +199,11 @@ async def test_internal_transitions():
     """Test internal transitions"""
     instance = BasicInstance()
 
-    async def active_entry(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
+    def active_entry(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
         inst.data['entry_count'] = inst.data.get('entry_count', 0) + 1
         inst.log_action('active-entry')
 
-    async def active_exit(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
+    def active_exit(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
         inst.log_action('active-exit')
 
     def internal_effect(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
@@ -273,7 +273,7 @@ async def test_unknown_events_ignored():
     """Test unknown events should be ignored"""
     instance = BasicInstance()
 
-    async def stable_entry(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
+    def stable_entry(ctx: hsm.Context, inst: BasicInstance, event: hsm.Event) -> None:
         inst.log_action('stable-entry')
 
     model = hsm.define('UnknownEventMachine',

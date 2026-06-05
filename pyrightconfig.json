@@ -1,7 +1,7 @@
 {
   "include": ["hsm", "type_tests"],
   "pythonVersion": "3.13",
-  "typeCheckingMode": "basic",
+  "typeCheckingMode": "strict",
   "reportRedeclaration": false,
   "reportIncompatibleVariableOverride": false,
   "reportUnsupportedDunderAll": false

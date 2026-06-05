@@ -144,14 +144,14 @@ def test_time_and_when_transitions_finalize_source_activity(
     assert transition.events[0] in model.transition_map[state.qualified_name]
 
 
-def test_time_transition_from_choice_is_rejected_during_finalization() -> None:
+def test_time_transition_from_choice_is_rejected_as_pseudostate_trigger() -> None:
     def duration(ctx, inst, event):
         del ctx, inst, event
         return datetime.timedelta(seconds=1)
 
     with pytest.raises(
         hsm.ErrorValidatingModel,
-        match="can only be used on transitions where the source is a State",
+        match="outgoing pseudostate .* cannot have triggers",
     ):
         hsm.Define(
             "TimedChoice",
@@ -220,13 +220,107 @@ def test_define_rejects_choice_without_transitions() -> None:
 def test_default_validator_rejects_final_state_behaviors() -> None:
     model = hsm.Model(qualified_name="/FinalValidation")
     model.initial = "/FinalValidation/.initial"
+    initial = hsm.InitialElement(qualified_name="/FinalValidation/.initial")
     final = hsm.FinalStateElement(qualified_name="/FinalValidation/done")
     behavior = hsm.BehaviorElement(qualified_name="/FinalValidation/done/entry")
+    model.members[initial.qualified_name] = initial
     model.members[final.qualified_name] = final
     model.members[behavior.qualified_name] = behavior
     final.entry.append(behavior.qualified_name)
 
     with pytest.raises(
         hsm.ErrorValidatingModel, match="final state cannot have an entry action"
+    ):
+        hsm.DefaultModelValidator().validate(model)
+
+
+def test_define_rejects_async_entry_and_exit_behaviors() -> None:
+    async def async_entry(ctx, inst, event):
+        del ctx, inst, event
+
+    async def async_exit(ctx, inst, event):
+        del ctx, inst, event
+
+    with pytest.raises(
+        hsm.ErrorValidatingModel, match="entry must be a synchronous function"
+    ):
+        hsm.Define(
+            "AsyncEntry",
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State("idle", hsm.Entry(async_entry)),
+        )
+
+    with pytest.raises(
+        hsm.ErrorValidatingModel, match="exit must be a synchronous function"
+    ):
+        hsm.Define(
+            "AsyncExit",
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State("idle", hsm.Exit(async_exit)),
+        )
+
+
+def test_define_rejects_initial_guard_and_user_trigger() -> None:
+    def guard(ctx, inst, event):
+        del ctx, inst, event
+        return True
+
+    with pytest.raises(
+        hsm.ErrorValidatingModel, match="initial transition .* cannot have a guard"
+    ):
+        hsm.Define(
+            "GuardedInitial",
+            hsm.Initial(hsm.Target("idle"), hsm.Guard(guard)),
+            hsm.State("idle"),
+        )
+
+    with pytest.raises(
+        hsm.ErrorValidatingModel, match="initial transition .* cannot have triggers"
+    ):
+        hsm.Define(
+            "TriggeredInitial",
+            hsm.Initial(hsm.Target("idle"), hsm.On("start")),
+            hsm.State("idle"),
+        )
+
+
+def test_default_validator_rejects_hand_built_region_cardinality() -> None:
+    model = hsm.Model(qualified_name="/DuplicateInitial")
+    model.initial = "/DuplicateInitial/.initial"
+    model.members["/DuplicateInitial/.initial"] = hsm.InitialElement(
+        qualified_name="/DuplicateInitial/.initial"
+    )
+    model.members["/DuplicateInitial/other"] = hsm.InitialElement(
+        qualified_name="/DuplicateInitial/other"
+    )
+
+    with pytest.raises(
+        hsm.ErrorValidatingModel, match="more than one initial vertex"
+    ):
+        hsm.DefaultModelValidator().validate(model)
+
+
+def test_default_validator_rejects_final_state_regions_and_submachine() -> None:
+    model = hsm.Model(qualified_name="/FinalRegions")
+    model.initial = "/FinalRegions/.initial"
+    model.members["/FinalRegions/.initial"] = hsm.InitialElement(
+        qualified_name="/FinalRegions/.initial"
+    )
+    final = hsm.FinalStateElement(qualified_name="/FinalRegions/done")
+    model.members[final.qualified_name] = final
+    model.members["/FinalRegions/done/child"] = hsm.StateElement(
+        qualified_name="/FinalRegions/done/child"
+    )
+
+    with pytest.raises(
+        hsm.ErrorValidatingModel, match="final state cannot have regions"
+    ):
+        hsm.DefaultModelValidator().validate(model)
+
+    model.members.pop("/FinalRegions/done/child")
+    final.submachine = hsm.Model(qualified_name="/Child")
+
+    with pytest.raises(
+        hsm.ErrorValidatingModel, match="final state cannot reference a submachine"
     ):
         hsm.DefaultModelValidator().validate(model)

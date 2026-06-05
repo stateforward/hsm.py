@@ -85,13 +85,13 @@ async def test_basic_after_timer_fires_once_after_delay():
     instance = TimerInstance()
     clock = ManualClock()
 
-    async def waiting_entry(ctx, inst, event):
+    def waiting_entry(ctx, inst, event):
         inst.log_action('waiting-entry')
 
     def timer_triggered_effect(ctx, inst, event):
         inst.log_action('timer-triggered')
 
-    async def done_entry(ctx, inst, event):
+    def done_entry(ctx, inst, event):
         inst.log_action('done-entry')
 
     async def after_delay(ctx, inst, event):
@@ -187,7 +187,7 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
     instance = TimerInstance()
     clock = ManualClock()
 
-    async def counting_entry(ctx, inst, event):
+    def counting_entry(ctx, inst, event):
         inst.data['count'] = 0
         inst.log_action('counting-entry')
 
@@ -309,7 +309,7 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
     instance.data['delay'] = 60
     clock = ManualClock()
 
-    async def waiting_entry(ctx, inst, event):
+    def waiting_entry(ctx, inst, event):
         inst.log_action(f'waiting-with-delay-{inst.data["delay"]}')
 
     def dynamic_timer_effect(ctx, inst, event):
@@ -465,7 +465,7 @@ async def test_every_timer_with_abort_signal_handling():
     instance = TimerInstance()
     clock = ManualClock()
 
-    async def active_entry(ctx, inst, event):
+    def active_entry(ctx, inst, event):
         # Only reset tick_count on initial entry, not on self-transitions
         if 'tick_count' not in inst.data:
             inst.data['tick_count'] = 0
@@ -474,7 +474,7 @@ async def test_every_timer_with_abort_signal_handling():
         inst.data['tick_count'] += 1
         inst.log_action(f'tick-{inst.data["tick_count"]}')
 
-    async def finished_entry(ctx, inst, event):
+    def finished_entry(ctx, inst, event):
         inst.log_action(f'finished-at-tick-{inst.data["tick_count"]}')
 
     async def tick_interval(ctx, inst, event):

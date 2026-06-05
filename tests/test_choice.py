@@ -36,13 +36,13 @@ async def test_basic_choice_pseudostate_with_guards():
     def chose_high_effect(ctx, inst, event):
         inst.log_action('chose-high')
 
-    async def low_entry(ctx, inst, event):
+    def low_entry(ctx, inst, event):
         inst.log_action('low-entry')
 
-    async def medium_entry(ctx, inst, event):
+    def medium_entry(ctx, inst, event):
         inst.log_action('medium-entry')
 
-    async def high_entry(ctx, inst, event):
+    def high_entry(ctx, inst, event):
         inst.log_action('high-entry')
 
     def low_guard(ctx, inst, event):
@@ -181,13 +181,13 @@ async def test_choice_in_hierarchical_state():
     def routed_center_effect(ctx, inst, event):
         inst.log_action('routed-center')
 
-    async def left_entry(ctx, inst, event):
+    def left_entry(ctx, inst, event):
         inst.log_action('left-entry')
 
-    async def right_entry(ctx, inst, event):
+    def right_entry(ctx, inst, event):
         inst.log_action('right-entry')
 
-    async def center_entry(ctx, inst, event):
+    def center_entry(ctx, inst, event):
         inst.log_action('center-entry')
 
     model = hsm.define('HierarchicalChoiceMachine',
@@ -477,7 +477,7 @@ async def test_choice_guard_evaluation_order():
         inst.log_action('guard2-evaluated')
         return True
 
-    async def guard3(ctx, inst, event):
+    def guard3(ctx, inst, event):
         inst.log_action('guard3-evaluated')
         return True
 

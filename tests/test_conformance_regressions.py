@@ -470,10 +470,11 @@ async def _transition_to_deep_history_preserves_previous_history_snapshot() -> N
         ),
     )
 
-    await hsm.Start(hsm.Context(), instance, model)
-    await hsm.Dispatch(hsm.Context(), instance, hsm.Event("to_b"))
-    await hsm.Dispatch(hsm.Context(), instance, hsm.Event("to_a"))
-    await hsm.Dispatch(hsm.Context(), instance, hsm.Event("resume"))
+    ctx = hsm.Context()
+    await hsm.Started(ctx, instance, model)
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="to_b"))
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="to_a"))
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="resume"))
 
     assert (
         instance.state() == "/DeepHistoryTargetPreservesSnapshotRegression/comp/b/leaf"
@@ -570,13 +571,15 @@ async def _history_default_guard_reentrant_events_replay_after_default_entry() -
     def guard(
         ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
     ) -> bool:
-        inst.log.append(hsm.TakeSnapshot(ctx, inst).state)
+        del ctx
+        inst.log.append(inst.take_snapshot().state)
         return True
 
     def dispatch_audit(
         ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
     ) -> None:
-        asyncio.ensure_future(inst.dispatch(hsm.Event("audit")))
+        del event
+        asyncio.ensure_future(inst.dispatch(ctx, hsm.Event(name="audit")))
 
     def entry_leaf(
         ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
@@ -617,8 +620,9 @@ async def _history_default_guard_reentrant_events_replay_after_default_entry() -
         ),
     )
 
-    await hsm.Start(hsm.Context(), instance, model)
-    await hsm.Dispatch(hsm.Context(), instance, hsm.Event("enter"))
+    ctx = hsm.Context()
+    await hsm.Started(ctx, instance, model)
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="enter"))
 
     assert instance.log == [
         "/HistoryDefaultGuardRegression/outside",

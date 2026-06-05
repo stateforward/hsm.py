@@ -58,4 +58,5 @@ dev = [
     "scalene>=1.5.51",
     "wheel>=0.46.2",
     "yappi>=1.6.10",
+    "basedpyright>=1.39.6",
 ]

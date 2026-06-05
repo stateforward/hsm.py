@@ -54,7 +54,7 @@ async def test_complex_hsm():
         print(f"Guard foo == 0: {check}")
         return check
 
-    async def guard_after(
+    def guard_after(
         ctx: hsm.Context, sm: THSM, event: hsm.Event
     ) -> bool:  # Renamed data to instance
         nonlocal after_triggered
@@ -70,11 +70,11 @@ async def test_complex_hsm():
         print(f"Choice Guard foo == 0: {check}")
         return check
 
-    async def effect_dispatch_k(
+    def effect_dispatch_k(
         ctx: hsm.Context, sm: THSM, event: hsm.Event
     ) -> None:  # Renamed data to instance
         trace["sync"].append("s11.J.transition.effect")
-        await sm.dispatch(ctx, hsm.Event(name="K"))  # Potential async dispatch
+        _ = sm.dispatch(ctx, hsm.Event(name="K"))  # Potential dispatch
 
     # Define the model (assuming Python library supports similar features)
     # Note: Activities and After/Every might require async support in the library

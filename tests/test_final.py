@@ -24,7 +24,7 @@ async def test_basic_final_state_terminal_state():
     """Basic final state - terminal state"""
     instance = FinalInstance()
 
-    async def working_entry(ctx, inst, event):
+    def working_entry(ctx, inst, event):
         inst.log_action('working-entry')
 
     def completing_effect(ctx, inst, event):
@@ -65,19 +65,19 @@ async def test_final_state_in_hierarchical_structure():
     """Final state in hierarchical structure"""
     instance = FinalInstance()
 
-    async def container_entry(ctx, inst, event):
+    def container_entry(ctx, inst, event):
         inst.log_action('container-entry')
 
-    async def subprocess_entry(ctx, inst, event):
+    def subprocess_entry(ctx, inst, event):
         inst.log_action('subprocess-entry')
 
-    async def step1_entry(ctx, inst, event):
+    def step1_entry(ctx, inst, event):
         inst.log_action('step1-entry')
 
-    async def step2_entry(ctx, inst, event):
+    def step2_entry(ctx, inst, event):
         inst.log_action('step2-entry')
 
-    async def aborted_entry(ctx, inst, event):
+    def aborted_entry(ctx, inst, event):
         inst.log_action('aborted-entry')
 
     model = hsm.define('HierarchicalFinalMachine',
@@ -143,7 +143,7 @@ async def test_multiple_final_states_in_same_container():
     """Multiple final states in same container"""
     instance = FinalInstance()
 
-    async def running_entry(ctx, inst, event):
+    def running_entry(ctx, inst, event):
         inst.log_action('running-entry')
 
     model = hsm.define('MultipleFinalMachine',
@@ -202,7 +202,7 @@ async def test_transition_to_final_state_with_effect():
     def transition_effect(ctx, inst, event):
         inst.log_action('transition-to-final')
 
-    async def final_entry(ctx, inst, event):
+    def final_entry(ctx, inst, event):
         inst.log_action('final-entry')
         inst.data['finalized_at'] = time.time()
 
@@ -237,7 +237,7 @@ async def test_final_state_behavior_during_stop():
     """Final state behavior during stop"""
     instance = FinalInstance()
 
-    async def normal_exit(ctx, inst, event):
+    def normal_exit(ctx, inst, event):
         inst.log_action('normal-exit')
 
     model = hsm.define('FinalStopMachine',
@@ -305,17 +305,17 @@ async def test_complex_final_state_scenario_with_cleanup():
     """Complex final state scenario with cleanup"""
     instance = FinalInstance()
 
-    async def workflow_cleanup(ctx, inst, event):
+    def workflow_cleanup(ctx, inst, event):
         inst.log_action('workflow-cleanup')
 
-    async def resources_allocated(ctx, inst, event):
+    def resources_allocated(ctx, inst, event):
         inst.data['resources'] = ['resource1', 'resource2']
         inst.log_action('resources-allocated')
 
-    async def processing_started(ctx, inst, event):
+    def processing_started(ctx, inst, event):
         inst.log_action('processing-started')
 
-    async def cleaning_up(ctx, inst, event):
+    def cleaning_up(ctx, inst, event):
         inst.log_action('cleaning-up')
         inst.data['resources'] = []
 
