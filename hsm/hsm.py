@@ -13,6 +13,7 @@ import threading
 import datetime
 import abc
 import re
+import fnmatch
 import weakref
 import inspect
 
@@ -2300,12 +2301,12 @@ class HSM(BehaviorElement[TInstance]):
 
     async def _start(self, ctx: context.Context, data: TData = None) -> typing.Self:
         maybe_instances = ctx.value(Keys.Instances)
-        if not isinstance(maybe_instances, weakref.WeakValueDictionary):
-            instances = weakref.WeakValueDictionary[str, Instance]()
-        else:
+        if isinstance(maybe_instances, collections.abc.MutableMapping):
             instances = typing.cast(
-                weakref.WeakValueDictionary[str, Instance], maybe_instances
+                collections.abc.MutableMapping[str, Instance], maybe_instances
             )
+        else:
+            instances = weakref.WeakValueDictionary[str, Instance]()
         instances[self.id] = self._instance
         self._context, self._cancel = context.with_cancel(
             context.with_value(
@@ -3727,6 +3728,74 @@ def Dispatch(
     return hsm.dispatch(ctx or hsm.context(), event)
 
 
+def DispatchAll(
+    ctx: context.Context | None,
+    event: Event[TData],
+) -> collections.abc.Awaitable[None]:
+    return DispatchTo(ctx, event)
+
+
+def DispatchTo(
+    ctx: context.Context | None,
+    event: Event[TData],
+    *ids: str,
+) -> collections.abc.Awaitable[None]:
+    if ctx is None or ctx.is_done():
+        return _done()
+    maybe_instances = ctx.value(Keys.Instances)
+    if isinstance(maybe_instances, collections.abc.Mapping):
+        instances = typing.cast(
+            collections.abc.Mapping[object, object], maybe_instances
+        )
+        candidates: list[object] = list(instances.values())
+    else:
+        return _done()
+    completions: list[collections.abc.Awaitable[None]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, Instance):
+            continue
+        machine = getattr(candidate, "_Instance__hsm", None)
+        if (
+            not isinstance(machine, HSM)
+            or machine.state() == machine.model.qualified_name
+        ):
+            continue
+        snapshot = machine.take_snapshot()
+        if snapshot.ID in seen:
+            continue
+        if ids and not any(fnmatch.fnmatchcase(snapshot.ID, id_) for id_ in ids):
+            continue
+        seen.add(snapshot.ID)
+        completions.append(
+            candidate.dispatch(
+                ctx,
+                Event(
+                    name=event.name,
+                    data=event.data,
+                    kind=event.kind,
+                    id=event.id,
+                    source=event.source,
+                    target=event.target or snapshot.ID,
+                    schema=event.schema,
+                ),
+            )
+        )
+    if not completions:
+        return _done()
+
+    async def wait_all() -> None:
+        _ = await asyncio.gather(
+            *(asyncio.shield(completion) for completion in completions)
+        )
+
+    return asyncio.Task(
+        wait_all(),
+        loop=asyncio.get_running_loop(),
+        eager_start=True,
+    )
+
+
 Context = context.Context
 ContextKey = context.ContextKey
 
@@ -3760,6 +3829,8 @@ start = Start
 started = Started
 stop = Stop
 dispatch = Dispatch
+dispatch_all = DispatchAll
+dispatch_to = DispatchTo
 
 __all__ = [
     "Activity",
@@ -3794,6 +3865,8 @@ __all__ = [
     "Defer",
     "Define",
     "Dispatch",
+    "DispatchAll",
+    "DispatchTo",
     "Effect",
     "Element",
     "ElementKind",
@@ -3888,6 +3961,8 @@ __all__ = [
     "define",
     "defer",
     "dispatch",
+    "dispatch_all",
+    "dispatch_to",
     "effect",
     "entry",
     "entry_point",
@@ -3911,67 +3986,6 @@ __all__ = [
     "validator",
     "when",
 ]
-
-
-# def DispatchAll(ctx: Context | None, event: Event) -> typing.Awaitable[None]:
-#     if ctx is None or ctx.done:
-#         return _completed_none()
-#     machines = [
-#         machine
-#         for machine in InstancesFromContext(ctx)[0]
-#         if isinstance(machine, HSM)
-#         and isinstance(
-#             (instances := machine._context.Value(Keys.Instances)),
-#             collections.abc.Mapping,
-#         )
-#         and instances.get(machine.id) is machine
-#         and (machine._state is not machine.model or machine._processing.locked())
-#     ]
-#     source = _context_machine(ctx)
-#     return _dispatch_machines(
-#         (
-#             (machine, _clone_event_for_delivery(event, machine, source))
-#             for machine in machines
-#         )
-#     )
-
-
-# def DispatchTo(
-#     ctx: Context | None, event: Event, *maybe_ids: str
-# ) -> typing.Awaitable[None]:
-#     if ctx is None or ctx.done:
-#         return _completed_none()
-#     machines = [
-#         machine
-#         for machine in InstancesFromContext(ctx)[0]
-#         if isinstance(machine, HSM)
-#         and isinstance(
-#             (instances := machine._context.Value(Keys.Instances)),
-#             collections.abc.Mapping,
-#         )
-#         and instances.get(machine.id) is machine
-#         and (machine._state is not machine.model or machine._processing.locked())
-#     ]
-#     if maybe_ids:
-#         selected = []
-#         seen: builtins.set[int] = builtins.set()
-#         for maybe_id in maybe_ids:
-#             for machine in machines:
-#                 if builtins.id(machine) in seen or not Match(
-#                     machine.take_snapshot().ID, maybe_id
-#                 ):
-#                     continue
-#                 selected.append(machine)
-#                 seen.add(builtins.id(machine))
-#     else:
-#         selected = machines
-#     source = _context_machine(ctx)
-#     return _dispatch_machines(
-#         (
-#             (machine, _clone_event_for_delivery(event, machine, source))
-#             for machine in selected
-#         )
-#     )
 
 
 # def Get(
