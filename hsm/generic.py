@@ -43,6 +43,21 @@ class Awaitable(typing.Generic[TReturn]):
     def __await__(self):
         return self.wait().__await__()
 
+    def exception(self) -> BaseException | None:
+        return self._future.exception()
+
+    def set_exception(self, exception: BaseException) -> None:
+        self._future.set_exception(exception)
+
+    def result(self) -> TReturn:
+        return self._future.result()
+
+    def cancel(self) -> bool:
+        return self._future.cancel()
+
+    def cancelled(self) -> bool:
+        return self._future.cancelled()
+
 
 class Queue(typing.Generic[TItem]):
     """Regular-event FIFO backend for Queue(fifo=...)."""

@@ -807,8 +807,10 @@ async def sleep(duration: datetime.timedelta) -> datetime.datetime:
 
 class Timer:
     def __init__(self, duration: datetime.timedelta):
-        self._task: asyncio.Task[datetime.datetime] = asyncio.create_task(
-            sleep(duration)
+        self._task: asyncio.Task[datetime.datetime] = asyncio.Task(
+            sleep(duration),
+            loop=asyncio.get_running_loop(),
+            eager_start=True,
         )
 
     def __await__(
@@ -823,7 +825,11 @@ class Timer:
 
     def Reset(self, duration: datetime.timedelta) -> bool:
         was_active = self.Stop()
-        self._task = asyncio.create_task(sleep(duration))
+        self._task = asyncio.Task(
+            sleep(duration),
+            loop=asyncio.get_running_loop(),
+            eager_start=True,
+        )
         return was_active
 
 
@@ -837,7 +843,11 @@ class Clock(typing.Protocol):
 
 class DefaultClock:
     def After(self, duration: datetime.timedelta) -> asyncio.Task[datetime.datetime]:
-        return asyncio.create_task(sleep(duration))
+        return asyncio.Task(
+            sleep(duration),
+            loop=asyncio.get_running_loop(),
+            eager_start=True,
+        )
 
     def NewTimer(self, duration: datetime.timedelta) -> Timer:
         return Timer(duration)
@@ -1293,9 +1303,9 @@ class DefaultModelFinalizer(ModelFinalizer):
                         if history_target in ("", ".", "/"):
                             break
                 if history_target not in ("", ".", "/"):
-                    history_targets.setdefault(target, {})[
-                        history.qualified_name
-                    ] = history_target
+                    history_targets.setdefault(target, {})[history.qualified_name] = (
+                        history_target
+                    )
         for target, targets in history_targets.items():
             model.history_targets[(target, None)] = targets
             for owner in history_owners:
@@ -1571,12 +1581,15 @@ class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
         for behavior_or_method in self.behaviors:
             behavior: BehaviorElement[TInstance] | None = None
             if isinstance(behavior_or_method, BehaviorElement):
+                behavior_element = typing.cast(
+                    BehaviorElement[TInstance], behavior_or_method
+                )
                 behavior = BehaviorElement(
-                    kind=kind if kind is not None else behavior_or_method.kind,
+                    kind=kind if kind is not None else behavior_element.kind,
                     qualified_name=join(
-                        owner.qualified_name, behavior_or_method.name()
+                        owner.qualified_name, behavior_element.name()
                     ),
-                    operation=behavior_or_method.operation,
+                    operation=behavior_element.operation,
                     location=self.location,
                 )
             else:
@@ -1619,12 +1632,20 @@ class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
         )
         constraint: ConstraintElement[TInstance] | None = None
         if isinstance(self.expression, ConstraintElement):
+            constraint_element = typing.cast(
+                ConstraintElement[TInstance], self.expression
+            )
             constraint = ConstraintElement(
-                qualified_name=join(transition.qualified_name, self.expression.name()),
-                expression=self.expression.expression,
+                qualified_name=join(
+                    transition.qualified_name, constraint_element.name()
+                ),
+                expression=constraint_element.expression,
             )
         elif isinstance(self.expression, RedefinableConstraint):
-            constraint = self.expression.redefine(model, stack)
+            redefinable_constraint = typing.cast(
+                RedefinableConstraint[TInstance], self.expression
+            )
+            constraint = redefinable_constraint.redefine(model, stack)
             if constraint is None:
                 raise ErrorValidatingModel(
                     self.location,
@@ -2143,6 +2164,13 @@ def _done() -> generic.Awaitable[None]:
     return awaitable
 
 
+@functools.cache
+def _error(exception: BaseException) -> generic.Awaitable[None]:
+    awaitable = generic.Awaitable[None]()
+    awaitable.set_exception(exception)
+    return awaitable
+
+
 class Instance:
     __hsm: "HSM[typing.Self] | None" = None
 
@@ -2150,7 +2178,7 @@ class Instance:
         self, ctx: context.Context, event: Event
     ) -> collections.abc.Awaitable[None]:
         if self.__hsm is None:
-            raise RuntimeError("dispatch requires a started HSM")
+            return _error(RuntimeError("dispatch requires a started HSM"))
         return self.__hsm.dispatch(ctx, event)
 
     def state(self) -> str:
@@ -2192,12 +2220,12 @@ class Instance:
         self, ctx: context.Context, data: TData = None
     ) -> collections.abc.Awaitable["HSM[typing.Self] | None"]:
         if self.__hsm is None:
-            raise RuntimeError("operation requires a started HSM")
+            return _error(RuntimeError("restart requires a started HSM"))
         return self.__hsm.restart(ctx, data)
 
     def take_snapshot(self) -> Snapshot:
         if self.__hsm is None:
-            raise RuntimeError("operation requires a started HSM")
+            return Snapshot()
         return self.__hsm.take_snapshot()
 
 
@@ -2229,7 +2257,11 @@ class HSM(BehaviorElement[TInstance]):
             state = self._enter(ctx, self.model, event, True)
             if state is not None:
                 self._state = state
-            _ = asyncio.create_task(self._process(ctx))
+            _ = asyncio.Task(
+                self._process(ctx),
+                loop=asyncio.get_running_loop(),
+                eager_start=True,
+            )
 
         super().__init__(
             kind=StateMachineKind,
@@ -2385,12 +2417,14 @@ class HSM(BehaviorElement[TInstance]):
     ) -> None:
         if kind.Is(behavior.kind, ConcurrentKind):
             activity_ctx = context.Context(ctx)
-            task = asyncio.create_task(
+            task = asyncio.Task(
                 typing.cast(
                     collections.abc.Coroutine[None, None, None],
                     behavior.operation(activity_ctx, self._instance, event),
                 ),
+                loop=asyncio.get_running_loop(),
                 name=behavior.qualified_name,
+                eager_start=True,
             )
 
             self._active[behavior.qualified_name] = ActiveBehavior(
@@ -2543,7 +2577,11 @@ class HSM(BehaviorElement[TInstance]):
         self, ctx: context.Context, data: TData = None
     ) -> typing.Self | None:
         ctx_done = asyncio.wrap_future(ctx.done())
-        stop_task = asyncio.create_task(self._stop(ctx))
+        stop_task = asyncio.Task(
+            self._stop(ctx),
+            loop=asyncio.get_running_loop(),
+            eager_start=True,
+        )
         done, pending = await asyncio.wait(
             [ctx_done, stop_task], return_when=asyncio.FIRST_COMPLETED
         )
@@ -2568,7 +2606,11 @@ class HSM(BehaviorElement[TInstance]):
         if error := self._queue.push(ctx, event):
             raise error
         if self._processing.try_lock():
-            return asyncio.create_task(self._process(ctx))
+            return asyncio.Task(
+                self._process(ctx),
+                loop=asyncio.get_running_loop(),
+                eager_start=True,
+            )
         return self._processing.wait()
 
     async def _stop(self, ctx: context.Context) -> None:
@@ -2610,12 +2652,20 @@ class HSM(BehaviorElement[TInstance]):
         )
 
     def stop(self, ctx: context.Context) -> collections.abc.Awaitable[None]:
-        return asyncio.create_task(self._stop(ctx))
+        return asyncio.Task(
+            self._stop(ctx),
+            loop=asyncio.get_running_loop(),
+            eager_start=True,
+        )
 
     def restart(
         self, ctx: context.Context, data: TData = None
     ) -> collections.abc.Awaitable[typing.Self | None]:
-        return asyncio.create_task(self._restart(ctx, data))
+        return asyncio.Task(
+            self._restart(ctx, data),
+            loop=asyncio.get_running_loop(),
+            eager_start=True,
+        )
 
 
 class Group(Instance):
@@ -3642,7 +3692,11 @@ def Start(
     sm: HSM[TInstance],
     data: TData = None,
 ) -> collections.abc.Awaitable[HSM[TInstance]]:
-    return asyncio.create_task(sm._start(ctx or sm.context(), data))
+    return asyncio.Task(
+        sm._start(ctx or sm.context(), data),
+        loop=asyncio.get_running_loop(),
+        eager_start=True,
+    )
 
 
 def Started(
@@ -3658,7 +3712,11 @@ def Started(
 def Stop(
     sm: HSM[TInstance], ctx: context.Context | None = None
 ) -> collections.abc.Awaitable[None]:
-    return asyncio.create_task(sm._stop(ctx or sm.context()))
+    return asyncio.Task(
+        sm._stop(ctx or sm.context()),
+        loop=asyncio.get_running_loop(),
+        eager_start=True,
+    )
 
 
 def Dispatch(

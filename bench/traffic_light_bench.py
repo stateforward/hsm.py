@@ -8,11 +8,11 @@ import resource
 import sys
 import inspect
 
-TimerEvent = hsm.Event("TimerEvent")
-CarArrival = hsm.Event("CarArrival")
-MaintenanceSwitch = hsm.Event("MaintenanceSwitch")
-PedestrianButton = hsm.Event("PedestrianButton")
-Tick = hsm.Event("Tick")
+TimerEvent = hsm.Event(name="TimerEvent")
+CarArrival = hsm.Event(name="CarArrival")
+MaintenanceSwitch = hsm.Event(name="MaintenanceSwitch")
+PedestrianButton = hsm.Event(name="PedestrianButton")
+Tick = hsm.Event(name="Tick")
 
 WARMUP_MS = max(1, int(os.environ.get("HSM_BENCH_WARMUP_MS", "250")))
 DURATION_MS = max(1, int(os.environ.get("HSM_BENCH_DURATION_MS", "2000")))
@@ -133,51 +133,52 @@ def assert_traffic_light(light, state, cars_waiting, timer, step):
         raise AssertionError(f"{step}: timer {light.timer}, expected {timer}")
 
 async def validate_traffic_light():
+    ctx = hsm.Context()
     light = TrafficLight()
-    await hsm.start(None, light, TrafficLight.model)
+    machine = await hsm.Started(ctx, light, TrafficLight.model)
     assert_traffic_light(light, "/TrafficLight/operational/red", 0, 0, "initial")
 
-    completion = light.dispatch(CarArrival)
+    completion = light.dispatch(ctx, CarArrival)
     if not inspect.isawaitable(completion):
         raise AssertionError("dispatch did not return an awaitable completion")
     await completion
     assert_traffic_light(light, "/TrafficLight/operational/red", 1, 0, "after CarArrival")
 
-    await light.dispatch(TimerEvent)
+    await light.dispatch(ctx, TimerEvent)
     assert_traffic_light(light, "/TrafficLight/operational/green", 1, 40, "after first TimerEvent")
 
-    await light.dispatch(TimerEvent)
+    await light.dispatch(ctx, TimerEvent)
     assert_traffic_light(light, "/TrafficLight/operational/yellow", 1, 40, "after second TimerEvent")
 
-    await light.dispatch(TimerEvent)
+    await light.dispatch(ctx, TimerEvent)
     assert_traffic_light(light, "/TrafficLight/operational/red", 1, 40, "after third TimerEvent")
 
-    await light.stop()
+    await hsm.Stop(machine)
 
 async def run_benchmark():
-    async def dispatch_batch(light, cycles):
+    async def dispatch_batch(ctx, light, cycles):
         for _ in range(cycles):
-            await light.dispatch(CarArrival)
-            await light.dispatch(TimerEvent)
-            await light.dispatch(TimerEvent)
-            await light.dispatch(TimerEvent)
+            await light.dispatch(ctx, CarArrival)
+            await light.dispatch(ctx, TimerEvent)
+            await light.dispatch(ctx, TimerEvent)
+            await light.dispatch(ctx, TimerEvent)
 
-    async def calibrate_batch(light):
+    async def calibrate_batch(ctx, light):
         cycles = 1
         while True:
             start_time = time.perf_counter()
-            await dispatch_batch(light, cycles)
+            await dispatch_batch(ctx, light, cycles)
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             if elapsed_ms >= TARGET_BATCH_MS or cycles >= (1 << 20):
                 return cycles
             cycles *= 2
 
-    async def run_for(light, duration_ms, batch_cycles):
+    async def run_for(ctx, light, duration_ms, batch_cycles):
         start_time = time.perf_counter()
         deadline = start_time + (duration_ms / 1000)
         cycles = 0
         while time.perf_counter() < deadline:
-            await dispatch_batch(light, batch_cycles)
+            await dispatch_batch(ctx, light, batch_cycles)
             cycles += batch_cycles
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         return cycles, elapsed_ms
@@ -185,16 +186,20 @@ async def run_benchmark():
     if VALIDATE:
         await validate_traffic_light()
 
+    warmup_ctx = hsm.Context()
     warmup_light = TrafficLight()
-    await hsm.start(None, warmup_light, TrafficLight.model)
-    batch_cycles = await calibrate_batch(warmup_light)
-    await run_for(warmup_light, WARMUP_MS, batch_cycles)
-    await warmup_light.stop()
+    warmup_machine = await hsm.Started(warmup_ctx, warmup_light, TrafficLight.model)
+    batch_cycles = await calibrate_batch(warmup_ctx, warmup_light)
+    await run_for(warmup_ctx, warmup_light, WARMUP_MS, batch_cycles)
+    await hsm.Stop(warmup_machine)
 
+    bench_ctx = hsm.Context()
     light_bench = TrafficLight()
-    await hsm.start(None, light_bench, TrafficLight.model)
-    completed_cycles, duration_ms = await run_for(light_bench, DURATION_MS, batch_cycles)
-    await light_bench.stop()
+    bench_machine = await hsm.Started(bench_ctx, light_bench, TrafficLight.model)
+    completed_cycles, duration_ms = await run_for(
+        bench_ctx, light_bench, DURATION_MS, batch_cycles
+    )
+    await hsm.Stop(bench_machine)
 
     duration_s = duration_ms / 1000
     total_dispatches = completed_cycles * 4

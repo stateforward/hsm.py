@@ -19,9 +19,10 @@ class BenchInstance(hsm.Instance):
         self.flip = False
 
 
-async def alternating_guard(
+def alternating_guard(
     ctx: hsm.Context, instance: BenchInstance, event: hsm.Event
 ) -> bool:
+    del ctx, event
     instance.flip = not instance.flip
     return instance.flip
 
@@ -122,7 +123,7 @@ async def benchmark_case(
         ctx = hsm.Context()
 
         start_ns = time.perf_counter_ns()
-        machine = await hsm.Start(ctx, instance, model)
+        machine = await hsm.Started(ctx, instance, model)
         startup.append(time.perf_counter_ns() - start_ns)
 
         for _ in range(warmup):
