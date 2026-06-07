@@ -119,7 +119,7 @@ async def test_basic_after_timer_fires_once_after_delay():
 
     await clock.wait_for_sleep()
     assert clock.release_next() == timedelta(milliseconds=50)
-    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/BasicAfterMachine/done"), timeout=1)
+    await wait_until(lambda: sm.state() == "/BasicAfterMachine/done", "done state was not entered")
 
     assert instance.log == [
         'waiting-entry',
@@ -290,7 +290,7 @@ async def test_multiple_timers_in_same_state():
         timedelta(milliseconds=80),
     ]
     clock.release_duration(timedelta(milliseconds=40))
-    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/MultipleTimerMachine/path1"), timeout=1)
+    await wait_until(lambda: sm.state() == "/MultipleTimerMachine/path1", "path1 state was not entered")
     assert instance.log == ['timer1-fired']
     assert sm.state() == '/MultipleTimerMachine/path1'
 
@@ -337,7 +337,7 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
 
     await clock.wait_for_sleep()
     assert clock.release_next() == timedelta(milliseconds=60)
-    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/DynamicTimerMachine/finished"), timeout=1)
+    await wait_until(lambda: sm.state() == "/DynamicTimerMachine/finished", "finished state was not entered")
     assert instance.log == [
         'waiting-with-delay-60',
         'dynamic-timer-fired'
@@ -377,7 +377,7 @@ async def test_timer_with_event_data_access():
     assert instance.data['timer_event'].name == 'hsm/initial'
 
     assert clock.release_next() == timedelta(milliseconds=50)
-    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/EventDataTimerMachine/triggered"), timeout=1)
+    await wait_until(lambda: sm.state() == "/EventDataTimerMachine/triggered", "triggered state was not entered")
     assert sm.state() == '/EventDataTimerMachine/triggered'
 
     await hsm.stop(sm)
@@ -451,7 +451,7 @@ async def test_timer_in_hierarchical_state():
 
     await clock.wait_for_sleep()
     assert clock.release_next() == timedelta(milliseconds=50)
-    await asyncio.wait_for(hsm.AfterEntry(ctx, instance, "/HierarchicalTimerMachine/done"), timeout=1)
+    await wait_until(lambda: sm.state() == "/HierarchicalTimerMachine/done", "done state was not entered")
 
     assert instance.log == ['parent-handled-timeout']
     assert sm.state() == '/HierarchicalTimerMachine/done'

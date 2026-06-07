@@ -12,11 +12,11 @@ import hsm
 async def test_entry_behavior():
     async def entry_behavior(ctx: hsm.Context, inst: hsm.Instance, event: hsm.Event):
         print("entry_behavior")
-        return await inst.dispatch(hsm.Event(name="entry_behavior"))
+        return await inst.dispatch(inst.context(), hsm.Event(name="entry_behavior"))
 
     async def exit_behavior(ctx: hsm.Context, inst: hsm.Instance, event: hsm.Event):
         print("exit_behavior")
-        inst.dispatch(hsm.Event(name="exit_behavior"))
+        inst.dispatch(inst.context(), hsm.Event(name="exit_behavior"))
         print("exit_behavior done")
 
     sm = hsm.define(

@@ -26,17 +26,17 @@ async def _dispatch_soak(iterations: int) -> None:
         hsm.State("a", hsm.Transition(hsm.On("flip"), hsm.Target("../b"))),
         hsm.State("b", hsm.Transition(hsm.On("flip"), hsm.Target("../a"))),
     )
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
 
     for index in range(iterations):
-        await hsm.Dispatch(ctx, instance, hsm.Event("flip"))
+        await hsm.Dispatch(ctx, instance, hsm.Event(name="flip"))
         expected = "b" if index % 2 == 0 else "a"
         assert instance.state() == f"/DispatchSoak/{expected}"
         if index % 100 == 0:
-            assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+            assert instance.take_snapshot().QueueLen == 0
 
-    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
-    await hsm.Stop(instance)
+    assert instance.take_snapshot().QueueLen == 0
+    await instance.stop(instance.context())
 
 
 def test_long_dispatch_soak() -> None:
@@ -79,16 +79,16 @@ async def _timer_restart_soak(iterations: int) -> None:
                 break
             await asyncio.sleep(0)
         old_sleep = sleeps.pop(0)
-        await hsm.Restart(instance)
+        await instance.restart(instance.context())
         assert instance.state() == "/TimerSoak/waiting"
-        assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+        assert instance.take_snapshot().QueueLen == 0
         if not old_sleep.done():
             old_sleep.set_result(None)
 
     assert cancelled >= iterations
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
     await asyncio.sleep(0)
-    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    assert instance.take_snapshot().QueueLen == 0
     assert all(future.done() for future in sleeps)
 
 

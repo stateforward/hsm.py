@@ -320,7 +320,7 @@ async def test_context_waitable_queue_and_instance_branches():
         config=core.Config(Queue=FailingPushQueue(queue_error)),
     )
     await core.Start(error_ctx, queue_error_sm)
-    await queue_error_instance.dispatch(core.Event("go"))
+    await queue_error_instance.dispatch(core.Event(name="go"))
     assert queue_error_instance.state() == "/QueuePushError/failed"
     assert queue_error_instance.error is queue_error
 
@@ -329,9 +329,9 @@ async def test_context_waitable_queue_and_instance_branches():
         machine_free.dispatch(core.Event(name="noop"))
     assert machine_free.state() == ""
     assert machine_free.context() is None
-    await machine_free.stop()
+    await machine_free.stop(machine_free.context())
     with pytest.raises(core.ValidationError, match="started HSM"):
-        await machine_free.restart()
+        await machine_free.restart(machine_free.context())
 
     await core.noop_operation(core.Context(), machine_free, core.Event(name="noop"))
     assert (
@@ -349,7 +349,7 @@ async def test_context_waitable_queue_and_instance_branches():
 async def test_operation_callback_resolution_and_invoke_contract():
     ctx = core.Context()
     instance = CoverageInstance()
-    event = core.Event("go")
+    event = core.Event(name="go")
 
     async def behavior(
         behavior_ctx: core.Context, inst: core.Instance, behavior_event: core.Event
@@ -410,9 +410,9 @@ async def test_dispatch_reentrant_queue_paths_notify_and_do_not_wait():
     ctx = core.Context()
     instance = FanoutInstance()
     machine = await core.Started(ctx, instance, model)
-    dispatched = core.AfterDispatch(ctx, instance, core.Event("go"))
+    dispatched = core.AfterDispatch(ctx, instance, core.Event(name="go"))
 
-    await machine.dispatch(core.Event("go"))
+    await machine.dispatch(core.Event(name="go"))
     await dispatched
     assert instance.state() == "/FanoutHelperCoverage/done"
 
@@ -423,7 +423,7 @@ async def test_dispatch_reentrant_queue_paths_notify_and_do_not_wait():
     assert machine._processing.try_acquire() is True
     machine._awaitable = core._future_done()
     try:
-        assert await machine.dispatch(core.Event("go")) is None
+        assert await machine.dispatch(core.Event(name="go")) is None
         assert done_awaitable.state() == "/FanoutHelperCoverage/idle"
     finally:
         machine._processing.release()
@@ -434,7 +434,7 @@ async def test_dispatch_reentrant_queue_paths_notify_and_do_not_wait():
     assert machine._processing.try_acquire() is True
     machine._awaitable = asyncio.current_task()
     try:
-        assert await machine.dispatch(core.Event("go")) is None
+        assert await machine.dispatch(core.Event(name="go")) is None
         assert same_task.state() == "/FanoutHelperCoverage/idle"
     finally:
         machine._processing.release()
@@ -445,7 +445,7 @@ async def test_dispatch_reentrant_queue_paths_notify_and_do_not_wait():
     assert machine._processing.try_acquire() is True
     machine._awaitable = core._future_done()
     try:
-        assert await machine.dispatch(core.Event("go")) is None
+        assert await machine.dispatch(core.Event(name="go")) is None
         assert completed_awaitable.state() == "/FanoutHelperCoverage/idle"
     finally:
         machine._processing.release()
@@ -453,7 +453,7 @@ async def test_dispatch_reentrant_queue_paths_notify_and_do_not_wait():
 
     time_event_instance = FanoutInstance()
     machine = await core.Started(ctx, time_event_instance, model)
-    await machine.dispatch(core.Event("timer", kind=core.Kinds.TimeEvent))
+    await machine.dispatch(core.Event(name="timer", kind=core.Kinds.TimeEvent))
     assert time_event_instance.state() == "/FanoutHelperCoverage/idle"
     await core.Stop(time_event_instance)
 

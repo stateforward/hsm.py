@@ -339,9 +339,9 @@ async def test_pascal_case_aliases_and_snapshot():
     assert hsm.transition is hsm.Transition
 
     ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
 
-    snapshot = hsm.TakeSnapshot(ctx, instance)
+    snapshot = instance.take_snapshot()
     assert snapshot.QualifiedName == "/AliasMachine"
     assert snapshot.qualified_name == "/AliasMachine"
     assert snapshot.State == "/AliasMachine/idle"
@@ -361,7 +361,7 @@ async def test_pascal_case_aliases_and_snapshot():
         for event in snapshot.events
     )
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -375,14 +375,14 @@ async def test_model_paths_use_posix_semantics_for_absolute_targets():
     )
 
     ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
-    await hsm.Start(ctx, instance, model)
-    await hsm.Dispatch(ctx, instance, hsm.Event("stop"))
+    await hsm.Started(ctx, instance, model)
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="stop"))
 
-    snapshot = hsm.TakeSnapshot(ctx, instance)
+    snapshot = instance.take_snapshot()
     assert snapshot.State == "/PosixPathMachine/inactive"
     assert "\\" not in snapshot.State
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -404,12 +404,12 @@ async def test_attribute_onset_get_set_and_snapshot():
     )
 
     ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
 
     initial_value, ok = hsm.Get(ctx, instance, "count")
     assert ok is True
     assert initial_value == 1
-    initial_snapshot = hsm.TakeSnapshot(ctx, instance)
+    initial_snapshot = instance.take_snapshot()
     assert initial_snapshot.Attributes["/AttributeMachine/count"] == 1
     assert any(
         event.Name == "/AttributeMachine/count" and event.Kind == hsm.ChangeEventKind
@@ -422,9 +422,9 @@ async def test_attribute_onset_get_set_and_snapshot():
     assert ok is True
     assert updated_value == 2
     assert instance.state() == "/AttributeMachine/changed"
-    assert hsm.TakeSnapshot(ctx, instance).Attributes["/AttributeMachine/count"] == 2
+    assert instance.take_snapshot().Attributes["/AttributeMachine/count"] == 2
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -441,11 +441,11 @@ async def test_snapshot_contents_are_read_only_and_point_in_time():
     )
 
     ctx = hsm.Context()
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
 
     runtime_payload = {"items": [{"nested": ["initial"]}]}
     await hsm.Set(ctx, instance, "payload", runtime_payload)
-    snapshot = hsm.TakeSnapshot(ctx, instance)
+    snapshot = instance.take_snapshot()
 
     runtime_payload["items"][0]["nested"].append("mutated-after-snapshot")
 
@@ -466,7 +466,7 @@ async def test_snapshot_contents_are_read_only_and_point_in_time():
     with pytest.raises(AttributeError):
         snapshot.Events[0].Schema["fields"].append("changed")
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -488,15 +488,15 @@ async def test_when_string_is_onset_attribute_trigger():
     )
 
     ctx = hsm.Context()
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
 
     await hsm.Set(ctx, instance, "flag", True)
 
     assert instance.state() == "/WhenAttributeMachine/changed"
     assert hsm.Get(ctx, instance, "flag") == (True, True)
-    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    assert instance.take_snapshot().QueueLen == 0
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -531,7 +531,7 @@ async def test_snapshot_identity_config_and_event_data_helpers():
     assert hsm.ID(instance) == "alpha"
     assert hsm.QualifiedName(instance) == "/ConfiguredAlias"
     assert hsm.Name(instance) == "ConfiguredAlias"
-    assert hsm.TakeSnapshot(ctx, instance).State == "/ConfiguredMachine/idle"
+    assert instance.take_snapshot().State == "/ConfiguredMachine/idle"
     assert seen == ["boot"]
     assert event.Data == {"value": 1}
     assert event.ID == "event-1"
@@ -540,10 +540,10 @@ async def test_snapshot_identity_config_and_event_data_helpers():
     assert snake_event.ID == event.ID
     assert snake_data_event.Data == {"value": 2}
 
-    await hsm.Restart(instance, "again")
+    await instance.restart(instance.context(), "again")
     assert seen == ["boot", "again"]
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -588,7 +588,7 @@ async def test_cross_machine_dispatch_stamps_source_and_target_from_context():
     async def send_to_bravo(
         ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
     ) -> None:
-        await hsm.DispatchTo(ctx, hsm.Event("relay"), "bravo")
+        await hsm.DispatchTo(ctx, hsm.Event(name="relay"), "bravo")
 
     async def record_delivery(
         ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
@@ -611,7 +611,7 @@ async def test_cross_machine_dispatch_stamps_source_and_target_from_context():
     alpha = await hsm.Started(ctx, alpha_instance, model, hsm.Config(id="alpha"))
     await hsm.Started(alpha.context(), bravo_instance, model, hsm.Config(id="bravo"))
 
-    await hsm.Dispatch(alpha.context(), alpha, hsm.Event("go"))
+    await hsm.Dispatch(alpha.context(), alpha, hsm.Event(name="go"))
 
     assert alpha_instance.log == []
     assert bravo_instance.log == ["alpha->bravo"]
@@ -662,7 +662,7 @@ async def test_config_clock_drives_after_transition():
     await entered_done
     assert instance.state() == "/ClockMachine/done"
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -712,7 +712,7 @@ async def test_config_clock_drives_at_transition():
     await entered_done
     assert instance.state() == "/AtClockMachine/done"
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -767,7 +767,7 @@ async def test_attribute_duration_drives_after_and_every_transitions(
     await entered_done
     assert instance.state() == "/AttributeDurationMachine/done"
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -815,7 +815,7 @@ async def test_attribute_timepoint_drives_at_transition():
     await entered_done
     assert instance.state() == "/AttributeTimepointMachine/done"
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -841,7 +841,7 @@ async def test_operation_oncall_and_call():
     )
 
     ctx = hsm.Context()
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
 
     result = await hsm.Call(ctx, instance, "do", 7)
 
@@ -849,7 +849,7 @@ async def test_operation_oncall_and_call():
     assert instance.log == ["call:7"]
     assert instance.state() == "/CallMachine/called"
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -974,13 +974,13 @@ async def test_operation_call_requires_context_and_instance():
     )
 
     ctx = hsm.Context()
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
 
     assert await hsm.Call(ctx, instance, "work", 1) == "work:1"
     assert instance.log == ["/SignatureCallMachine/work"]
-    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    assert instance.take_snapshot().QueueLen == 0
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -1013,16 +1013,16 @@ async def test_oncall_dispatches_before_operation_exception():
     )
 
     ctx = hsm.Context()
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
 
     with pytest.raises(RuntimeError, match="boom:7"):
         await hsm.Call(ctx, instance, "fail", 7)
 
     assert instance.state() == "/FailingCallMachine/called"
     assert instance.log == ["oncall:7"]
-    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
+    assert instance.take_snapshot().QueueLen == 0
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -1050,7 +1050,7 @@ async def test_observers_restart_and_shallow_history():
     )
 
     ctx = hsm.Context()
-    await hsm.Start(ctx, instance, model)
+    await hsm.Started(ctx, instance, model)
     assert instance.state() == "/ObserverHistoryMachine/parent/a"
 
     await hsm.Dispatch(ctx, instance, hsm.Event(name="advance"))
@@ -1071,10 +1071,10 @@ async def test_observers_restart_and_shallow_history():
     await hsm.Dispatch(ctx, instance, hsm.Event(name="resume"))
     assert instance.state() == "/ObserverHistoryMachine/parent/b"
 
-    await hsm.Restart(instance)
+    await instance.restart(instance.context())
     assert instance.state() == "/ObserverHistoryMachine/parent/a"
 
-    await hsm.Stop(instance)
+    await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
@@ -1093,11 +1093,11 @@ async def test_group_dispatch_all_and_dispatch_to():
     )
 
     ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
-    await hsm.Start(ctx, first, model)
-    await hsm.Start(ctx, second, model)
+    await hsm.Started(ctx, first, model)
+    await hsm.Started(ctx, second, model)
 
-    first_id = hsm.TakeSnapshot(ctx, first).ID
-    second_id = hsm.TakeSnapshot(ctx, second).ID
+    first_id = first.take_snapshot().ID
+    second_id = second.take_snapshot().ID
     assert first_id != second_id
 
     await hsm.DispatchTo(ctx, hsm.Event(name="go"), first_id)
@@ -1108,11 +1108,11 @@ async def test_group_dispatch_all_and_dispatch_to():
     assert first.state() == "/GroupMachine/done"
     assert second.state() == "/GroupMachine/done"
 
-    group = hsm.NewGroup(first, second)
-    group_snapshot = hsm.TakeSnapshot(ctx, group)
+    group = hsm.Group(first, second)
+    group_snapshot = group.take_snapshot()
     assert group_snapshot.ID != ""
     assert group_snapshot.QualifiedName == "/GroupMachine,/GroupMachine"
     assert group_snapshot.State == "/GroupMachine/done | /GroupMachine/done"
     assert group_snapshot.QueueLen == 0
 
-    await hsm.Stop(group)
+    await group.stop(group.context())
