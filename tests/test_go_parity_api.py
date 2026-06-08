@@ -1108,7 +1108,10 @@ async def test_group_dispatch_all_and_dispatch_to():
     assert first.state() == "/GroupMachine/done"
     assert second.state() == "/GroupMachine/done"
 
-    group = hsm.Group(first, second)
+    group = hsm.MakeGroup(first, hsm.NewGroup(second))
+    assert hsm.MakeGroup is hsm.NewGroup
+    assert hsm.group is hsm.Group
+    assert group.state() == ["/GroupMachine/done", "/GroupMachine/done"]
     group_snapshot = group.take_snapshot()
     assert group_snapshot.ID != ""
     assert group_snapshot.QualifiedName == "/GroupMachine,/GroupMachine"

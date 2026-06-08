@@ -939,7 +939,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     )
     first_hsm.model.transition_map[first.state()].setdefault("ghost", []).append(ghost)
     snapshot = core.TakeSnapshot(ctx, first)
-    assert snapshot.StateElement == "/RuntimeCoverage/idle"
+    assert snapshot.State == "/RuntimeCoverage/idle"
     assert snapshot.QueueLen == 0
     assert all(event.Name != "ghost" for event in snapshot.Events)
 
@@ -953,7 +953,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     assert group_snapshot.ID != ""
     assert group_snapshot.QualifiedName == "/RuntimeCoverage,/RuntimeCoverage"
     assert (
-        group_snapshot.StateElement == "/RuntimeCoverage/idle | /RuntimeCoverage/idle"
+        group_snapshot.State == "/RuntimeCoverage/idle | /RuntimeCoverage/idle"
     )
     assert group_snapshot.QueueLen == 0
 
@@ -984,7 +984,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
 
     empty_group = core.NewGroup(None)
     assert empty_group.state() == []
-    assert empty_group.context() is None
+    assert isinstance(empty_group.context(), core.Context)
     empty_snapshot = empty_group.take_snapshot()
     assert empty_snapshot.ID != ""
     assert core.QualifiedName(empty_group) == ""

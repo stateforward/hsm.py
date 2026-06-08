@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import collections.abc
+import copy
 import posixpath
 import dataclasses
 import functools
@@ -3337,7 +3338,7 @@ class HSM(BehaviorElement[TInstance]):
             raise error
         return Snapshot(
             ID=self.id,
-            QualifiedName=self._state.qualified_name,
+            QualifiedName=self.qualified_name,
             State=self._state.qualified_name,
             Attributes={},
             QueueLen=queue_len,
@@ -3360,6 +3361,15 @@ class HSM(BehaviorElement[TInstance]):
     def restart(
         self, ctx: context.Context, data: TData = None
     ) -> collections.abc.Awaitable[typing.Self | None]:
+        if ctx is self._context:
+            values: dict[typing.Hashable, object] = {}
+            instances = self._context.value(Keys.Instances)
+            owner = self._context.value(Keys.Owner)
+            if instances is not None:
+                values[Keys.Instances] = instances
+            if owner is not None:
+                values[Keys.HSM] = owner
+            ctx = context.Context(values=values)
         return asyncio.Task(
             self._restart(ctx, data),
             loop=asyncio.get_running_loop(),
@@ -3378,25 +3388,31 @@ class Group:
         ctx: context.Context | None = None,
         id: str | None = None,
     ):
-        self._context = ctx or context.Context()
+        values = list(instances)
+        if id is None and values and isinstance(values[0], str):
+            id = typing.cast(str, values.pop(0))
         self._instances = []
         self._id = id or muid.make()
-        for instance in instances:
+        for instance in values:
             if instance is None:
                 continue
             if isinstance(instance, Group):
                 self._instances.extend(instance._instances)
             elif isinstance(instance, Instance):
                 self._instances.append(instance)
+            else:
+                raise TypeError(f"expected hsm.Instance, got {type(instance)!r}")
+        if ctx is not None:
+            self._context = ctx
+        elif self._instances:
+            self._context = self._instances[0].context()
+        else:
+            self._context = context.Context()
 
     def state(self) -> list[str]:
         if not self._instances:
             return []
-        snapshots = [instance.take_snapshot() for instance in self._instances]
-        return [
-            join(snapshot.QualifiedName, snapshot.ID, snapshot.State)
-            for snapshot in snapshots
-        ]
+        return [instance.take_snapshot().State for instance in self._instances]
 
     def context(self) -> context.Context:
         return self._context
@@ -3424,12 +3440,37 @@ class Group:
     def restart(
         self, ctx: context.Context, data: TData = None
     ) -> collections.abc.Awaitable[None]:
+        if ctx is self._context:
+            values: dict[typing.Hashable, object] = {}
+            instances = ctx.value(Keys.Instances)
+            if instances is not None:
+                values[Keys.Instances] = instances
+            ctx = context.Context(values=values)
+
         async def restart_all():
             _ = await asyncio.gather(
-                *[instance.restart(ctx, data) for instance in self._instances]
+                *[
+                    instance.restart(ctx, None if data is None else copy.deepcopy(data))
+                    for instance in self._instances
+                ]
             )
 
         return asyncio.ensure_future(restart_all())
+
+    def take_snapshot(self) -> Snapshot:
+        snapshots = [instance.take_snapshot() for instance in self._instances]
+        return Snapshot(
+            ID=self._id,
+            QualifiedName=",".join(snapshot.QualifiedName for snapshot in snapshots),
+            State=" | ".join(snapshot.State for snapshot in snapshots),
+            Attributes=None,
+            QueueLen=sum(snapshot.QueueLen for snapshot in snapshots),
+            Transitions=tuple(
+                transition
+                for snapshot in snapshots
+                for transition in snapshot.Transitions
+            ),
+        )
 
 
 def Define(name: str, *elements: Element) -> Model:
@@ -3691,13 +3732,54 @@ def Started(
 
 
 def Stop(
-    sm: HSM[TInstance], ctx: context.Context | None = None
+    sm: HSM[TInstance] | Instance | Group, ctx: context.Context | None = None
 ) -> collections.abc.Awaitable[None]:
-    return asyncio.Task(
-        sm._stop(ctx or sm.context()),
-        loop=asyncio.get_running_loop(),
-        eager_start=True,
-    )
+    return sm.stop(ctx or sm.context())
+
+
+def Restart(
+    sm: HSM[TInstance] | Instance | Group,
+    data: TData = None,
+    ctx: context.Context | None = None,
+) -> collections.abc.Awaitable[typing.Any]:
+    return sm.restart(ctx or sm.context(), data)
+
+
+def TakeSnapshot(
+    ctx: context.Context | None,
+    sm: HSM[TInstance] | Instance | Group,
+) -> Snapshot:
+    del ctx
+    snapshot = sm.take_snapshot()
+    if (
+        isinstance(sm, Instance)
+        and not snapshot.ID
+        and not snapshot.QualifiedName
+        and not snapshot.State
+    ):
+        raise ErrorValidatingModel(
+            Location.capture(), "take snapshot requires a started HSM"
+        )
+    return snapshot
+
+
+def ID(sm: HSM[TInstance] | Instance | Group) -> str:
+    return TakeSnapshot(None, sm).ID
+
+
+def QualifiedName(sm: HSM[TInstance] | Instance | Group) -> str:
+    return TakeSnapshot(None, sm).QualifiedName
+
+
+def Name(sm: HSM[TInstance] | Instance | Group) -> str:
+    return posixpath.basename(QualifiedName(sm))
+
+
+def NewGroup(*instances: str | Instance | Group | None) -> Group:
+    return Group(*instances)
+
+
+MakeGroup = NewGroup
 
 
 def Dispatch(
@@ -3809,10 +3891,18 @@ exit_point = ExitPoint
 start = Start
 started = Started
 stop = Stop
+restart = Restart
+take_snapshot = TakeSnapshot
+id = ID
+qualified_name = QualifiedName
+name = Name
+new_group = NewGroup
+make_group = MakeGroup
 dispatch = Dispatch
 dispatch_all = DispatchAll
 dispatch_to = DispatchTo
 dispatchable = Dispatchable
+group = Group
 
 __all__ = [
     "Activity",
@@ -3884,6 +3974,7 @@ __all__ = [
     "Guard",
     "Group",
     "HSM",
+    "ID",
     "Initial",
     "InitialElement",
     "InitialEvent",
@@ -3896,10 +3987,13 @@ __all__ = [
     "LCA",
     "LocalKind",
     "Location",
+    "MakeGroup",
     "Model",
     "ModelFinalizer",
     "ModelValidator",
+    "Name",
     "NamespaceElement",
+    "NewGroup",
     "NamespaceKind",
     "NullKind",
     "On",
@@ -3911,6 +4005,8 @@ __all__ = [
     "PseudostateElement",
     "PseudostateKind",
     "RedefinableElement",
+    "QualifiedName",
+    "Restart",
     "SelfKind",
     "SequentialKind",
     "ShallowHistory",
@@ -3927,6 +4023,7 @@ __all__ = [
     "Stop",
     "SubmachineState",
     "SubmachineStateKind",
+    "TakeSnapshot",
     "Target",
     "TimeEventKind",
     "Timer",
@@ -3959,10 +4056,17 @@ __all__ = [
     "exit_point",
     "final",
     "finalizer",
+    "group",
     "guard",
+    "id",
     "initial",
+    "make_group",
+    "name",
+    "new_group",
     "observe",
     "on",
+    "qualified_name",
+    "restart",
     "shallow_history",
     "source",
     "start",
@@ -3971,6 +4075,7 @@ __all__ = [
     "stop",
     "submachine_state",
     "target",
+    "take_snapshot",
     "transition",
     "validator",
     "when",
