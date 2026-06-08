@@ -949,16 +949,20 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
         "/RuntimeCoverage/idle",
     ]
     assert group.context() is first.context()
-    group_snapshot = core.TakeSnapshot(None, group)
-    assert group_snapshot.ID != ""
-    assert group_snapshot.QualifiedName == "/RuntimeCoverage,/RuntimeCoverage"
-    assert (
-        group_snapshot.State == "/RuntimeCoverage/idle | /RuntimeCoverage/idle"
-    )
-    assert group_snapshot.QueueLen == 0
+    group_snapshots = core.TakeSnapshot(None, group)
+    assert len(group_snapshots) == 2
+    assert [snapshot.QualifiedName for snapshot in group_snapshots] == [
+        "/RuntimeCoverage",
+        "/RuntimeCoverage",
+    ]
+    assert [snapshot.State for snapshot in group_snapshots] == [
+        "/RuntimeCoverage/idle",
+        "/RuntimeCoverage/idle",
+    ]
+    assert all(snapshot.QueueLen == 0 for snapshot in group_snapshots)
 
     identified_group = core.MakeGroup("coverage-group", first, second)
-    assert core.TakeSnapshot(None, identified_group).ID == "coverage-group"
+    assert core.ID(identified_group) == "coverage-group"
 
     await core.Dispatch(None, group, core.Event(name="go"))
     assert first.state() == "/RuntimeCoverage/done"
@@ -986,7 +990,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     assert empty_group.state() == []
     assert isinstance(empty_group.context(), core.Context)
     empty_snapshot = empty_group.take_snapshot()
-    assert empty_snapshot.ID != ""
+    assert empty_snapshot == []
     assert core.QualifiedName(empty_group) == ""
     with pytest.raises(core.ValidationError, match="started HSM"):
         await core.Dispatch(None, empty_group, core.Event(name="noop"))

@@ -3457,20 +3457,8 @@ class Group:
 
         return asyncio.ensure_future(restart_all())
 
-    def take_snapshot(self) -> Snapshot:
-        snapshots = [instance.take_snapshot() for instance in self._instances]
-        return Snapshot(
-            ID=self._id,
-            QualifiedName=",".join(snapshot.QualifiedName for snapshot in snapshots),
-            State=" | ".join(snapshot.State for snapshot in snapshots),
-            Attributes=None,
-            QueueLen=sum(snapshot.QueueLen for snapshot in snapshots),
-            Transitions=tuple(
-                transition
-                for snapshot in snapshots
-                for transition in snapshot.Transitions
-            ),
-        )
+    def take_snapshot(self) -> list[Snapshot]:
+        return [instance.take_snapshot() for instance in self._instances]
 
 
 def Define(name: str, *elements: Element) -> Model:
@@ -3745,11 +3733,23 @@ def Restart(
     return sm.restart(ctx or sm.context(), data)
 
 
+@typing.overload
+def TakeSnapshot(ctx: context.Context | None, sm: Group) -> list[Snapshot]: ...
+
+
+@typing.overload
+def TakeSnapshot(
+    ctx: context.Context | None, sm: HSM[TInstance] | Instance
+) -> Snapshot: ...
+
+
 def TakeSnapshot(
     ctx: context.Context | None,
     sm: HSM[TInstance] | Instance | Group,
-) -> Snapshot:
+) -> Snapshot | list[Snapshot]:
     del ctx
+    if isinstance(sm, Group):
+        return sm.take_snapshot()
     snapshot = sm.take_snapshot()
     if (
         isinstance(sm, Instance)
@@ -3764,14 +3764,20 @@ def TakeSnapshot(
 
 
 def ID(sm: HSM[TInstance] | Instance | Group) -> str:
+    if isinstance(sm, Group):
+        return typing.cast(typing.Any, sm)._id
     return TakeSnapshot(None, sm).ID
 
 
 def QualifiedName(sm: HSM[TInstance] | Instance | Group) -> str:
+    if isinstance(sm, Group):
+        return ""
     return TakeSnapshot(None, sm).QualifiedName
 
 
 def Name(sm: HSM[TInstance] | Instance | Group) -> str:
+    if isinstance(sm, Group):
+        return ""
     return posixpath.basename(QualifiedName(sm))
 
 

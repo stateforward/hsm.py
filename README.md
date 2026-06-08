@@ -341,10 +341,11 @@ Group `Restart(data)` deep-copies `data` once per member before startup entry ha
 
 ## Snapshots And Identity
 
-`TakeSnapshot(ctx, machine)` returns a `Snapshot`:
+`TakeSnapshot(ctx, machine)` returns a `Snapshot`. `TakeSnapshot(ctx, group)` returns one `Snapshot` per grouped instance:
 
 ```python
 snapshot = hsm.TakeSnapshot(ctx, instance)
+snapshots = hsm.TakeSnapshot(ctx, group)
 
 snapshot.ID             # Runtime instance ID
 snapshot.QualifiedName  # Runtime machine name

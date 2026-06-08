@@ -1112,10 +1112,16 @@ async def test_group_dispatch_all_and_dispatch_to():
     assert hsm.MakeGroup is hsm.NewGroup
     assert hsm.group is hsm.Group
     assert group.state() == ["/GroupMachine/done", "/GroupMachine/done"]
-    group_snapshot = group.take_snapshot()
-    assert group_snapshot.ID != ""
-    assert group_snapshot.QualifiedName == "/GroupMachine,/GroupMachine"
-    assert group_snapshot.State == "/GroupMachine/done | /GroupMachine/done"
-    assert group_snapshot.QueueLen == 0
+    group_snapshots = group.take_snapshot()
+    assert len(group_snapshots) == 2
+    assert [snapshot.QualifiedName for snapshot in group_snapshots] == [
+        "/GroupMachine",
+        "/GroupMachine",
+    ]
+    assert [snapshot.State for snapshot in group_snapshots] == [
+        "/GroupMachine/done",
+        "/GroupMachine/done",
+    ]
+    assert all(snapshot.QueueLen == 0 for snapshot in group_snapshots)
 
     await group.stop(group.context())
