@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import copy
 import json
 import posixpath
 import sys
@@ -74,6 +73,7 @@ SUPPORTED_FEATURES = {
     "dispatch_to",
     "multi_target",
     "timer_behavior",
+    "observation",
 }
 
 
@@ -321,8 +321,36 @@ class Runner:
             parts.append(self.build_state(state, "/" + model_name))
         for transition in model_ir.get("transitions", []):
             parts.append(self.build_transition(transition, "/" + model_name))
+        for observation in model_ir.get("observations", []):
+            parts.append(self.build_observation(observation, "/" + model_name))
 
         return hsm.Define(model_name, *parts)
+
+    def build_observation(self, observation: dict[str, Any], owner_path: str) -> Any:
+        behavior_id = self.behavior_id(observation)
+        self.mark_behavior_role(behavior_id, "observation")
+        targets = [
+            self.observation_target(target, owner_path)
+            for target in observation.get("targets", [])
+        ]
+        return hsm.Observe(
+            self.behavior_callback(behavior_id, role="observation"),
+            *targets,
+        )
+
+    def observation_target(self, target: Any, owner_path: str) -> str:
+        if isinstance(target, str):
+            if target.startswith("/") or "/" in target:
+                return self.absolute_path(target, owner_path)
+            return target
+        if isinstance(target, dict):
+            if "event" in target:
+                return self.event_name_from_ref(target["event"])
+            if "path" in target:
+                return self.absolute_path(
+                    self._require_string(target, "path"), owner_path
+                )
+        raise ConformanceError("observation target must be a string or object")
 
     def build_initial(self, initial: Any, owner_path: str) -> Any:
         if isinstance(initial, str):
@@ -1533,8 +1561,8 @@ class Runner:
             self.trace.append({"type": "raise", "event": raised_event.name})
             if self.event_is_deferred(
                 instance, raised_event.name
-            ) and not self.current_state_has_event_transition(
-                instance, raised_event.name
+            ) or self.behavior_owner_defers_event(
+                behavior_id, raised_event.name, behavior_role
             ):
                 self.note_deferred_event(instance, raised_event.name)
                 if self.trace_contract_includes("defer"):
@@ -1666,8 +1694,8 @@ class Runner:
             self.trace.append({"type": "raise", "event": raised_event.name})
             if self.event_is_deferred(
                 instance, raised_event.name
-            ) and not self.current_state_has_event_transition(
-                instance, raised_event.name
+            ) or self.behavior_owner_defers_event(
+                behavior_id, raised_event.name, behavior_role
             ):
                 self.note_deferred_event(instance, raised_event.name)
                 if self.trace_contract_includes("defer"):
@@ -1707,11 +1735,10 @@ class Runner:
                 self.trace.append({"type": "timer_cancelled"})
             event_deferred_by_current_state = self.event_is_deferred(
                 instance, event.name
-            )
+            ) and not self.event_has_transition_candidate(instance, event.name)
             if (
                 event_deferred_by_current_state
                 and self.trace_contract_includes("defer")
-                and not self.current_state_has_event_transition(instance, event.name)
             ):
                 key = self.deferred_event_key(instance, event.name)
                 if not self.has_deferred_event(instance, event.name):
@@ -1735,6 +1762,7 @@ class Runner:
             self.trace.append(
                 {"type": "dispatch", "event": event.name, "target": "all"}
             )
+            self.trace_deferred_dispatch(event.name, self.instances.values())
             await hsm.DispatchAll(self.ctx, event)
             await self.settle_ready_tasks(turns=7)
             self.trace_new_runtime_deferred(self.instances.values())
@@ -1755,6 +1783,14 @@ class Runner:
             self.trace.append(
                 {"type": "dispatch", "event": event.name, "target": trace_target}
             )
+            self.trace_deferred_dispatch(
+                event.name,
+                (
+                    self.instances[target]
+                    for target in targets
+                    if target in self.instances
+                ),
+            )
             await hsm.DispatchTo(self.ctx, event, *targets)
             await self.settle_ready_tasks(turns=7)
             self.trace_new_runtime_deferred(
@@ -1773,6 +1809,7 @@ class Runner:
             )
             if group_id not in self.groups:
                 raise ConformanceError(f"unknown group {group_id!r}")
+            self.trace_deferred_dispatch(event.name, self.instances_for_group(group_id))
             await hsm.Dispatch(self.ctx, self.groups[group_id], event)
             await self.settle_ready_tasks(turns=7)
             self.trace_new_runtime_deferred(self.instances_for_group(group_id))
@@ -1861,7 +1898,7 @@ class Runner:
                 id=raw.get("id", ""),
                 source=raw.get("source", ""),
                 target=raw.get("target", ""),
-                schema=copy.deepcopy(raw.get("metadata")),
+                schema=raw.get("metadata"),
             )
         raise ConformanceError("dispatch step requires string or object event")
 
@@ -1900,7 +1937,6 @@ class Runner:
             "qualified_name",
             "schema",
         }:
-            object.__setattr__(event, name, value)
             return
         schema = getattr(event, "schema", None)
         if not isinstance(schema, dict):
@@ -2453,17 +2489,61 @@ class Runner:
             return False
         return event_name in self.model.deferred_map.get(state_path, {})
 
-    def current_state_has_event_transition(
+    def event_has_transition_candidate(
         self, instance: hsm.Instance, event_name: str
     ) -> bool:
-        machine = self.machine_for_instance(instance)
-        model = machine.model if machine is not None else self.model
-        if model is None:
+        if self.model is None:
             return False
-        transitions = model.transition_map.get(instance.state(), {})
-        return bool(
-            transitions.get(event_name) or transitions.get(hsm.AnyEvent.name)
-        )
+        event_names = [event_name]
+        if event_name != hsm.AnyEvent.name:
+            event_names.append(hsm.AnyEvent.name)
+        active_state = instance.state()
+        current = active_state
+        while current:
+            member = self.model.members.get(current)
+            delayed_transition = False
+            if isinstance(member, hsm_core.VertexElement):
+                for name in event_names:
+                    for transition_name in member.transitions:
+                        transition = self.model.members.get(transition_name)
+                        if (
+                            not isinstance(transition, hsm_core.TransitionElement)
+                            or name not in transition.events
+                            or active_state
+                            not in self.model.transition_paths.get(
+                                transition.qualified_name, {}
+                            )
+                        ):
+                            continue
+                        if transition.owner() == current:
+                            return True
+                        delayed_transition = True
+            if isinstance(member, hsm_core.StateElement) and event_name in member.deferred:
+                return False
+            if delayed_transition:
+                return True
+            if current == self.model.qualified_name:
+                break
+            current = posixpath.dirname(current)
+        return False
+
+    def behavior_owner_defers_event(
+        self, behavior_id: str, event_name: str, behavior_role: str
+    ) -> bool:
+        if behavior_role != "entry" or self.model is None:
+            return False
+        for element in self.model.members.values():
+            if not isinstance(element, hsm_core.StateElement):
+                continue
+            if not any(
+                posixpath.basename(behavior_name) == behavior_id
+                for behavior_name in element.entry
+            ):
+                continue
+            return event_name in self.model.deferred_map.get(
+                element.qualified_name, {}
+            )
+        return False
 
     def trace_deferred_dispatch(
         self, event_name: str, instances: Iterable[hsm.Instance]
@@ -2471,9 +2551,9 @@ class Runner:
         if not self.trace_contract_includes("defer"):
             return
         for instance in instances:
-            if self.event_is_deferred(
-                instance, event_name
-            ) and not self.current_state_has_event_transition(instance, event_name):
+            if self.event_is_deferred(instance, event_name):
+                if self.event_has_transition_candidate(instance, event_name):
+                    continue
                 if not self.has_deferred_event(instance, event_name):
                     self.note_deferred_event(instance, event_name)
                     self.trace.append({"type": "defer", "event": event_name})
@@ -2488,31 +2568,21 @@ class Runner:
             if machine is None:
                 continue
             queue = getattr(machine, "_queue", None)
-            runtime_events = [
-                event for event in queue._lifo if hasattr(event, "_hsm_deferred_owner")
-            ]
+            runtime_events = list(queue._lifo)
             fifo = getattr(queue, "_fifo", None)
             items = getattr(fifo, "_items", None)
             if items is not None:
-                runtime_events.extend(
-                    event for event in items if hasattr(event, "_hsm_deferred_owner")
-                )
+                runtime_events.extend(items)
             elif isinstance(fifo, hsm_core.MultiQueue):
-                runtime_events.extend(
-                    event
-                    for event in fifo._lifo
-                    if hasattr(event, "_hsm_deferred_owner")
-                )
+                runtime_events.extend(fifo._lifo)
                 inner_items = getattr(getattr(fifo, "_fifo", None), "_items", None)
                 if inner_items is not None:
-                    runtime_events.extend(
-                        event
-                        for event in inner_items
-                        if hasattr(event, "_hsm_deferred_owner")
-                    )
+                    runtime_events.extend(inner_items)
             for event in runtime_events:
                 key = self.deferred_event_key(instance, event.name)
                 if key in known or self.has_deferred_event(instance, event.name):
+                    continue
+                if not self.event_is_deferred(instance, event.name):
                     continue
                 if (
                     len(instance_list) == 1
@@ -2570,10 +2640,34 @@ class Runner:
     def deferred_event_key(
         self, instance: hsm.Instance, event_name: str
     ) -> tuple[str, str, bool]:
+        cleanup_on_parent_exit = False
+        if self.model is not None:
+            owner: str | None = None
+            current = instance.state()
+            while current:
+                member = self.model.members.get(current)
+                if (
+                    isinstance(member, hsm_core.StateElement)
+                    and event_name in member.deferred
+                ):
+                    owner = current
+                    break
+                if current == self.model.qualified_name:
+                    break
+                current = posixpath.dirname(current)
+            current = posixpath.dirname(owner or "")
+            while current not in ("", "/", self.model.qualified_name):
+                member = self.model.members.get(current)
+                if isinstance(member, hsm_core.StateElement) and hsm_core.kind.Is(
+                    member.kind, hsm_core.SubmachineStateKind
+                ):
+                    cleanup_on_parent_exit = True
+                    break
+                current = posixpath.dirname(current)
         return (
             self.instance_id_for_instance(instance),
             event_name,
-            False,
+            cleanup_on_parent_exit,
         )
 
     def instance_id_for_instance(self, instance: hsm.Instance) -> str:
@@ -2665,9 +2759,10 @@ class Runner:
             active.append(state)
             index += 1
             if state.get("kind") == "submachine":
-                machine_ir = self.model_irs_by_name.get(
-                    self._require_string(state, "machine")
-                )
+                machine_name = self._require_string(state, "machine")
+                if index < len(parts) and parts[index] == machine_name:
+                    index += 1
+                machine_ir = self.model_irs_by_name.get(machine_name)
                 if machine_ir is None:
                     break
                 states = machine_ir.get("states", [])

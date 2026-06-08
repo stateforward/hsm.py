@@ -46,6 +46,25 @@ def test_define_accepts_validator_element_override() -> None:
     assert isinstance(model, hsm.FinalizedModel)
 
 
+def test_redefine_replays_validator_and_accepts_override() -> None:
+    original = RecordingValidator()
+    override = RecordingValidator()
+
+    model = hsm.Define(
+        "LateValidator",
+        hsm.Validator(original),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+    replayed = model.redefine(model, ())
+    replaced = model.redefine(model, (hsm.Validator(override),))
+
+    assert isinstance(replayed, hsm.FinalizedModel)
+    assert isinstance(replaced, hsm.FinalizedModel)
+    assert original.seen == ["/LateValidator", "/LateValidator"]
+    assert override.seen == ["/LateValidator"]
+
+
 def test_define_accepts_finalizer_element_override() -> None:
     finalizer = RecordingFinalizer()
 
@@ -58,6 +77,35 @@ def test_define_accepts_finalizer_element_override() -> None:
 
     assert finalizer.seen == ["/CustomFinalizer"]
     assert isinstance(model, hsm.FinalizedModel)
+
+
+def test_transition_kind_is_resolved_before_finalizer() -> None:
+    seen: list[int] = []
+
+    class Finalizer:
+        def finalize(self, model: hsm.Model) -> hsm.Model:
+            transition = next(
+                member
+                for member in model.members.values()
+                if isinstance(member, hsm.TransitionElement)
+                and "go" in member.events
+            )
+            seen.append(transition.kind)
+            return hsm.DefaultModelFinalizer().finalize(model)
+
+    model = hsm.Define(
+        "KindBeforeFinalizer",
+        hsm.Finalizer(Finalizer()),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
+        ),
+        hsm.State("done"),
+    )
+
+    assert isinstance(model, hsm.FinalizedModel)
+    assert seen == [hsm.ExternalKind]
 
 
 def test_define_returns_finalized_model_with_runtime_indexes() -> None:
@@ -142,6 +190,22 @@ def test_time_and_when_transitions_finalize_source_activity(
     assert event.kind == hsm.TimeEventKind
     assert callable(event.data)
     assert transition.events[0] in model.transition_map[state.qualified_name]
+
+
+def test_concurrent_behavior_requires_async_operation() -> None:
+    def sync_activity(ctx, inst, event):
+        del ctx, inst, event
+        return None
+
+    with pytest.raises(
+        hsm.ErrorValidatingModel,
+        match="concurrent behavior must be an async function",
+    ):
+        hsm.Define(
+            "SyncActivity",
+            hsm.Initial(hsm.Target("active")),
+            hsm.State("active", hsm.Activity(sync_activity)),
+        )
 
 
 def test_time_transition_from_choice_is_rejected_as_pseudostate_trigger() -> None:

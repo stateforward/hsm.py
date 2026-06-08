@@ -3329,7 +3329,7 @@ async def _activity_cancellation_cleanup_errors_do_not_dispatch_error_events() -
             assert ctx.Done().done() is True
             raise RuntimeError("activity cleanup failed")
 
-    async def error_effect(ctx, inst: CleanupErrorInstance, event):
+    def error_effect(ctx, inst: CleanupErrorInstance, event):
         inst.error_handled = True
 
     model = hsm.Define(

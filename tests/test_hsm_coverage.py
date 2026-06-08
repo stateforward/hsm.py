@@ -944,7 +944,10 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     assert all(event.Name != "ghost" for event in snapshot.Events)
 
     group = core.NewGroup(first, core.NewGroup(second), None)
-    assert group.state() == "/RuntimeCoverage/idle"
+    assert group.state() == [
+        "/RuntimeCoverage/idle",
+        "/RuntimeCoverage/idle",
+    ]
     assert group.context() is first.context()
     group_snapshot = core.TakeSnapshot(None, group)
     assert group_snapshot.ID != ""
@@ -980,7 +983,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     assert second.state() == "/RuntimeCoverage"
 
     empty_group = core.NewGroup(None)
-    assert empty_group.state() == ""
+    assert empty_group.state() == []
     assert empty_group.context() is None
     empty_snapshot = empty_group.take_snapshot()
     assert empty_snapshot.ID != ""

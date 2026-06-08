@@ -185,7 +185,7 @@ Common built-ins:
 | `ErrorEvent` | Error event dispatched when behavior raises |
 | `AnyEvent` | Wildcard fallback event |
 
-Dispatch clones event metadata (`name`, `qualified_name`, `source`, `target`, `id`, `kind`, and `schema`) before processing, so callback mutations do not mutate the caller's `Event` or leak to sibling machines during `DispatchAll`, `DispatchTo`, or group dispatch. `Event.Data` is intentionally shared by reference; payload ownership belongs to the caller/application. Use immutable payloads or make an application-level copy when handlers must not share mutable data.
+Dispatch uses an immutable event envelope (`name`, `source`, `target`, `id`, and `kind`) for routing. `Event.Data` and `Event.schema` are intentionally shared by reference; payload and metadata ownership belong to the caller/application. Use immutable values or make an application-level copy when handlers must not share mutable objects.
 
 ## Attributes
 

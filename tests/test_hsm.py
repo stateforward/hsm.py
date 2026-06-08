@@ -19,6 +19,36 @@ class THSM(hsm.Instance):
         self.foo = 0
 
 
+@pytest.mark.asyncio
+async def test_state_machine_can_run_as_entry_behavior():
+    class NestedInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.log: list[str] = []
+
+    def child_entry(ctx: hsm.Context, inst: NestedInstance, event: hsm.Event) -> None:
+        del ctx, event
+        inst.log.append("child.entry")
+
+    child_instance = NestedInstance()
+    child_model = hsm.Define(
+        "ChildEntryBehavior",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Entry(child_entry)),
+    )
+    child_machine = hsm.HSM(child_instance, child_model)
+    parent_model = hsm.Define(
+        "ParentEntryBehavior",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Entry(child_machine)),
+    )
+
+    await hsm.Started(hsm.Context(), hsm.Instance(), parent_model)
+
+    assert child_machine.state() == "/ChildEntryBehavior/idle"
+    assert child_instance.log == ["child.entry"]
+
+
 @pytest.mark.asyncio  # Mark test as async if library uses asyncio
 async def test_complex_hsm():
     trace: dict[str, list[str]] = {"sync": [], "async": []}
