@@ -2095,11 +2095,9 @@ class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
                 behavior_element = typing.cast(
                     BehaviorElement[TInstance], behavior_or_method
                 )
-                if kind == ConcurrentKind or isinstance(
-                    behavior_element, ConcurrentBehaviorElement
-                ):
+                if isinstance(behavior_element, ConcurrentBehaviorElement):
                     behavior = ConcurrentBehaviorElement(
-                        kind=kind if kind is not None else behavior_element.kind,
+                        kind=behavior_element.kind,
                         qualified_name=join(
                             owner.qualified_name, behavior_element.name()
                         ),
@@ -3377,7 +3375,7 @@ class HSM(BehaviorElement[TInstance]):
         )
 
 
-class Group:
+class Group(BehaviorElement[Instance]):
     _id: str = ""
     _context: context.Context
     _instances: list[Instance]
@@ -3391,8 +3389,20 @@ class Group:
         values = list(instances)
         if id is None and values and isinstance(values[0], str):
             id = typing.cast(str, values.pop(0))
+        group_id = id or muid.make()
+
+        def operation(ctx: context.Context, instance: Instance, event: Event) -> None:
+            del instance
+            _ = self.dispatch(ctx, event)
+
+        super().__init__(
+            kind=BehaviorKind,
+            id=group_id,
+            qualified_name=group_id,
+            operation=operation,
+        )
         self._instances = []
-        self._id = id or muid.make()
+        self._id = group_id
         for instance in values:
             if instance is None:
                 continue

@@ -339,6 +339,8 @@ await hsm.Stop(group)
 
 Group `Restart(data)` deep-copies `data` once per member before startup entry handlers receive it. Attribute `Get`/`Set` and operation `Call` are instance or HSM operations, not group operations.
 
+Groups are behavior elements, so they can be used in `Entry`, `Exit`, `Effect`, and `Activity` to fire-and-forget dispatch the current event to each member.
+
 ## Snapshots And Identity
 
 `TakeSnapshot(ctx, machine)` returns a `Snapshot`. `TakeSnapshot(ctx, group)` returns one `Snapshot` per grouped instance:

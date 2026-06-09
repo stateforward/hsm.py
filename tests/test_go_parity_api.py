@@ -1125,3 +1125,75 @@ async def test_group_dispatch_all_and_dispatch_to():
     assert all(snapshot.QueueLen == 0 for snapshot in group_snapshots)
 
     await group.stop(group.context())
+
+
+@pytest.mark.asyncio
+async def test_group_can_be_used_as_behavior():
+    class Member(hsm.Instance):
+        def __init__(self):
+            self.log: list[str] = []
+
+    def record(ctx: hsm.Context, instance: Member, event: hsm.Event) -> None:
+        instance.log.append(event.name)
+
+    member_model = hsm.Define(
+        "GroupBehaviorMember",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(
+                hsm.On(hsm.InitialEvent),
+                hsm.Effect(record),
+                hsm.Target("../idle"),
+            ),
+            hsm.Transition(hsm.On("effect"), hsm.Effect(record), hsm.Target("../idle")),
+            hsm.Transition(hsm.On("leave"), hsm.Effect(record), hsm.Target("../idle")),
+        ),
+    )
+
+    ctx = hsm.Context()
+    member = Member()
+    await hsm.Started(ctx, member, member_model)
+
+    group = hsm.MakeGroup("behavior_group", member)
+    assert isinstance(group, hsm.BehaviorElement)
+
+    parent = ParityInstance()
+    parent_model = hsm.Define(
+        "GroupBehaviorMachine",
+        hsm.Initial(hsm.Target("entry_state")),
+        hsm.State(
+            "entry_state",
+            hsm.Entry(group),
+            hsm.Transition(
+                hsm.On("effect"),
+                hsm.Effect(group),
+                hsm.Target("../activity_state"),
+            ),
+        ),
+        hsm.State(
+            "activity_state",
+            hsm.Activity(group),
+            hsm.Transition(hsm.On("leave"), hsm.Target("../exit_state")),
+        ),
+        hsm.State(
+            "exit_state",
+            hsm.Exit(group),
+            hsm.Transition(hsm.On("leave"), hsm.Target("../done")),
+        ),
+        hsm.State("done"),
+    )
+    await hsm.Started(ctx, parent, parent_model)
+    await asyncio.sleep(0.01)
+    assert member.log == [hsm.InitialEvent.name]
+
+    await hsm.Dispatch(ctx, parent, hsm.Event(name="effect"))
+    await asyncio.sleep(0.01)
+    assert member.log == [hsm.InitialEvent.name, "effect", "effect"]
+
+    await hsm.Dispatch(ctx, parent, hsm.Event(name="leave"))
+    await hsm.Dispatch(ctx, parent, hsm.Event(name="leave"))
+    await asyncio.sleep(0.01)
+    assert member.log == [hsm.InitialEvent.name, "effect", "effect", "leave"]
+
+    await hsm.Stop(hsm.MakeGroup(parent, member))
