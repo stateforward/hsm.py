@@ -54,7 +54,7 @@ async def test_done_returns_shared_completion_future():
     ctx = Context()
     done = ctx.Done()
 
-    assert not hasattr(ctx, "done")
+    assert ctx.done() is done
     assert done is ctx.Done()
     assert not done.done()
 

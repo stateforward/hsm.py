@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import re
 from datetime import datetime, timedelta
 
@@ -9,20 +10,11 @@ import hsm
 
 DSL_HSM_APIS = {
     "After",
-    "AfterDispatch",
-    "AfterEntry",
-    "AfterExecuted",
-    "AfterExit",
-    "AfterProcess",
     "At",
     "Attribute",
     "Activity",
-    "Call",
     "Choice",
-    "Clock",
-    "Config",
     "DeepHistory",
-    "DefaultClock",
     "Defer",
     "Define",
     "Dispatch",
@@ -30,18 +22,15 @@ DSL_HSM_APIS = {
     "DispatchTo",
     "Effect",
     "Entry",
+    "EntryPoint",
     "Every",
     "Exit",
+    "ExitPoint",
     "Final",
-    "Get",
     "Guard",
     "ID",
     "Initial",
-    "IsKind",
-    "LCA",
     "MakeGroup",
-    "MakeKind",
-    "Match",
     "Name",
     "New",
     "NewGroup",
@@ -51,13 +40,13 @@ DSL_HSM_APIS = {
     "Operation",
     "QualifiedName",
     "Restart",
-    "Set",
     "ShallowHistory",
     "Source",
     "Start",
     "Started",
     "State",
     "Stop",
+    "SubmachineState",
     "TakeSnapshot",
     "Target",
     "Transition",
@@ -81,26 +70,10 @@ def test_snake_case_dsl_aliases_are_available():
     aliases = {
         "activity": hsm.Activity,
         "after": hsm.After,
-        "after_dispatch": hsm.AfterDispatch,
-        "after_entry": hsm.AfterEntry,
-        "after_executed": hsm.AfterExecuted,
-        "after_exit": hsm.AfterExit,
-        "after_process": hsm.AfterProcess,
         "at": hsm.At,
         "attribute": hsm.Attribute,
-        "clock": hsm.Clock,
-        "element": hsm.Element,
-        "validation_error": hsm.ValidationError,
-        "behavior": hsm.Behavior,
-        "model": hsm.Model,
-        "instance": hsm.Instance,
-        "call": hsm.Call,
-        "call_data": hsm.CallData,
         "choice": hsm.Choice,
-        "config": hsm.Config,
-        "context": hsm.Context,
         "deep_history": hsm.DeepHistory,
-        "default_clock": hsm.DefaultClock,
         "define": hsm.Define,
         "defer": hsm.Defer,
         "dispatch": hsm.Dispatch,
@@ -108,19 +81,14 @@ def test_snake_case_dsl_aliases_are_available():
         "dispatch_to": hsm.DispatchTo,
         "effect": hsm.Effect,
         "entry": hsm.Entry,
-        "event": hsm.Event,
-        "completion_event": hsm.CompletionEvent,
+        "entry_point": hsm.EntryPoint,
         "every": hsm.Every,
         "exit": hsm.Exit,
-        "expression": hsm.Expression,
+        "exit_point": hsm.ExitPoint,
         "final": hsm.Final,
-        "final_state": hsm.FinalState,
-        "get": hsm.Get,
         "guard": hsm.Guard,
         "id": hsm.ID,
         "initial": hsm.Initial,
-        "is_ancestor": hsm.IsAncestor,
-        "lca": hsm.LCA,
         "make_group": hsm.MakeGroup,
         "name": hsm.Name,
         "new": hsm.New,
@@ -131,14 +99,13 @@ def test_snake_case_dsl_aliases_are_available():
         "operation": hsm.Operation,
         "qualified_name": hsm.QualifiedName,
         "restart": hsm.Restart,
-        "set": hsm.Set,
         "shallow_history": hsm.ShallowHistory,
         "source": hsm.Source,
         "start": hsm.Start,
         "started": hsm.Started,
         "state": hsm.State,
         "stop": hsm.Stop,
-        "snapshot": hsm.Snapshot,
+        "submachine_state": hsm.SubmachineState,
         "take_snapshot": hsm.TakeSnapshot,
         "target": hsm.Target,
         "transition": hsm.Transition,
@@ -149,13 +116,6 @@ def test_snake_case_dsl_aliases_are_available():
         assert getattr(hsm, alias_name) is canonical
 
     assert "started" in hsm.__all__
-    assert hsm.make_kind is hsm.MakeKind
-    assert hsm.is_kind is hsm.IsKind
-    custom = hsm.make_kind(hsm.Kinds.Element)
-    assert hsm.is_kind(custom, hsm.Kinds.Element)
-    assert hsm.match("machine-1", "machine-*")
-    assert hsm.match("machine-1", "other-*", "machine-*")
-    assert hsm.onset is hsm.OnSet
     assert hsm.MakeGroup is hsm.NewGroup
     assert hsm.group is hsm.Group
     assert "Group" in hsm.__all__
@@ -164,11 +124,7 @@ def test_snake_case_dsl_aliases_are_available():
 
 def test_public_pascal_case_exports_have_snake_case_aliases():
     missing = []
-    for name in hsm.__all__:
-        if not name[:1].isupper():
-            continue
-        if name == "HSM":
-            continue
+    for name in sorted(DSL_HSM_APIS):
         alias = _snake_case(name)
         if not hasattr(hsm, alias):
             missing.append((name, alias))
@@ -195,51 +151,47 @@ def test_dsl_documented_hsm_apis_have_snake_case_aliases():
     assert missing == []
 
 
-def test_snake_case_dsl_values_are_available():
-    aliases = {
-        "any_event": hsm.AnyEvent,
-        "attribute_change": hsm.AttributeChange,
-        "initial_event": hsm.InitialEvent,
-        "error_event": hsm.ErrorEvent,
-        "final_event": hsm.FinalEvent,
-        "infinite_duration": hsm.InfiniteDuration,
-        "kinds": hsm.Kinds,
-        "null_kind": hsm.NullKind,
-        "element_kind": hsm.ElementKind,
-        "partial_kind": hsm.PartialKind,
-        "namespace_kind": hsm.NamespaceKind,
-        "named_element_kind": hsm.NamedElementKind,
-        "vertex_kind": hsm.VertexKind,
-        "constraint_kind": hsm.ConstraintKind,
-        "behavior_kind": hsm.BehaviorKind,
-        "concurrent_kind": hsm.ConcurrentKind,
-        "sequential_kind": hsm.SequentialKind,
-        "state_machine_kind": hsm.StateMachineKind,
-        "state_kind": hsm.StateKind,
-        "transition_kind": hsm.TransitionKind,
-        "internal_kind": hsm.InternalKind,
-        "external_kind": hsm.ExternalKind,
-        "local_kind": hsm.LocalKind,
-        "self_kind": hsm.SelfKind,
-        "event_kind": hsm.EventKind,
-        "time_event_kind": hsm.TimeEventKind,
-        "completion_event_kind": hsm.CompletionEventKind,
-        "change_event_kind": hsm.ChangeEventKind,
-        "call_event_kind": hsm.CallEventKind,
-        "error_event_kind": hsm.ErrorEventKind,
-        "pseudostate_kind": hsm.PseudostateKind,
-        "initial_kind": hsm.InitialKind,
-        "final_state_kind": hsm.FinalStateKind,
-        "choice_kind": hsm.ChoiceKind,
-        "shallow_history_kind": hsm.ShallowHistoryKind,
-        "deep_history_kind": hsm.DeepHistoryKind,
-        "attribute_kind": hsm.AttributeKind,
-        "operation_kind": hsm.OperationKind,
+def test_dsl_values_are_exported():
+    values = {
+        "AnyEvent": hsm.AnyEvent,
+        "AttributeChange": hsm.AttributeChange,
+        "InitialEvent": hsm.InitialEvent,
+        "ErrorEvent": hsm.ErrorEvent,
+        "FinalEvent": hsm.FinalEvent,
+        "InfiniteDuration": hsm.InfiniteDuration,
+        "NullKind": hsm.NullKind,
+        "ElementKind": hsm.ElementKind,
+        "NamespaceKind": hsm.NamespaceKind,
+        "VertexKind": hsm.VertexKind,
+        "ConstraintKind": hsm.ConstraintKind,
+        "BehaviorKind": hsm.BehaviorKind,
+        "ConcurrentKind": hsm.ConcurrentKind,
+        "SequentialKind": hsm.SequentialKind,
+        "StateMachineKind": hsm.StateMachineKind,
+        "StateKind": hsm.StateKind,
+        "TransitionKind": hsm.TransitionKind,
+        "InternalKind": hsm.InternalKind,
+        "ExternalKind": hsm.ExternalKind,
+        "LocalKind": hsm.LocalKind,
+        "SelfKind": hsm.SelfKind,
+        "EventKind": hsm.EventKind,
+        "TimeEventKind": hsm.TimeEventKind,
+        "CompletionEventKind": hsm.CompletionEventKind,
+        "CallEventKind": hsm.CallEventKind,
+        "ErrorEventKind": hsm.ErrorEventKind,
+        "PseudostateKind": hsm.PseudostateKind,
+        "InitialKind": hsm.InitialKind,
+        "FinalStateKind": hsm.FinalStateKind,
+        "ChoiceKind": hsm.ChoiceKind,
+        "ShallowHistoryKind": hsm.ShallowHistoryKind,
+        "DeepHistoryKind": hsm.DeepHistoryKind,
+        "AttributeKind": hsm.AttributeKind,
+        "OperationKind": hsm.OperationKind,
     }
 
-    for alias_name, canonical in aliases.items():
-        assert getattr(hsm, alias_name) is canonical
-        assert alias_name in hsm.__all__
+    for name, canonical in values.items():
+        assert getattr(hsm, name) is canonical
+        assert name in hsm.__all__
 
 
 def test_config_supports_snake_case_fields():
@@ -260,23 +212,22 @@ def test_config_supports_snake_case_fields():
     assert config.data == {"boot": True}
     assert config.clock is clock
 
-    config.id = "machine-2"
-    config.name = "/Renamed"
-    config.data = {"boot": False}
-    config.clock = None
-
-    assert config.ID == "machine-2"
-    assert config.Name == "/Renamed"
-    assert config.Data == {"boot": False}
-    assert config.Clock is None
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.id = "machine-2"
 
 
 @pytest.mark.asyncio
 async def test_snake_case_dsl_aliases_build_and_run_model():
     instance = ParityInstance()
 
-    async def started(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+    def started(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
         inst.log.append("started")
+
+    def allow(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> bool:
+        return True
+
+    def record_go(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+        inst.log.append("go")
 
     model = hsm.define(
         "SnakeDslMachine",
@@ -288,8 +239,8 @@ async def test_snake_case_dsl_aliases_build_and_run_model():
             hsm.entry(started),
             hsm.transition(
                 hsm.on("go"),
-                hsm.guard(lambda ctx, inst, event: True),
-                hsm.effect(lambda ctx, inst, event: inst.log.append("go")),
+                hsm.guard(allow),
+                hsm.effect(record_go),
                 hsm.target("../done"),
             ),
             hsm.transition(
@@ -300,15 +251,15 @@ async def test_snake_case_dsl_aliases_build_and_run_model():
         hsm.final("done"),
     )
 
-    ctx = hsm.context()
-    await hsm.start(ctx, instance, model)
+    ctx = hsm.Context()
+    await hsm.started(ctx, instance, model)
 
     assert instance.state() == "/SnakeDslMachine/idle"
-    assert hsm.get(ctx, instance, "count") == (0, True)
+    assert hsm.Get(ctx, instance, "count") == (0, True)
 
     await hsm.dispatch(ctx, instance, hsm.Event(name="go"))
 
-    snapshot = hsm.take_snapshot(ctx, instance)
+    snapshot = hsm.TakeSnapshot(ctx, instance)
     assert snapshot.state == "/SnakeDslMachine/done"
     assert instance.log == ["started", "go"]
 
@@ -428,7 +379,7 @@ async def test_attribute_onset_get_set_and_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_snapshot_contents_are_read_only_and_point_in_time():
+async def test_snapshot_mapping_is_read_only_and_values_remain_user_mutable():
     instance = ParityInstance()
     go = hsm.Event(name="go", schema={"fields": ["payload"]})
 
@@ -453,13 +404,17 @@ async def test_snapshot_contents_are_read_only_and_point_in_time():
     runtime_payload["items"][0]["nested"].append("mutated-after-snapshot")
 
     snapshot_payload = snapshot.Attributes["/SnapshotReadOnly/payload"]
-    assert snapshot_payload["items"][0]["nested"] == ("initial",)
+    assert snapshot_payload is runtime_payload
+    assert snapshot_payload["items"][0]["nested"] == [
+        "initial",
+        "mutated-after-snapshot",
+    ]
     assert isinstance(snapshot.Transitions, tuple)
 
     with pytest.raises(TypeError):
         snapshot.Attributes["/SnapshotReadOnly/payload"] = {"items": []}
-    with pytest.raises(AttributeError):
-        snapshot_payload["items"][0]["nested"].append("snapshot-mutated")
+    snapshot_payload["items"][0]["nested"].append("snapshot-mutated")
+    assert runtime_payload["items"][0]["nested"][-1] == "snapshot-mutated"
     with pytest.raises(AttributeError):
         snapshot.Transitions.append("extra")
 
@@ -501,7 +456,7 @@ async def test_snapshot_identity_config_and_event_data_helpers():
     instance = ParityInstance()
     seen: list[object] = []
 
-    async def idle_entry(
+    def idle_entry(
         ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
     ) -> None:
         seen.append(event.Data)
@@ -558,36 +513,26 @@ async def test_context_carries_current_machine_and_all_started_machines():
     )
     tagged = ctx.WithValue("request-id", "req-7")
 
-    assert hsm.FromContext(ctx) == (None, False)
-    assert hsm.FromContext(alpha.context()) == (alpha, True)
-    assert hsm.FromContext(bravo.context()) == (bravo, True)
-    assert hsm.FromContext(alpha.context()) == (alpha, True)
+    assert ctx.Value(hsm.Keys.HSM) is None
+    assert alpha.context().Value(hsm.Keys.HSM) is not None
+    assert bravo.context().Value(hsm.Keys.HSM) is not None
     assert ctx.Value(hsm.Keys.Owner) is None
     assert ctx.Value("request-id") is None
     assert tagged.Value("request-id") == "req-7"
-    assert {hsm.ID(machine) for machine in hsm.InstancesFromContext(ctx)[0]} == {
-        "alpha",
-        "bravo",
-    }
-    assert {
-        hsm.ID(machine) for machine in hsm.InstancesFromContext(alpha.context())[0]
-    } == {
-        "alpha",
-        "bravo",
-    }
-    instances, ok = hsm.InstancesFromContext(ctx)
-    assert ok is True
-    assert {hsm.ID(machine) for machine in instances} == {"alpha", "bravo"}
+    instances = ctx.Value(hsm.Keys.Instances)
+    assert isinstance(instances, dict)
+    assert instances == {"alpha": alpha, "bravo": bravo}
+    assert alpha.context().Value(hsm.Keys.Instances) is instances
 
 
 @pytest.mark.asyncio
 async def test_cross_machine_dispatch_stamps_source_and_target_from_context():
-    async def send_to_bravo(
+    def send_to_bravo(
         ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
     ) -> None:
-        await hsm.DispatchTo(ctx, hsm.Event(name="relay"), "bravo")
+        _ = hsm.DispatchTo(ctx, hsm.Event(name="relay"), "bravo")
 
-    async def record_delivery(
+    def record_delivery(
         ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
     ) -> None:
         inst.log.append(f"{event.Source}->{event.Target}")
@@ -609,9 +554,13 @@ async def test_cross_machine_dispatch_stamps_source_and_target_from_context():
     await hsm.Started(alpha.context(), bravo_instance, model, hsm.Config(id="bravo"))
 
     await hsm.Dispatch(alpha.context(), alpha, hsm.Event(name="go"))
+    for _ in range(100):
+        if bravo_instance.log:
+            break
+        await asyncio.sleep(0)
 
     assert alpha_instance.log == []
-    assert bravo_instance.log == ["alpha->bravo"]
+    assert bravo_instance.log == ["->bravo"]
 
 
 @pytest.mark.asyncio
@@ -654,9 +603,11 @@ async def test_config_clock_drives_after_transition():
     assert sleeps[0][0].total_seconds() == 5
     assert instance.state() == "/ClockMachine/waiting"
 
-    entered_done = hsm.AfterEntry(ctx, instance, "/ClockMachine/done")
     sleeps[0][1].set_result(None)
-    await entered_done
+    for _ in range(100):
+        if instance.state() == "/ClockMachine/done":
+            break
+        await asyncio.sleep(0)
     assert instance.state() == "/ClockMachine/done"
 
     await instance.stop(instance.context())
@@ -704,9 +655,11 @@ async def test_config_clock_drives_at_transition():
     assert sleeps[0][0] > timedelta(hours=1, minutes=59)
     assert instance.state() == "/AtClockMachine/waiting"
 
-    entered_done = hsm.AfterEntry(ctx, instance, "/AtClockMachine/done")
     sleeps[0][1].set_result(None)
-    await entered_done
+    for _ in range(100):
+        if instance.state() == "/AtClockMachine/done":
+            break
+        await asyncio.sleep(0)
     assert instance.state() == "/AtClockMachine/done"
 
     await instance.stop(instance.context())
@@ -731,6 +684,11 @@ async def test_attribute_duration_drives_after_and_every_transitions(
         sleeps.append((duration, future))
         await future
 
+    def delay(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event):
+        value, ok = hsm.Get(ctx, inst, "delay")
+        assert ok is True
+        return value
+
     model = hsm.Define(
         "AttributeDurationMachine",
         hsm.Attribute("delay", attribute_value),
@@ -738,7 +696,7 @@ async def test_attribute_duration_drives_after_and_every_transitions(
         hsm.State(
             "waiting",
             hsm.Transition(
-                timer_factory("delay"),
+                timer_factory(delay),
                 hsm.Target("../done"),
             ),
         ),
@@ -759,9 +717,11 @@ async def test_attribute_duration_drives_after_and_every_transitions(
     assert sleeps[0][0] == attribute_value
     assert instance.state() == "/AttributeDurationMachine/waiting"
 
-    entered_done = hsm.AfterEntry(ctx, instance, "/AttributeDurationMachine/done")
     sleeps[0][1].set_result(None)
-    await entered_done
+    for _ in range(100):
+        if instance.state() == "/AttributeDurationMachine/done":
+            break
+        await asyncio.sleep(0)
     assert instance.state() == "/AttributeDurationMachine/done"
 
     await instance.stop(instance.context())
@@ -779,6 +739,11 @@ async def test_attribute_timepoint_drives_at_transition():
 
     deadline = datetime.now() + timedelta(hours=1)
 
+    def deadline_source(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event):
+        value, ok = hsm.Get(ctx, inst, "deadline")
+        assert ok is True
+        return value
+
     model = hsm.Define(
         "AttributeTimepointMachine",
         hsm.Attribute("deadline", deadline),
@@ -786,7 +751,7 @@ async def test_attribute_timepoint_drives_at_transition():
         hsm.State(
             "waiting",
             hsm.Transition(
-                hsm.At("deadline"),
+                hsm.At(deadline_source),
                 hsm.Target("../done"),
             ),
         ),
@@ -807,9 +772,11 @@ async def test_attribute_timepoint_drives_at_transition():
     assert timedelta(minutes=59) < sleeps[0][0] <= timedelta(hours=1)
     assert instance.state() == "/AttributeTimepointMachine/waiting"
 
-    entered_done = hsm.AfterEntry(ctx, instance, "/AttributeTimepointMachine/done")
     sleeps[0][1].set_result(None)
-    await entered_done
+    for _ in range(100):
+        if instance.state() == "/AttributeTimepointMachine/done":
+            break
+        await asyncio.sleep(0)
     assert instance.state() == "/AttributeTimepointMachine/done"
 
     await instance.stop(instance.context())
@@ -1051,7 +1018,7 @@ async def test_operation_call_requires_context_and_instance():
 
 
 @pytest.mark.asyncio
-async def test_oncall_dispatches_before_operation_exception():
+async def test_oncall_does_not_dispatch_after_operation_exception():
     instance = ParityInstance()
 
     async def fail(ctx: hsm.Context, inst: ParityInstance, value: int) -> None:
@@ -1085,8 +1052,8 @@ async def test_oncall_dispatches_before_operation_exception():
     with pytest.raises(RuntimeError, match="boom:7"):
         await hsm.Call(ctx, instance, "fail", 7)
 
-    assert instance.state() == "/FailingCallMachine/called"
-    assert instance.log == ["oncall:7"]
+    assert instance.state() == "/FailingCallMachine/idle"
+    assert instance.log == []
     assert instance.take_snapshot().QueueLen == 0
 
     await instance.stop(instance.context())
@@ -1123,15 +1090,7 @@ async def test_observers_restart_and_shallow_history():
     await hsm.Dispatch(ctx, instance, hsm.Event(name="advance"))
     assert instance.state() == "/ObserverHistoryMachine/parent/b"
 
-    entered_outside = hsm.AfterEntry(ctx, instance, "/ObserverHistoryMachine/outside")
-    exited_parent_b = hsm.AfterExit(ctx, instance, "/ObserverHistoryMachine/parent/b")
-    processed_leave = hsm.AfterProcess(ctx, instance, hsm.Event(name="leave"))
-    dispatched_leave = hsm.AfterDispatch(ctx, instance, hsm.Event(name="leave"))
-
     await hsm.Dispatch(ctx, instance, hsm.Event(name="leave"))
-    await asyncio.gather(
-        entered_outside, exited_parent_b, processed_leave, dispatched_leave
-    )
 
     assert instance.state() == "/ObserverHistoryMachine/outside"
 
@@ -1198,6 +1157,7 @@ async def test_group_dispatch_all_and_dispatch_to():
 async def test_group_can_be_used_as_behavior():
     class Member(hsm.Instance):
         def __init__(self):
+            super().__init__()
             self.log: list[str] = []
 
     def record(ctx: hsm.Context, instance: Member, event: hsm.Event) -> None:

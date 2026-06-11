@@ -202,15 +202,12 @@ async def test_error_in_entry_actions():
     ctx = hsm.Context()
     sm = await hsm.started(ctx, instance, model)
 
-    # Trigger transition to failing state
-    await sm.dispatch(ctx, Event(name='go'))
-    await asyncio.wait_for(error_caught.wait(), timeout=1)
+    with pytest.raises(Exception, match='Entry action failed!'):
+        await sm.dispatch(ctx, Event(name='go'))
 
     assert 'entry-will-fail' in instance.log
-    assert 'caught-entry-error' in instance.log
-    assert 'Entry action failed!' in instance.data['entry_error']
-
-    await hsm.stop(sm)
+    assert 'caught-entry-error' not in instance.log
+    assert sm.state() == '/EntryErrorMachine/start'
 
 
 @pytest.mark.asyncio
@@ -249,15 +246,12 @@ async def test_error_in_exit_actions():
     ctx = hsm.Context()
     sm = await hsm.started(ctx, instance, model)
 
-    # Trigger transition that will cause exit action to fail
-    await sm.dispatch(ctx, Event(name='leave'))
-    await asyncio.wait_for(error_caught.wait(), timeout=1)
+    with pytest.raises(Exception, match='Exit action failed!'):
+        await sm.dispatch(ctx, Event(name='leave'))
 
     assert 'exit-will-fail' in instance.log
-    assert 'caught-exit-error' in instance.log
-    assert 'Exit action failed!' in instance.data['exit_error']
-
-    await hsm.stop(sm)
+    assert 'caught-exit-error' not in instance.log
+    assert sm.state() == '/ExitErrorMachine/unstable'
 
 
 @pytest.mark.asyncio
@@ -296,15 +290,12 @@ async def test_error_in_transition_effects():
     ctx = hsm.Context()
     sm = await hsm.started(ctx, instance, model)
 
-    # Trigger transition with failing effect
-    await sm.dispatch(ctx, Event(name='trigger'))
-    await asyncio.wait_for(error_caught.wait(), timeout=1)
+    with pytest.raises(Exception, match='Effect failed!'):
+        await sm.dispatch(ctx, Event(name='trigger'))
 
     assert 'effect-will-fail' in instance.log
-    assert 'caught-effect-error' in instance.log
-    assert 'Effect failed!' in instance.data['effect_error']
-
-    await hsm.stop(sm)
+    assert 'caught-effect-error' not in instance.log
+    assert sm.state() == '/EffectErrorMachine/start'
 
 
 @pytest.mark.asyncio

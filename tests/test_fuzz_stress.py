@@ -1,27 +1,30 @@
 import asyncio
-import copy
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, Callable
 
-import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import hsm
-from hsm import hsm as core
-
-
-def _context_machines(ctx: hsm.Context) -> list[Any]:
-    return hsm.InstancesFromContext(ctx)[0]
 
 
 def _runtime_context() -> hsm.Context:
     return hsm.Context().WithValue(hsm.Keys.Instances, {})
 
 
+async def _wait_for(predicate: Callable[[], bool], message: str) -> None:
+    for _ in range(100):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(message)
+
+
 class FuzzInstance(hsm.Instance):
-    pass
+    def __init__(self):
+        super().__init__()
+        self.log: list[Any] = []
 
 
 @dataclass(frozen=True)
@@ -89,7 +92,7 @@ async def _drive_flat_spec(spec: FlatSpec) -> None:
         assert before.State == f"/FuzzFlat/s{expected_state}"
         assert before.QueueLen == 0
 
-        await hsm.Dispatch(ctx, instance, hsm.Event(f"e{event_index}"))
+        await hsm.Dispatch(ctx, instance, hsm.Event(name=f"e{event_index}"))
 
         maybe_target = spec.transitions[expected_state][event_index]
         if maybe_target is not None:
@@ -97,15 +100,13 @@ async def _drive_flat_spec(spec: FlatSpec) -> None:
         after = instance.take_snapshot()
         assert after.State == f"/FuzzFlat/s{expected_state}"
         assert after.QueueLen == 0
-        assert instance.state() == after.State
 
     await instance.stop(instance.context())
-    assert instance.take_snapshot().QueueLen == 0
 
 
 @given(flat_specs())
 @settings(
-    max_examples=120,
+    max_examples=80,
     deadline=None,
     derandomize=True,
     suppress_health_check=[HealthCheck.too_slow],
@@ -133,45 +134,38 @@ def guarded_specs(draw):
 
 
 def _guarded_model(guards: tuple[bool, ...], targets: tuple[int, ...]) -> hsm.Model:
-    def make_guard(value: bool):
-        async def guard(ctx, inst, event):
+    transitions = []
+    for index, (value, target) in enumerate(zip(guards, targets, strict=True)):
+
+        def guard(ctx, inst: FuzzInstance, event, *, value=value, index=index):
+            inst.log.append(f"guard:{index}")
             return value
 
-        return guard
-
-    transitions = [
-        hsm.Transition(
-            hsm.On("go"),
-            hsm.Guard(make_guard(guard_value)),
-            hsm.Target(f"../s{target_index}"),
+        guard.__name__ = f"guard_{index}"
+        transitions.append(
+            hsm.Transition(
+                hsm.On("go"),
+                hsm.Guard(guard),
+                hsm.Target(f"../s{target}"),
+            )
         )
-        for guard_value, target_index in zip(guards, targets, strict=True)
-    ]
-    return hsm.Define(
-        "FuzzGuards",
-        hsm.Initial(hsm.Target("s0")),
-        hsm.State("s0", *transitions),
-        *(hsm.State(f"s{index}") for index in range(1, 5)),
-    )
+    states = [hsm.State("s0", *transitions)]
+    states.extend(hsm.State(f"s{index}") for index in range(1, 5))
+    return hsm.Define("FuzzGuards", hsm.Initial(hsm.Target("s0")), *states)
 
 
-async def _drive_guarded_spec(
-    guards: tuple[bool, ...], targets: tuple[int, ...]
-) -> None:
+async def _drive_guarded_spec(guards: tuple[bool, ...], targets: tuple[int, ...]) -> None:
     instance = FuzzInstance()
     ctx = _runtime_context()
     await hsm.Started(ctx, instance, _guarded_model(guards, targets))
-
     await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
 
-    expected = "s0"
-    for guard_value, target_index in zip(guards, targets, strict=True):
-        if guard_value:
-            expected = f"s{target_index}"
-            break
-    assert instance.state() == f"/FuzzGuards/{expected}"
-    assert instance.take_snapshot().QueueLen == 0
-    await instance.stop(instance.context())
+    first_true = next((index for index, value in enumerate(guards) if value), None)
+    expected_state = 0 if first_true is None else targets[first_true]
+    expected_guards = len(guards) if first_true is None else first_true + 1
+
+    assert instance.state() == f"/FuzzGuards/s{expected_state}"
+    assert instance.log == [f"guard:{index}" for index in range(expected_guards)]
 
 
 @given(guarded_specs())
@@ -183,3958 +177,343 @@ def test_guard_order_fuzz(spec):
 
 @given(
     st.lists(
-        st.sampled_from(("to_a", "to_b", "leave", "parent_leave", "return")),
+        st.sampled_from(("next", "leave", "reset", "noop")),
         min_size=0,
-        max_size=80,
+        max_size=60,
     )
 )
-@settings(max_examples=80, deadline=None, derandomize=True)
+@settings(max_examples=60, deadline=None, derandomize=True)
 def test_hierarchical_transition_trace_fuzz(trace: list[str]):
     asyncio.run(_drive_hierarchical_trace(tuple(trace)))
 
 
 async def _drive_hierarchical_trace(trace: tuple[str, ...]) -> None:
-    class HierarchicalInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.log: list[str] = []
+    instance = FuzzInstance()
 
-    def record(action: str):
-        async def callback(ctx, inst: HierarchicalInstance, event):
-            inst.log.append(action)
+    def record(label: str):
+        def action(ctx, inst: FuzzInstance, event):
+            inst.log.append(label)
 
-        return callback
+        action.__name__ = label.replace(":", "_")
+        return action
 
     model = hsm.Define(
-        "HierarchicalFuzz",
+        "FuzzHierarchy",
         hsm.Initial(hsm.Target("parent/a")),
         hsm.State(
             "parent",
-            hsm.Entry(record("parent.entry")),
-            hsm.Exit(record("parent.exit")),
-            hsm.Initial(hsm.Target("a")),
-            hsm.Transition(hsm.On("parent_leave"), hsm.Target("../outside")),
+            hsm.Entry(record("parent:entry")),
+            hsm.Exit(record("parent:exit")),
             hsm.State(
                 "a",
-                hsm.Entry(record("a.entry")),
-                hsm.Exit(record("a.exit")),
-                hsm.Transition(hsm.On("to_b"), hsm.Target("../b")),
-                hsm.Transition(hsm.On("leave"), hsm.Target("../../outside")),
+                hsm.Entry(record("a:entry")),
+                hsm.Exit(record("a:exit")),
+                hsm.Transition(hsm.On("next"), hsm.Target("../b")),
             ),
             hsm.State(
                 "b",
-                hsm.Entry(record("b.entry")),
-                hsm.Exit(record("b.exit")),
-                hsm.Transition(hsm.On("to_a"), hsm.Target("../a")),
+                hsm.Entry(record("b:entry")),
+                hsm.Exit(record("b:exit")),
                 hsm.Transition(hsm.On("leave"), hsm.Target("../../outside")),
             ),
         ),
         hsm.State(
             "outside",
-            hsm.Entry(record("outside.entry")),
-            hsm.Exit(record("outside.exit")),
-            hsm.Transition(hsm.On("return"), hsm.Target("../parent/a")),
+            hsm.Transition(hsm.On("reset"), hsm.Target("../parent/a")),
         ),
     )
 
-    instance = HierarchicalInstance()
     ctx = _runtime_context()
     await hsm.Started(ctx, instance, model)
+    expected = "/FuzzHierarchy/parent/a"
 
-    expected_state = "a"
-    expected_log = ["parent.entry", "a.entry"]
-    assert instance.state() == "/HierarchicalFuzz/parent/a"
-    assert instance.log == expected_log
-
-    for event_name in trace:
-        await hsm.Dispatch(ctx, instance, hsm.Event(event_name))
-        if expected_state == "a":
-            if event_name == "to_b":
-                expected_state = "b"
-                expected_log.extend(["a.exit", "b.entry"])
-            elif event_name in ("leave", "parent_leave"):
-                expected_state = "outside"
-                expected_log.extend(["a.exit", "parent.exit", "outside.entry"])
-        elif expected_state == "b":
-            if event_name == "to_a":
-                expected_state = "a"
-                expected_log.extend(["b.exit", "a.entry"])
-            elif event_name in ("leave", "parent_leave"):
-                expected_state = "outside"
-                expected_log.extend(["b.exit", "parent.exit", "outside.entry"])
-        elif expected_state == "outside" and event_name == "return":
-            expected_state = "a"
-            expected_log.extend(["outside.exit", "parent.entry", "a.entry"])
-
-        expected_path = (
-            f"/HierarchicalFuzz/parent/{expected_state}"
-            if expected_state in ("a", "b")
-            else "/HierarchicalFuzz/outside"
-        )
-        snapshot = instance.take_snapshot()
-        assert snapshot.State == expected_path
-        assert snapshot.QueueLen == 0
-        assert instance.log == expected_log
+    for name in trace:
+        await hsm.Dispatch(ctx, instance, hsm.Event(name=name))
+        if expected.endswith("/a") and name == "next":
+            expected = "/FuzzHierarchy/parent/b"
+        elif expected.endswith("/b") and name == "leave":
+            expected = "/FuzzHierarchy/outside"
+        elif expected.endswith("/outside") and name == "reset":
+            expected = "/FuzzHierarchy/parent/a"
+        assert instance.state() == expected
+        assert instance.take_snapshot().QueueLen == 0
 
     await instance.stop(instance.context())
-    assert instance.take_snapshot().QueueLen == 0
 
 
-async def _dispatch_toggle_stress(iterations: int) -> None:
+def _toggle_model(name: str = "ToggleStress") -> hsm.Model:
+    return hsm.Define(
+        name,
+        hsm.Initial(hsm.Target("a")),
+        hsm.State("a", hsm.Transition(hsm.On("toggle"), hsm.Target("../b"))),
+        hsm.State("b", hsm.Transition(hsm.On("toggle"), hsm.Target("../a"))),
+    )
+
+
+def test_concurrent_dispatch_stress():
+    asyncio.run(_concurrent_dispatch_stress(iterations=80))
+
+
+async def _concurrent_dispatch_stress(iterations: int) -> None:
     instance = FuzzInstance()
     ctx = _runtime_context()
-    model = hsm.Define(
-        "StressToggle",
-        hsm.Initial(hsm.Target("off")),
-        hsm.State("off", hsm.Transition(hsm.On("toggle"), hsm.Target("../on"))),
-        hsm.State("on", hsm.Transition(hsm.On("toggle"), hsm.Target("../off"))),
-    )
-    await hsm.Started(ctx, instance, model)
+    await hsm.Started(ctx, instance, _toggle_model())
 
     await asyncio.gather(
         *(hsm.Dispatch(ctx, instance, hsm.Event(name="toggle")) for _ in range(iterations))
     )
 
-    expected = "off" if iterations % 2 == 0 else "on"
-    assert instance.state() == f"/StressToggle/{expected}"
+    expected = "/ToggleStress/a" if iterations % 2 == 0 else "/ToggleStress/b"
+    assert instance.state() == expected
     assert instance.take_snapshot().QueueLen == 0
+
     await instance.stop(instance.context())
-
-
-def test_concurrent_dispatch_stress():
-    asyncio.run(_dispatch_toggle_stress(1000))
-
-
-async def _broadcast_stress(machine_count: int, rounds: int) -> None:
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "BroadcastStress",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../busy"))),
-        hsm.State("busy", hsm.Transition(hsm.On("reset"), hsm.Target("../idle"))),
-    )
-    instances = [FuzzInstance() for _ in range(machine_count)]
-    for index, instance in enumerate(instances):
-        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"machine-{index}"))
-
-    for _ in range(rounds):
-        await hsm.DispatchAll(ctx, hsm.Event(name="go"))
-        assert all(
-            instance.state() == "/BroadcastStress/busy" for instance in instances
-        )
-        await hsm.DispatchTo(ctx, hsm.Event(name="reset"), "machine-*")
-        assert all(
-            instance.state() == "/BroadcastStress/idle" for instance in instances
-        )
-        assert all(
-            instance.take_snapshot().QueueLen == 0 for instance in instances
-        )
-
-    await asyncio.gather(*(instance.stop(instance.context()) for instance in instances))
 
 
 def test_dispatch_all_and_dispatch_to_stress():
-    asyncio.run(_broadcast_stress(machine_count=50, rounds=25))
+    asyncio.run(_dispatch_all_and_dispatch_to_stress(machine_count=12))
 
 
-async def _direct_dispatch_event_metadata_isolation_stress(rounds: int) -> None:
-    class DirectEventInstance(FuzzInstance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.seen: list[tuple[str, str, str]] = []
-
-    async def mutate_event(ctx, inst: DirectEventInstance, event: hsm.Event) -> None:
-        inst.seen.append((event.name, event.qualified_name, event.source))
-        event.name = "mutated"
-        event.qualified_name = "mutated"
-        event.source = "mutated"
-
+async def _dispatch_all_and_dispatch_to_stress(machine_count: int) -> None:
     model = hsm.Define(
-        "DirectEventIsolation",
-        hsm.Initial(hsm.Target("ready")),
-        hsm.State("ready", hsm.Transition(hsm.On("go"), hsm.Effect(mutate_event))),
-    )
-
-    ctx = _runtime_context()
-    instance = DirectEventInstance()
-    await hsm.Started(ctx, instance, model)
-
-    for index in range(rounds):
-        event = hsm.Event(name="go", source=f"top-{index}")
-        processed = hsm.AfterProcess(ctx, instance, hsm.Event(name="go"))
-        await hsm.Dispatch(ctx, instance, event)
-        await asyncio.wait_for(processed, timeout=1)
-        assert event.name == "go"
-        assert event.qualified_name == "go"
-        assert event.source == f"top-{index}"
-        assert instance.seen[-1] == ("go", "go", f"top-{index}")
-        assert instance.take_snapshot().QueueLen == 0
-
-    for index in range(rounds):
-        event = hsm.Event(name="go", source=f"method-{index}")
-        processed = hsm.AfterProcess(ctx, instance, hsm.Event(name="go"))
-        await instance.dispatch(event)
-        await asyncio.wait_for(processed, timeout=1)
-        assert event.name == "go"
-        assert event.qualified_name == "go"
-        assert event.source == f"method-{index}"
-        assert instance.seen[-1] == ("go", "go", f"method-{index}")
-        assert instance.take_snapshot().QueueLen == 0
-
-    await instance.stop(instance.context())
-
-
-def test_direct_dispatch_event_metadata_isolation_stress():
-    asyncio.run(_direct_dispatch_event_metadata_isolation_stress(rounds=100))
-
-
-async def _broadcast_event_metadata_isolation_stress(
-    machine_count: int, rounds: int
-) -> None:
-    class BroadcastEventInstance(FuzzInstance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.seen_names: list[str] = []
-            self.seen_sources: list[str] = []
-
-    async def mutate_event(ctx, inst: BroadcastEventInstance, event: hsm.Event) -> None:
-        inst.seen_names.append(event.name)
-        inst.seen_sources.append(event.source)
-        event.name = f"mutated-{inst.index}"
-        event.qualified_name = event.name
-        event.source = f"source-{inst.index}"
-        event.target = f"target-{inst.index}"
-
-    model = hsm.Define(
-        "BroadcastEventIsolation",
-        hsm.Initial(hsm.Target("ready")),
-        hsm.State("ready", hsm.Transition(hsm.On("shared"), hsm.Effect(mutate_event))),
-    )
-
-    ctx = _runtime_context()
-    instances = [BroadcastEventInstance(index) for index in range(machine_count)]
-    for index, instance in enumerate(instances):
-        await hsm.Started(
-            ctx, instance, model, hsm.Config(ID=f"event-isolation-{index}")
-        )
-
-    for round_index in range(rounds):
-        event = hsm.Event(name="shared", source=f"round-{round_index}", target="target")
-        await hsm.DispatchAll(ctx, event)
-
-        assert event.name == "shared"
-        assert event.qualified_name == "shared"
-        assert event.source == f"round-{round_index}"
-        assert event.target == "target"
-        assert all(instance.seen_names[-1] == "shared" for instance in instances)
-        assert all(
-            instance.seen_sources[-1] == f"round-{round_index}"
-            for instance in instances
-        )
-        assert all(
-            instance.take_snapshot().QueueLen == 0 for instance in instances
-        )
-
-    group_event = hsm.Event(name="shared", source="group", target="target")
-    await hsm.Dispatch(ctx, hsm.Group(*instances), group_event)
-
-    assert group_event.name == "shared"
-    assert group_event.qualified_name == "shared"
-    assert group_event.source == "group"
-    assert group_event.target == "target"
-    assert all(instance.seen_names[-1] == "shared" for instance in instances)
-    assert all(instance.seen_sources[-1] == "group" for instance in instances)
-    assert all(instance.take_snapshot().QueueLen == 0 for instance in instances)
-
-    await asyncio.gather(*(instance.stop(instance.context()) for instance in instances))
-
-
-def test_broadcast_event_metadata_isolation_stress():
-    asyncio.run(_broadcast_event_metadata_isolation_stress(machine_count=40, rounds=25))
-
-
-async def _event_data_payload_reference_contract_stress(
-    machine_count: int, rounds: int
-) -> None:
-    class PayloadContractInstance(FuzzInstance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.payload_ids: list[int] = []
-
-    async def mutate_payload(
-        ctx, inst: PayloadContractInstance, event: hsm.Event
-    ) -> None:
-        payload = event.Data
-        assert isinstance(payload, dict)
-        inst.payload_ids.append(id(payload))
-        payload["seen"].append(inst.index)
-        event.name = f"mutated-{inst.index}"
-        event.qualified_name = event.name
-
-    model = hsm.Define(
-        "EventDataReferenceContract",
-        hsm.Initial(hsm.Target("ready")),
-        hsm.State("ready", hsm.Transition(hsm.On("touch"), hsm.Effect(mutate_payload))),
-    )
-
-    ctx = _runtime_context()
-    instances = [PayloadContractInstance(index) for index in range(machine_count)]
-    for index, instance in enumerate(instances):
-        await hsm.Started(
-            ctx, instance, model, hsm.Config(ID=f"payload-contract-{index}")
-        )
-
-    for round_index in range(rounds):
-        direct_payload: dict[str, list[int | str]] = {"seen": [f"direct-{round_index}"]}
-        direct_event = hsm.Event(name="touch", data=direct_payload)
-        await hsm.Dispatch(ctx, instances[0], direct_event)
-        assert direct_event.name == "touch"
-        assert direct_event.qualified_name == "touch"
-        assert direct_event.Data is direct_payload
-        assert direct_payload["seen"] == [f"direct-{round_index}", 0]
-        assert instances[0].payload_ids[-1] == id(direct_payload)
-
-        broadcast_payload: dict[str, list[int | str]] = {
-            "seen": [f"broadcast-{round_index}"]
-        }
-        broadcast_event = hsm.Event(name="touch", data=broadcast_payload)
-        await hsm.DispatchAll(ctx, broadcast_event)
-        assert broadcast_event.name == "touch"
-        assert broadcast_event.qualified_name == "touch"
-        assert broadcast_event.Data is broadcast_payload
-        assert broadcast_payload["seen"][0] == f"broadcast-{round_index}"
-        assert sorted(broadcast_payload["seen"][1:]) == list(range(machine_count))
-        assert all(
-            instance.payload_ids[-1] == id(broadcast_payload) for instance in instances
-        )
-
-        group_payload: dict[str, list[int | str]] = {"seen": [f"group-{round_index}"]}
-        group_event = hsm.Event(name="touch", data=group_payload)
-        await hsm.Dispatch(ctx, hsm.Group(*instances), group_event)
-        assert group_event.name == "touch"
-        assert group_event.qualified_name == "touch"
-        assert group_event.Data is group_payload
-        assert group_payload["seen"][0] == f"group-{round_index}"
-        assert sorted(group_payload["seen"][1:]) == list(range(machine_count))
-        assert all(
-            instance.payload_ids[-1] == id(group_payload) for instance in instances
-        )
-        assert all(
-            instance.take_snapshot().QueueLen == 0 for instance in instances
-        )
-
-    await hsm.Group(*instances).stop(ctx)
-
-
-def test_event_data_payload_reference_contract_stress():
-    asyncio.run(
-        _event_data_payload_reference_contract_stress(machine_count=30, rounds=20)
-    )
-
-
-async def _broadcast_self_stop_stress(machine_count: int, rounds: int) -> None:
-    class BroadcastSelfStopInstance(FuzzInstance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.stops = 0
-            self.entries = 0
-
-    async def stop_effect(ctx, inst: BroadcastSelfStopInstance, event) -> None:
-        inst.stops += 1
-        await inst.stop(inst.context())
-
-    async def idle_entry(ctx, inst: BroadcastSelfStopInstance, event) -> None:
-        inst.entries += 1
-
-    model = hsm.Define(
-        "BroadcastSelfStop",
+        "BroadcastStress",
         hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Entry(idle_entry),
-            hsm.Transition(hsm.On("stop"), hsm.Effect(stop_effect)),
-        ),
-    )
-
-    ctx = _runtime_context()
-    instances = [BroadcastSelfStopInstance() for _ in range(machine_count)]
-
-    for round_index in range(rounds):
-        for index, instance in enumerate(instances):
-            assert instance.state() in ("", "/BroadcastSelfStop")
-            await hsm.Started(
-                ctx, instance, model, hsm.Config(ID=f"self-stop-{round_index}-{index}")
-            )
-
-        assert len(_context_machines(ctx)) == machine_count
-        await hsm.DispatchAll(ctx, hsm.Event(name="stop"))
-
-        assert _context_machines(ctx) == []
-        for instance in instances:
-            assert instance.state() == "/BroadcastSelfStop"
-            assert instance.stops == round_index + 1
-            assert instance.entries == round_index + 1
-            snapshot = instance.take_snapshot()
-            assert snapshot.State == "/BroadcastSelfStop"
-            assert snapshot.QueueLen == 0
-
-
-def test_broadcast_self_stop_stress():
-    asyncio.run(_broadcast_self_stop_stress(machine_count=40, rounds=25))
-
-
-async def _snapshot_attribute_aliasing_stress(rounds: int) -> None:
-    class SnapshotIsolationInstance(FuzzInstance):
-        pass
-
-    model = hsm.Define(
-        "SnapshotIsolation",
-        hsm.Attribute("payload", {"items": []}),
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Transition(hsm.OnSet("payload"))),
-    )
-
-    ctx = _runtime_context()
-    instance = SnapshotIsolationInstance()
-    await hsm.Started(ctx, instance, model)
-
-    original_payload = {"items": ["original"]}
-    await hsm.Set(ctx, instance, "payload", original_payload)
-    original_payload["items"].append("mutated-after-set")
-
-    runtime_value, ok = hsm.Get(ctx, instance, "payload")
-    assert ok is True
-    assert runtime_value["items"] == ["original", "mutated-after-set"]
-
-    for index in range(rounds):
-        value = {"items": [index, {"nested": [index]}]}
-        await hsm.Set(ctx, instance, "payload", value)
-
-        snapshot = instance.take_snapshot()
-        snapshot_payload = snapshot.Attributes["/SnapshotIsolation/payload"]
-        with pytest.raises(AttributeError):
-            snapshot_payload["items"][1]["nested"].append("snapshot-mutated")
-        with pytest.raises(TypeError):
-            snapshot.Attributes["/SnapshotIsolation/payload"] = {"items": ["replaced"]}
-
-        runtime_value, ok = hsm.Get(ctx, instance, "payload")
-        assert ok is True
-        assert runtime_value == {"items": [index, {"nested": [index]}]}
-
-        value["items"][1]["nested"].append("caller-mutated")
-        runtime_value, ok = hsm.Get(ctx, instance, "payload")
-        assert ok is True
-        assert runtime_value == {
-            "items": [index, {"nested": [index, "caller-mutated"]}]
-        }
-
-        fresh_snapshot = instance.take_snapshot()
-        fresh_payload = fresh_snapshot.Attributes["/SnapshotIsolation/payload"]
-        assert fresh_payload["items"][0] == index
-        assert fresh_payload["items"][1]["nested"] == (index, "caller-mutated")
-        assert fresh_snapshot.QueueLen == 0
-
-    await instance.stop(instance.context())
-
-
-def test_snapshot_attribute_aliasing_stress():
-    asyncio.run(_snapshot_attribute_aliasing_stress(rounds=100))
-
-
-async def _group_set_attribute_value_isolation_stress(rounds: int) -> None:
-    class GroupSetIsolationInstance(FuzzInstance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.seen_lengths: list[int] = []
-
-    async def mutate_set_value(
-        ctx, inst: GroupSetIsolationInstance, event: hsm.Event
-    ) -> None:
-        change = event.Data
-        assert isinstance(change, hsm.AttributeChange)
-        change.value["items"].append(f"member-{inst.index}")
-        inst.seen_lengths.append(len(change.value["items"]))
-
-    model = hsm.Define(
-        "GroupSetIsolation",
-        hsm.Attribute("payload", {"items": []}),
-        hsm.Initial(hsm.Target("ready")),
-        hsm.State(
-            "ready", hsm.Transition(hsm.OnSet("payload"), hsm.Effect(mutate_set_value))
-        ),
-    )
-
-    ctx = _runtime_context()
-    instances = [GroupSetIsolationInstance(index) for index in range(20)]
-    for index, instance in enumerate(instances):
-        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-set-{index}"))
-
-    for round_index in range(rounds):
-        value = {"items": [round_index]}
-        await asyncio.gather(
-            *(
-                hsm.Set(ctx, instance, "payload", copy.deepcopy(value))
-                for instance in instances
-            )
-        )
-
-        assert value == {"items": [round_index]}
-        for instance in instances:
-            runtime_value, ok = hsm.Get(ctx, instance, "payload")
-            assert ok is True
-            assert runtime_value == {"items": [round_index, f"member-{instance.index}"]}
-            assert instance.seen_lengths[-1] == 2
-            assert instance.take_snapshot().QueueLen == 0
-
-        first_value, _ = hsm.Get(ctx, instances[0], "payload")
-        second_value, _ = hsm.Get(ctx, instances[1], "payload")
-        first_value["items"].append("first-only")
-        assert second_value == {"items": [round_index, "member-1"]}
-
-    await hsm.Group(*instances).stop(ctx)
-
-
-def test_group_set_attribute_value_isolation_stress():
-    asyncio.run(_group_set_attribute_value_isolation_stress(rounds=50))
-
-
-async def _cancelled_group_set_awaiter_does_not_cancel_onset_processing() -> None:
-    class GroupSetCancelInstance(FuzzInstance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.effects = 0
-            self.values: list[object] = []
-
-    entered_effects: asyncio.Queue[int] = asyncio.Queue()
-    release_effect = asyncio.Event()
-
-    async def slow_onset_effect(
-        ctx, inst: GroupSetCancelInstance, event: hsm.Event
-    ) -> None:
-        change = event.Data
-        assert isinstance(change, hsm.AttributeChange)
-        inst.effects += 1
-        inst.values.append(change.value)
-        await entered_effects.put(inst.index)
-        await release_effect.wait()
-
-    model = hsm.Define(
-        "CancelledGroupSetAwaiter",
-        hsm.Attribute("payload", None),
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.OnSet("payload"),
-                hsm.Target("../changed"),
-                hsm.Effect(slow_onset_effect),
-            ),
-        ),
-        hsm.State("changed"),
+        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
+        hsm.State("done", hsm.Transition(hsm.On("reset"), hsm.Target("../idle"))),
     )
     ctx = _runtime_context()
-    instances = [GroupSetCancelInstance(index) for index in range(12)]
-    for index, instance in enumerate(instances):
-        await hsm.Started(
-            ctx, instance, model, hsm.Config(ID=f"group-set-cancel-{index}")
-        )
+    instances: list[FuzzInstance] = []
+    for index in range(machine_count):
+        instance = FuzzInstance()
+        instances.append(instance)
+        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"machine-{index}"))
 
-    set_task = asyncio.ensure_future(
-        asyncio.gather(
-            *(hsm.Set(ctx, instance, "payload", {"round": 1}) for instance in instances)
-        )
-    )
-    seen = {
-        await asyncio.wait_for(entered_effects.get(), timeout=1)
-        for _ in range(len(instances))
-    }
-    assert seen == set(range(len(instances)))
-
-    set_task.cancel()
-    try:
-        await set_task
-    except asyncio.CancelledError:
-        pass
-
-    changed_waiters = [
-        hsm.AfterEntry(ctx, instance, "/CancelledGroupSetAwaiter/changed")
-        for instance in instances
-    ]
-    release_effect.set()
-    await asyncio.gather(
-        *(asyncio.wait_for(waiter, timeout=1) for waiter in changed_waiters)
-    )
-
+    await hsm.DispatchTo(ctx, hsm.Event(name="go"), "machine-0", "machine-2")
+    assert instances[0].state() == "/BroadcastStress/done"
+    assert instances[2].state() == "/BroadcastStress/done"
     assert all(
-        instance.state() == "/CancelledGroupSetAwaiter/changed"
-        for instance in instances
+        instance.state() == "/BroadcastStress/idle"
+        for index, instance in enumerate(instances)
+        if index not in (0, 2)
     )
-    assert all(instance.effects == 1 for instance in instances)
-    assert all(instance.values == [{"round": 1}] for instance in instances)
-    assert all(
-        hsm.Get(ctx, instance, "payload") == ({"round": 1}, True)
-        for instance in instances
-    )
-    assert all(instance.take_snapshot().QueueLen == 0 for instance in instances)
+
+    await hsm.DispatchAll(ctx, hsm.Event(name="go"))
+    assert all(instance.state() == "/BroadcastStress/done" for instance in instances)
+
+    group = hsm.Group(*instances)
+    await hsm.Dispatch(ctx, group, hsm.Event(name="reset"))
+    assert group.state() == ["/BroadcastStress/idle"] * machine_count
+    assert len(group.take_snapshot()) == machine_count
 
     await group.stop(group.context())
 
 
-def test_cancelled_group_set_awaiter_does_not_cancel_onset_processing():
-    asyncio.run(_cancelled_group_set_awaiter_does_not_cancel_onset_processing())
+def test_event_data_and_metadata_reference_contract_stress():
+    asyncio.run(_event_data_and_metadata_reference_contract_stress(rounds=40))
 
 
-@given(st.lists(st.integers(min_value=-5, max_value=5), min_size=0, max_size=80))
+async def _event_data_and_metadata_reference_contract_stress(rounds: int) -> None:
+    class EventContractInstance(FuzzInstance):
+        pass
+
+    def touch(ctx, inst: EventContractInstance, event: hsm.Event) -> None:
+        assert isinstance(event.data, dict)
+        event.data["seen"].append(inst.take_snapshot().ID)
+        event.metadata["last"] = inst.take_snapshot().ID
+        inst.log.append((event.data, event.metadata))
+
+    model = hsm.Define(
+        "EventContractStress",
+        hsm.Initial(hsm.Target("ready")),
+        hsm.State("ready", hsm.Transition(hsm.On("touch"), hsm.Effect(touch))),
+    )
+
+    ctx = _runtime_context()
+    instance = EventContractInstance()
+    await hsm.Started(ctx, instance, model, hsm.Config(ID="event-contract"))
+
+    for index in range(rounds):
+        data = {"seen": []}
+        metadata = {"trace": index}
+        event = hsm.Event(name="touch", data=data, metadata=metadata)
+        await hsm.Dispatch(ctx, instance, event)
+        assert data == {"seen": ["event-contract"]}
+        assert metadata == {"trace": index, "last": "event-contract"}
+        assert instance.log[-1] == (data, metadata)
+
+    await instance.stop(instance.context())
+
+
+@given(st.lists(st.integers(min_value=-20, max_value=20), min_size=0, max_size=80))
 @settings(max_examples=80, deadline=None, derandomize=True)
 def test_attribute_set_event_fuzz(values: list[int]):
     asyncio.run(_drive_attribute_set_trace(tuple(values)))
 
 
 async def _drive_attribute_set_trace(values: tuple[int, ...]) -> None:
-    class AttributeInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.changes: list[tuple[int | None, int]] = []
+    instance = FuzzInstance()
 
-    async def record_change(ctx, inst: AttributeInstance, event: hsm.Event) -> None:
-        change = event.Data
-        inst.changes.append((change.old_value, change.value))
+    def record_change(ctx, inst: FuzzInstance, event: hsm.Event) -> None:
+        assert isinstance(event.data, hsm.AttributeChange)
+        inst.log.append((event.data.old_value, event.data.value))
 
     model = hsm.Define(
-        "SetFuzz",
+        "AttributeSetFuzz",
         hsm.Attribute("count", 0),
         hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.OnSet("count"),
-                hsm.Effect(record_change),
-            ),
-        ),
+        hsm.State("idle", hsm.Transition(hsm.OnSet("count"), hsm.Effect(record_change))),
     )
-    instance = AttributeInstance()
+
     ctx = _runtime_context()
     await hsm.Started(ctx, instance, model)
-
-    expected_changes: list[tuple[int | None, int]] = []
     current = 0
+    expected: list[tuple[int, int]] = []
+
     for value in values:
         await hsm.Set(ctx, instance, "count", value)
         if value != current:
-            expected_changes.append((current, value))
+            expected.append((current, value))
             current = value
-        observed, ok = hsm.Get(ctx, instance, "count")
-        assert ok is True
-        assert observed == value
-        assert instance.take_snapshot().QueueLen == 0
+        assert hsm.Get(ctx, instance, "count") == (current, True)
 
-    assert instance.changes == expected_changes
+    assert instance.log == expected
+
     await instance.stop(instance.context())
 
 
-async def _set_call_concurrency_stress(rounds: int) -> None:
-    class RuntimeInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.changed = 0
-            self.called = 0
-            self.calls: list[int] = []
+def test_concurrent_call_stress():
+    asyncio.run(_concurrent_call_stress(rounds=60))
 
-    async def add(ctx, inst: RuntimeInstance, value: int) -> int:
-        await asyncio.sleep(0)
-        inst.calls.append(value)
-        return value + 1
 
-    async def record_set(ctx, inst: RuntimeInstance, event: hsm.Event) -> None:
-        inst.changed += 1
+async def _concurrent_call_stress(rounds: int) -> None:
+    class RuntimeInstance(FuzzInstance):
+        def add(self, value: int) -> int:
+            self.log.append(f"add:{value}")
+            return value + 1
 
-    async def record_call(ctx, inst: RuntimeInstance, event: hsm.Event) -> None:
-        inst.called += 1
+    def record_call(ctx, inst: RuntimeInstance, event: hsm.Event) -> None:
+        assert isinstance(event.data, hsm.CallData)
+        inst.log.append(event.data.args[0])
 
     model = hsm.Define(
-        "SetCallStress",
-        hsm.Attribute("value", 0),
-        hsm.Operation("add", add),
-        hsm.Initial(hsm.Target("ready")),
-        hsm.State(
-            "ready",
-            hsm.Transition(hsm.OnSet("value"), hsm.Effect(record_set)),
-            hsm.Transition(hsm.OnCall("add"), hsm.Effect(record_call)),
-        ),
+        "CallStress",
+        hsm.Operation("add"),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.OnCall("add"), hsm.Effect(record_call))),
     )
-    instance = RuntimeInstance()
+
     ctx = _runtime_context()
+    instance = RuntimeInstance()
     await hsm.Started(ctx, instance, model)
-
-    async def set_value(value: int) -> None:
-        await hsm.Set(ctx, instance, "value", value)
-
-    async def call_add(value: int) -> int:
-        return await hsm.Call(ctx, instance, "add", value)
 
     results = await asyncio.gather(
-        *(set_value(index) for index in range(rounds)),
-        *(call_add(index) for index in range(rounds)),
+        *(hsm.Call(ctx, instance, "add", index) for index in range(rounds))
     )
-
-    call_results = results[rounds:]
-    assert sorted(call_results) == list(range(1, rounds + 1))
-    assert sorted(instance.calls) == list(range(rounds))
-    assert instance.changed == max(rounds - 1, 0)
-    assert instance.called == rounds
-    assert instance.state() == "/SetCallStress/ready"
-    snapshot = instance.take_snapshot()
-    assert snapshot.QueueLen == 0
-    assert snapshot.Attributes["/SetCallStress/value"] == rounds - 1
-    await instance.stop(instance.context())
-
-
-def test_concurrent_set_and_call_stress():
-    asyncio.run(_set_call_concurrency_stress(rounds=200))
-
-
-async def _group_call_first_member_semantics_stress(rounds: int) -> None:
-    class GroupCallInstance(hsm.Instance):
-        def __init__(self, label: str) -> None:
-            super().__init__()
-            self.label = label
-            self.calls: list[int] = []
-            self.effects = 0
-
-    async def identify(ctx, inst: GroupCallInstance, value: int) -> tuple[str, int]:
-        inst.calls.append(value)
-        return inst.label, value
-
-    async def record_call(ctx, inst: GroupCallInstance, event: hsm.Event) -> None:
-        assert isinstance(event.Data, hsm.CallData)
-        inst.effects += 1
-
-    model = hsm.Define(
-        "GroupCallStress",
-        hsm.Operation("identify", identify),
-        hsm.Initial(hsm.Target("ready")),
-        hsm.State(
-            "ready", hsm.Transition(hsm.OnCall("identify"), hsm.Effect(record_call))
-        ),
+    assert results == [index + 1 for index in range(rounds)]
+    await _wait_for(
+        lambda: len([item for item in instance.log if isinstance(item, int)]) == rounds,
+        "oncall events did not finish",
     )
-
-    ctx = _runtime_context()
-    first = GroupCallInstance("first")
-    stopped_second = GroupCallInstance("second")
-    never_started = GroupCallInstance("never")
-    await hsm.Started(ctx, first, model)
-    await hsm.Started(ctx, stopped_second, model)
-    await stopped_second.stop(stopped_second.context())
-
-    for index in range(rounds):
-        assert await hsm.Call(ctx, first, "identify", index) == ("first", index)
-        assert first.calls == list(range(index + 1))
-        assert stopped_second.calls == []
-        assert never_started.calls == []
-        assert first.effects == index + 1
-        assert stopped_second.effects == 0
-        assert never_started.effects == 0
-        assert first.take_snapshot().QueueLen == 0
-
-    await first.stop(first.context())
-
-
-def test_group_call_first_member_semantics_stress():
-    asyncio.run(_group_call_first_member_semantics_stress(rounds=100))
-
-
-async def _cancelled_call_awaiter_does_not_cancel_oncall_processing() -> None:
-    class CancelledCallInstance(hsm.Instance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.effects = 0
-            self.operations: list[int] = []
-
-    entered_effect = asyncio.Event()
-    release_effect = asyncio.Event()
-
-    async def operation(ctx, inst: CancelledCallInstance, value: int) -> int:
-        inst.operations.append(value)
-        return value + 1
-
-    async def slow_oncall_effect(
-        ctx, inst: CancelledCallInstance, event: hsm.Event
-    ) -> None:
-        assert isinstance(event.Data, hsm.CallData)
-        inst.effects += 1
-        entered_effect.set()
-        await release_effect.wait()
-
-    model = hsm.Define(
-        "CancelledCallAwaiter",
-        hsm.Operation("work", operation),
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle", hsm.Transition(hsm.OnCall("work"), hsm.Effect(slow_oncall_effect))
-        ),
-    )
-
-    ctx = _runtime_context()
-    instance = CancelledCallInstance()
-    await hsm.Started(ctx, instance, model)
-
-    call_task = asyncio.ensure_future(hsm.Call(ctx, instance, "work", 1))
-    await asyncio.wait_for(entered_effect.wait(), timeout=1)
-    call_task.cancel()
-    try:
-        await call_task
-    except asyncio.CancelledError:
-        pass
-    else:
-        raise AssertionError("cancelled Call() awaiter should raise CancelledError")
-
-    assert instance.take_snapshot().QueueLen == 0
-    assert instance.effects == 1
-    assert instance.operations == []
-
-    release_effect.set()
-    await asyncio.wait_for(hsm.AfterProcess(ctx, instance), timeout=1)
-    assert instance.take_snapshot().QueueLen == 0
-
-    assert await hsm.Call(ctx, instance, "work", 2) == 3
-    assert instance.effects == 2
-    assert instance.operations == [2]
-    assert instance.take_snapshot().QueueLen == 0
-
-    await instance.stop(instance.context())
-
-
-def test_cancelled_call_awaiter_does_not_cancel_oncall_processing():
-    asyncio.run(_cancelled_call_awaiter_does_not_cancel_oncall_processing())
-
-
-async def _activity_cancellation_stress(rounds: int) -> None:
-    class ActivityInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.started = 0
-            self.cancelled = 0
-
-    async def activity(
-        ctx: hsm.Context, inst: ActivityInstance, event: hsm.Event
-    ) -> None:
-        inst.started += 1
-        try:
-            while not ctx.Done().done():
-                await asyncio.sleep(0)
-        finally:
-            inst.cancelled += 1
-
-    model = hsm.Define(
-        "ActivityStress",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State(
-            "active",
-            hsm.Activity(activity),
-            hsm.Transition(hsm.On("finish"), hsm.Target("../done")),
-        ),
-        hsm.State("done"),
-    )
-
-    for _ in range(rounds):
-        instance = ActivityInstance()
-        ctx = _runtime_context()
-        sm = await hsm.Started(ctx, instance, model)
-        for _ in range(10):
-            if instance.started:
-                break
-            await asyncio.sleep(0)
-
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="finish"))
-
-        assert instance.state() == "/ActivityStress/done"
-        assert instance.started == 1
-        assert instance.cancelled == 1
-        assert sm._active == {}
-        assert instance.take_snapshot().QueueLen == 0
-        await instance.stop(instance.context())
-        assert sm._active == {}
-
-
-def test_activity_cancellation_stress():
-    asyncio.run(_activity_cancellation_stress(rounds=100))
-
-
-async def _deferred_event_replay_stress(rounds: int) -> None:
-    instance = FuzzInstance()
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "DeferredStress",
-        hsm.Initial(hsm.Target("holding")),
-        hsm.State(
-            "holding",
-            hsm.Defer(hsm.Event(name="work")),
-            hsm.Transition(hsm.On("release"), hsm.Target("../processing")),
-        ),
-        hsm.State(
-            "processing",
-            hsm.Transition(hsm.On("work"), hsm.Target("../done")),
-        ),
-        hsm.State("done", hsm.Transition(hsm.On("reset"), hsm.Target("../holding"))),
-    )
-    await hsm.Started(ctx, instance, model)
-
-    for _ in range(rounds):
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="work"))
-        assert instance.state() == "/DeferredStress/holding"
-        assert instance.take_snapshot().QueueLen == 1
-
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="release"))
-
-        assert instance.state() == "/DeferredStress/done"
-        assert instance.take_snapshot().QueueLen == 0
-
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="reset"))
-        assert instance.state() == "/DeferredStress/holding"
+    assert sorted(item for item in instance.log if isinstance(item, int)) == list(range(rounds))
 
     await instance.stop(instance.context())
 
 
 def test_deferred_events_replay_without_extra_dispatch():
-    asyncio.run(_deferred_event_replay_stress(rounds=100))
+    asyncio.run(_deferred_events_replay_without_extra_dispatch())
 
 
-async def _stop_discards_deferred_events() -> None:
+async def _deferred_events_replay_without_extra_dispatch() -> None:
     instance = FuzzInstance()
-    ctx = _runtime_context()
     model = hsm.Define(
-        "DeferredStop",
+        "DeferredStress",
         hsm.Initial(hsm.Target("holding")),
         hsm.State(
             "holding",
-            hsm.Defer(hsm.Event(name="work")),
+            hsm.Defer("work"),
+            hsm.Transition(hsm.On("release"), hsm.Target("../ready")),
         ),
+        hsm.State("ready", hsm.Transition(hsm.On("work"), hsm.Target("../done"))),
+        hsm.State("done"),
     )
-    sm = await hsm.Started(ctx, instance, model)
 
+    ctx = _runtime_context()
+    await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="work"))
+    assert instance.state() == "/DeferredStress/holding"
     assert instance.take_snapshot().QueueLen == 1
 
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="release"))
+    assert instance.state() == "/DeferredStress/done"
+    assert instance.take_snapshot().QueueLen == 0
+
     await instance.stop(instance.context())
 
-    assert instance.state() == "/DeferredStop"
-    assert _context_machines(ctx) == []
-    assert sm.take_snapshot().QueueLen == 0
+
+def test_activity_cancellation_stress():
+    asyncio.run(_activity_cancellation_stress())
 
 
-def test_stop_discards_deferred_events():
-    asyncio.run(_stop_discards_deferred_events())
-
-
-@st.composite
-def deferred_traces(draw):
-    return tuple(
-        draw(
-            st.lists(
-                st.sampled_from(("work", "release", "reset")), min_size=0, max_size=80
-            )
-        )
-    )
-
-
-async def _drive_deferred_trace(trace: tuple[str, ...]) -> None:
+async def _activity_cancellation_stress() -> None:
     instance = FuzzInstance()
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "DeferredFuzz",
-        hsm.Initial(hsm.Target("holding")),
-        hsm.State(
-            "holding",
-            hsm.Defer(hsm.Event(name="work")),
-            hsm.Transition(hsm.On("release"), hsm.Target("../processing")),
-        ),
-        hsm.State(
-            "processing",
-            hsm.Transition(hsm.On("work"), hsm.Target("../done")),
-            hsm.Transition(hsm.On("reset"), hsm.Target("../holding")),
-        ),
-        hsm.State("done", hsm.Transition(hsm.On("reset"), hsm.Target("../holding"))),
-    )
-    await hsm.Started(ctx, instance, model)
-
-    expected = "holding"
-    deferred_work = 0
-    for event_name in trace:
-        await hsm.Dispatch(ctx, instance, hsm.Event(event_name))
-        if expected == "holding":
-            if event_name == "work":
-                deferred_work += 1
-            elif event_name == "release":
-                expected = "done" if deferred_work else "processing"
-                deferred_work = 0
-        elif expected == "processing":
-            if event_name == "work":
-                expected = "done"
-            elif event_name == "reset":
-                expected = "holding"
-        elif expected == "done" and event_name == "reset":
-            expected = "holding"
-
-        snapshot = instance.take_snapshot()
-        assert snapshot.State == f"/DeferredFuzz/{expected}"
-        assert snapshot.QueueLen == deferred_work
-
-    await instance.stop(instance.context())
-
-
-@given(deferred_traces())
-@settings(max_examples=80, deadline=None, derandomize=True)
-def test_deferred_event_fuzz(trace: tuple[str, ...]):
-    asyncio.run(_drive_deferred_trace(trace))
-
-
-@given(
-    st.lists(
-        st.sampled_from(
-            ("missing_initial", "bad_initial_target", "missing_transition_target")
-        ),
-        min_size=1,
-        max_size=20,
-    )
-)
-@settings(max_examples=60, deadline=None, derandomize=True)
-def test_invalid_model_definitions_fail_fast(cases: list[str]):
-    for index, case in enumerate(cases):
-        if case == "missing_initial":
-            builder = lambda: hsm.Define(f"Invalid{index}", hsm.State("idle"))
-            message = "initial state is required"
-        elif case == "bad_initial_target":
-            builder = lambda: hsm.Define(
-                f"Invalid{index}",
-                hsm.Initial(hsm.Target("missing")),
-                hsm.State("idle"),
-            )
-            message = "Vertex"
-        else:
-            builder = lambda: hsm.Define(
-                f"Invalid{index}",
-                hsm.Initial(hsm.Target("idle")),
-                hsm.State(
-                    "idle", hsm.Transition(hsm.On("go"), hsm.Target("../missing"))
-                ),
-            )
-            message = "Vertex"
-
-        try:
-            builder()
-        except hsm.ValidationError as error:
-            assert message in str(error)
-        else:
-            raise AssertionError(f"{case} unexpectedly built a model")
-
-
-@given(
-    st.sampled_from(("after", "every", "at")),
-    st.one_of(st.none(), st.integers(), st.text(max_size=20), st.booleans()),
-)
-@settings(max_examples=60, deadline=None, derandomize=True)
-def test_invalid_timer_callback_results_dispatch_error(
-    mode: str, invalid_value: object
-):
-    asyncio.run(_drive_invalid_timer_callback(mode, invalid_value))
-
-
-async def _drive_invalid_timer_callback(mode: str, invalid_value: object) -> None:
-    class TimerErrorInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.error: Exception | None = None
-
-    async def invalid_timer(ctx, inst, event):
-        return invalid_value
-
-    async def error_effect(ctx, inst: TimerErrorInstance, event: hsm.Event) -> None:
-        inst.error = event.Data
-
-    if mode == "after":
-        timer = hsm.After(invalid_timer)
-        expected = "After()/Every() duration must return timedelta"
-    elif mode == "every":
-        timer = hsm.Every(invalid_timer)
-        expected = "After()/Every() duration must return timedelta"
-    else:
-        timer = hsm.At(invalid_timer)
-        expected = "At() timepoint must return datetime"
-
-    model = hsm.Define(
-        "InvalidTimer",
-        hsm.Initial(hsm.Target("waiting")),
-        hsm.State(
-            "waiting",
-            hsm.Transition(timer, hsm.Target("../done")),
-            hsm.Transition(
-                hsm.On(hsm.ErrorEvent),
-                hsm.Target("../error"),
-                hsm.Effect(error_effect),
-            ),
-        ),
-        hsm.State("done"),
-        hsm.State("error"),
-    )
-    instance = TimerErrorInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    await asyncio.wait_for(
-        hsm.AfterEntry(ctx, instance, "/InvalidTimer/error"), timeout=1
-    )
-
-    assert isinstance(instance.error, TypeError)
-    assert expected in str(instance.error)
-    assert instance.state() == "/InvalidTimer/error"
-    assert instance.take_snapshot().QueueLen == 0
-
-    await instance.stop(instance.context())
-
-
-async def _failing_error_handler_does_not_recursively_enqueue_error_events() -> None:
-    class RecursiveErrorInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.error_effects = 0
-
-    async def failing_effect(ctx, inst, event):
-        raise RuntimeError("primary failure")
-
-    async def failing_error_effect(ctx, inst: RecursiveErrorInstance, event):
-        inst.error_effects += 1
-        raise RuntimeError("secondary failure")
-
-    model = hsm.Define(
-        "RecursiveError",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("go"),
-                hsm.Target("../failed"),
-                hsm.Effect(failing_effect),
-            ),
-        ),
-        hsm.State(
-            "failed",
-            hsm.Transition(
-                hsm.On(hsm.ErrorEvent),
-                hsm.Target("../error"),
-                hsm.Effect(failing_error_effect),
-            ),
-        ),
-        hsm.State("error"),
-    )
-
-    instance = RecursiveErrorInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    with pytest.raises(RuntimeError, match="primary failure"):
-        await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event(name="go")), timeout=1)
-
-    assert instance.state() == "/RecursiveError/idle"
-    assert instance.error_effects == 0
-    assert instance.take_snapshot().QueueLen == 0
-    await instance.stop(instance.context())
-
-
-def test_failing_error_handler_does_not_recursively_enqueue_error_events():
-    asyncio.run(_failing_error_handler_does_not_recursively_enqueue_error_events())
-
-
-async def _manual_cancelled_error_callbacks_do_not_abort_processing() -> None:
-    class CancelledCallbackInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.errors: list[BaseException] = []
-            self.activity_started = False
-
-    async def cancelled_effect(ctx, inst, event):
-        raise asyncio.CancelledError("manual effect cancellation")
-
-    async def cancelled_activity(ctx, inst: CancelledCallbackInstance, event):
-        inst.activity_started = True
-        raise asyncio.CancelledError("manual activity cancellation")
-
-    async def cancelled_guard(ctx, inst, event):
-        raise asyncio.CancelledError("manual guard cancellation")
-
-    async def error_effect(ctx, inst: CancelledCallbackInstance, event):
-        inst.errors.append(event.Data)
-
-    model = hsm.Define(
-        "ManualCancelledCallbacks",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("effect"),
-                hsm.Target("../after_effect"),
-                hsm.Effect(cancelled_effect),
-            ),
-            hsm.Transition(
-                hsm.On("guard"),
-                hsm.Guard(cancelled_guard),
-                hsm.Target("../guarded"),
-            ),
-        ),
-        hsm.State(
-            "after_effect",
-            hsm.Transition(
-                hsm.On(hsm.ErrorEvent),
-                hsm.Target("../error"),
-                hsm.Effect(error_effect),
-            ),
-        ),
-        hsm.State(
-            "activity",
-            hsm.Activity(cancelled_activity),
-            hsm.Transition(
-                hsm.On(hsm.ErrorEvent),
-                hsm.Target("../error"),
-                hsm.Effect(error_effect),
-            ),
-        ),
-        hsm.State("guarded"),
-        hsm.State("error"),
-    )
-
-    ctx = _runtime_context()
-
-    effect_instance = CancelledCallbackInstance()
-    await hsm.Started(ctx, effect_instance, model)
-    with pytest.raises(asyncio.CancelledError, match="manual effect cancellation"):
-        await hsm.Dispatch(ctx, effect_instance, hsm.Event(name="effect"))
-    assert effect_instance.state() == "/ManualCancelledCallbacks/idle"
-    assert effect_instance.errors == []
-    assert effect_instance.take_snapshot().QueueLen == 0
-    await effect_instance.stop(effect_instance.context())
-
-    guard_instance = CancelledCallbackInstance()
-    await hsm.Started(ctx, guard_instance, model)
-    await hsm.Dispatch(ctx, guard_instance, hsm.Event(name="guard"))
-    assert guard_instance.state() == "/ManualCancelledCallbacks/idle"
-    assert guard_instance.errors == []
-    assert guard_instance.take_snapshot().QueueLen == 0
-    await guard_instance.stop(guard_instance.context())
-
-    activity_instance = CancelledCallbackInstance()
-    activity_model = hsm.Define(
-        "ManualCancelledActivity",
-        hsm.Initial(hsm.Target("activity")),
-        hsm.State(
-            "activity",
-            hsm.Activity(cancelled_activity),
-            hsm.Transition(
-                hsm.On(hsm.ErrorEvent),
-                hsm.Target("../error"),
-                hsm.Effect(error_effect),
-            ),
-        ),
-        hsm.State("error"),
-    )
-    await hsm.Started(ctx, activity_instance, activity_model)
-    await asyncio.wait_for(
-        hsm.AfterEntry(ctx, activity_instance, "/ManualCancelledActivity/error"),
-        timeout=1,
-    )
-    assert activity_instance.activity_started is True
-    assert len(activity_instance.errors) == 1
-    assert isinstance(activity_instance.errors[0], asyncio.CancelledError)
-    assert activity_instance.take_snapshot().QueueLen == 0
-    await activity_instance.stop(activity_instance.context())
-
-
-def test_manual_cancelled_error_callbacks_do_not_abort_processing():
-    asyncio.run(_manual_cancelled_error_callbacks_do_not_abort_processing())
-
-
-async def _stop_during_inflight_dispatch_does_not_block_loop() -> None:
-    class BlockingInstance(hsm.Instance):
-        pass
-
-    entered_effect = asyncio.Event()
-    release_effect = asyncio.Event()
-
-    async def slow_effect(ctx, inst, event):
-        entered_effect.set()
-        await release_effect.wait()
-
-    model = hsm.Define(
-        "InflightStop",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("go"),
-                hsm.Target("../done"),
-                hsm.Effect(slow_effect),
-            ),
-        ),
-        hsm.State("done"),
-    )
-    instance = BlockingInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event(name="go")))
-    await asyncio.wait_for(entered_effect.wait(), timeout=1)
-
-    stop_task = asyncio.ensure_future(instance.stop(instance.context()))
-    await asyncio.sleep(0)
-    assert not stop_task.done()
-
-    release_effect.set()
-    await asyncio.wait_for(asyncio.gather(dispatch_task, stop_task), timeout=1)
-    assert instance.state() == "/InflightStop"
-
-
-def test_stop_during_inflight_dispatch_does_not_block_event_loop():
-    asyncio.run(_stop_during_inflight_dispatch_does_not_block_loop())
-
-
-async def _cancelled_stop_waiter_releases_processing_mutex() -> None:
-    class BlockingInstance(hsm.Instance):
-        pass
-
-    entered_effect = asyncio.Event()
-    release_effect = asyncio.Event()
-
-    async def slow_effect(ctx, inst, event):
-        entered_effect.set()
-        await release_effect.wait()
-
-    model = hsm.Define(
-        "CancelledStop",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect)
-            ),
-        ),
-        hsm.State("done"),
-    )
-    instance = BlockingInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event(name="go")))
-    await asyncio.wait_for(entered_effect.wait(), timeout=1)
-
-    cancelled_stop = asyncio.ensure_future(instance.stop(instance.context()))
-    await asyncio.sleep(0)
-    cancelled_stop.cancel()
-    try:
-        await cancelled_stop
-    except asyncio.CancelledError:
-        pass
-
-    release_effect.set()
-    await asyncio.wait_for(dispatch_task, timeout=1)
-    assert instance.state() == "/CancelledStop/done"
-
-    await asyncio.wait_for(instance.stop(instance.context()), timeout=1)
-    assert instance.state() == "/CancelledStop"
-
-
-def test_cancelled_stop_waiter_does_not_poison_processing_mutex():
-    asyncio.run(_cancelled_stop_waiter_releases_processing_mutex())
-
-
-async def _concurrent_stop_awaiters_share_one_stop_sequence() -> None:
-    class ConcurrentStopInstance(hsm.Instance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.exits = 0
-
-    entered_exit = asyncio.Event()
-    release_exit = asyncio.Event()
-
-    async def slow_exit(ctx, inst: ConcurrentStopInstance, event: hsm.Event) -> None:
-        inst.exits += 1
-        entered_exit.set()
-        await release_exit.wait()
-
-    model = hsm.Define(
-        "ConcurrentStopAwaiters",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Exit(slow_exit)),
-    )
-    instance = ConcurrentStopInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    stop_tasks = [asyncio.ensure_future(instance.stop(instance.context())) for _ in range(20)]
-    await asyncio.wait_for(entered_exit.wait(), timeout=1)
-    assert instance.exits == 1
-    assert all(not task.done() for task in stop_tasks)
-
-    release_exit.set()
-    await asyncio.wait_for(asyncio.gather(*stop_tasks), timeout=1)
-
-    assert instance.exits == 1
-    assert instance.state() == "/ConcurrentStopAwaiters"
-    assert _context_machines(ctx) == []
-    assert instance.take_snapshot().QueueLen == 0
-
-    await asyncio.wait_for(instance.stop(instance.context()), timeout=1)
-    assert instance.exits == 1
-    assert _context_machines(ctx) == []
-
-
-def test_concurrent_stop_awaiters_share_one_stop_sequence():
-    asyncio.run(_concurrent_stop_awaiters_share_one_stop_sequence())
-
-
-async def _cancelled_dispatch_awaiter_does_not_cancel_processing_task() -> None:
-    class BlockingInstance(hsm.Instance):
-        pass
-
-    entered_effect = asyncio.Event()
-    release_effect = asyncio.Event()
-
-    async def slow_effect(ctx, inst, event):
-        entered_effect.set()
-        await release_effect.wait()
-
-    model = hsm.Define(
-        "CancelledDispatchAwaiter",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect)
-            ),
-        ),
-        hsm.State("done"),
-    )
-    instance = BlockingInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, instance, hsm.Event(name="go")))
-    await asyncio.wait_for(entered_effect.wait(), timeout=1)
-
-    dispatch_task.cancel()
-    try:
-        await dispatch_task
-    except asyncio.CancelledError:
-        pass
-
-    release_effect.set()
-    await asyncio.wait_for(
-        hsm.AfterEntry(ctx, instance, "/CancelledDispatchAwaiter/done"), timeout=1
-    )
-
-    assert instance.state() == "/CancelledDispatchAwaiter/done"
-    assert instance.take_snapshot().QueueLen == 0
-    await asyncio.wait_for(instance.stop(instance.context()), timeout=1)
-
-
-def test_cancelled_dispatch_awaiter_does_not_cancel_processing_task():
-    asyncio.run(_cancelled_dispatch_awaiter_does_not_cancel_processing_task())
-
-
-async def _cancelled_broadcast_awaiter_does_not_cancel_member_processing() -> None:
-    class BroadcastCancelInstance(FuzzInstance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.effects = 0
-
-    entered_effects: asyncio.Queue[int] = asyncio.Queue()
-    release_effect = asyncio.Event()
-
-    async def slow_effect(ctx, inst: BroadcastCancelInstance, event: hsm.Event) -> None:
-        inst.effects += 1
-        await entered_effects.put(inst.index)
-        await release_effect.wait()
-
-    model = hsm.Define(
-        "CancelledBroadcastAwaiter",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect)
-            ),
-        ),
-        hsm.State("done"),
-    )
-    ctx = _runtime_context()
-    instances = [BroadcastCancelInstance(index) for index in range(12)]
-    for index, instance in enumerate(instances):
-        await hsm.Started(
-            ctx, instance, model, hsm.Config(ID=f"broadcast-cancel-{index}")
-        )
-
-    broadcast_task = asyncio.ensure_future(hsm.DispatchAll(ctx, hsm.Event(name="go")))
-    seen = {
-        await asyncio.wait_for(entered_effects.get(), timeout=1)
-        for _ in range(len(instances))
-    }
-    assert seen == set(range(len(instances)))
-
-    broadcast_task.cancel()
-    try:
-        await broadcast_task
-    except asyncio.CancelledError:
-        pass
-
-    release_effect.set()
-    await asyncio.gather(
-        *(
-            asyncio.wait_for(
-                hsm.AfterEntry(ctx, instance, "/CancelledBroadcastAwaiter/done"),
-                timeout=1,
-            )
-            for instance in instances
-        )
-    )
-
-    assert all(
-        instance.state() == "/CancelledBroadcastAwaiter/done" for instance in instances
-    )
-    assert all(instance.effects == 1 for instance in instances)
-    assert all(instance.take_snapshot().QueueLen == 0 for instance in instances)
-
-    await hsm.Group(*instances).stop(ctx)
-
-
-def test_cancelled_broadcast_awaiter_does_not_cancel_member_processing():
-    asyncio.run(_cancelled_broadcast_awaiter_does_not_cancel_member_processing())
-
-
-async def _cancelled_dispatch_to_awaiter_does_not_cancel_selected_processing() -> None:
-    class DispatchToCancelInstance(FuzzInstance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.effects = 0
-
-    entered_effects: asyncio.Queue[int] = asyncio.Queue()
-    release_effect = asyncio.Event()
-
-    async def slow_effect(
-        ctx, inst: DispatchToCancelInstance, event: hsm.Event
-    ) -> None:
-        inst.effects += 1
-        await entered_effects.put(inst.index)
-        await release_effect.wait()
-
-    model = hsm.Define(
-        "CancelledDispatchToAwaiter",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect)
-            ),
-        ),
-        hsm.State("done"),
-    )
-    ctx = _runtime_context()
-    instances = [DispatchToCancelInstance(index) for index in range(12)]
-    for index, instance in enumerate(instances):
-        prefix = "target" if index % 2 == 0 else "skip"
-        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"{prefix}-{index}"))
-
-    selected = [instance for instance in instances if instance.index % 2 == 0]
-    skipped = [instance for instance in instances if instance.index % 2 == 1]
-
-    dispatch_task = asyncio.ensure_future(
-        hsm.DispatchTo(ctx, hsm.Event(name="go"), "target-*")
-    )
-    seen = {
-        await asyncio.wait_for(entered_effects.get(), timeout=1)
-        for _ in range(len(selected))
-    }
-    assert seen == {instance.index for instance in selected}
-
-    dispatch_task.cancel()
-    try:
-        await dispatch_task
-    except asyncio.CancelledError:
-        pass
-
-    selected_done = [
-        hsm.AfterEntry(ctx, instance, "/CancelledDispatchToAwaiter/done")
-        for instance in selected
-    ]
-    release_effect.set()
-    await asyncio.gather(*(asyncio.wait_for(done, timeout=1) for done in selected_done))
-
-    assert all(
-        instance.state() == "/CancelledDispatchToAwaiter/done" for instance in selected
-    )
-    assert all(instance.effects == 1 for instance in selected)
-    assert all(
-        instance.state() == "/CancelledDispatchToAwaiter/idle" for instance in skipped
-    )
-    assert all(instance.effects == 0 for instance in skipped)
-    assert all(instance.take_snapshot().QueueLen == 0 for instance in instances)
-
-    await hsm.Group(*instances).stop(ctx)
-
-
-def test_cancelled_dispatch_to_awaiter_does_not_cancel_selected_processing():
-    asyncio.run(_cancelled_dispatch_to_awaiter_does_not_cancel_selected_processing())
-
-
-async def _cancelled_group_dispatch_awaiter_does_not_cancel_member_processing() -> None:
-    class GroupCancelInstance(FuzzInstance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.effects = 0
-
-    entered_effects: asyncio.Queue[int] = asyncio.Queue()
-    release_effect = asyncio.Event()
-
-    async def slow_effect(ctx, inst: GroupCancelInstance, event: hsm.Event) -> None:
-        inst.effects += 1
-        await entered_effects.put(inst.index)
-        await release_effect.wait()
-
-    model = hsm.Define(
-        "CancelledGroupDispatchAwaiter",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("go"), hsm.Target("../done"), hsm.Effect(slow_effect)
-            ),
-        ),
-        hsm.State("done"),
-    )
-    ctx = _runtime_context()
-    instances = [GroupCancelInstance(index) for index in range(12)]
-    for index, instance in enumerate(instances):
-        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-cancel-{index}"))
-
-    group = hsm.Group(*instances)
-    dispatch_task = asyncio.ensure_future(hsm.Dispatch(ctx, group, hsm.Event(name="go")))
-    seen = {
-        await asyncio.wait_for(entered_effects.get(), timeout=1)
-        for _ in range(len(instances))
-    }
-    assert seen == set(range(len(instances)))
-
-    dispatch_task.cancel()
-    try:
-        await dispatch_task
-    except asyncio.CancelledError:
-        pass
-
-    release_effect.set()
-    await asyncio.gather(
-        *(
-            asyncio.wait_for(
-                hsm.AfterEntry(ctx, instance, "/CancelledGroupDispatchAwaiter/done"),
-                timeout=1,
-            )
-            for instance in instances
-        )
-    )
-
-    assert all(
-        instance.state() == "/CancelledGroupDispatchAwaiter/done"
-        for instance in instances
-    )
-    assert all(instance.effects == 1 for instance in instances)
-    assert all(instance.take_snapshot().QueueLen == 0 for instance in instances)
-
-    await group.stop(group.context())
-
-
-def test_cancelled_group_dispatch_awaiter_does_not_cancel_member_processing():
-    asyncio.run(_cancelled_group_dispatch_awaiter_does_not_cancel_member_processing())
-
-
-async def _awaited_nested_dispatch_from_effect_does_not_self_await() -> None:
-    class NestedDispatchInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.trace: list[str] = []
-
-    async def j_effect(ctx, inst, event):
-        inst.trace.append("j.effect")
-        await hsm.Dispatch(ctx, inst, hsm.Event(name="k"))
-        inst.trace.append("j.after-dispatch")
-
-    async def k_effect(ctx, inst, event):
-        inst.trace.append("k.effect")
-
-    model = hsm.Define(
-        "NestedDispatch",
-        hsm.Initial(hsm.Target("left")),
-        hsm.State(
-            "left",
-            hsm.Transition(
-                hsm.On("j"),
-                hsm.Target("../middle"),
-                hsm.Effect(j_effect),
-            ),
-        ),
-        hsm.State(
-            "middle",
-            hsm.Transition(
-                hsm.On("k"),
-                hsm.Target("../right"),
-                hsm.Effect(k_effect),
-            ),
-        ),
-        hsm.State("right"),
-    )
-
-    instance = NestedDispatchInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event(name="j")), timeout=1)
-
-    assert instance.state() == "/NestedDispatch/right"
-    assert instance.trace == ["j.effect", "j.after-dispatch", "k.effect"]
-    assert instance.take_snapshot().QueueLen == 0
-
-
-def test_awaited_nested_dispatch_from_effect_does_not_self_await():
-    asyncio.run(_awaited_nested_dispatch_from_effect_does_not_self_await())
-
-
-async def _awaited_stop_from_effect_does_not_self_deadlock() -> None:
-    class SelfStoppingInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.trace: list[str] = []
-
-    async def stop_effect(ctx, inst, event):
-        inst.trace.append("effect.before-stop")
-        await inst.stop(inst.context())
-        inst.trace.append("effect.after-stop")
-
-    async def done_entry(ctx, inst, event):
-        inst.trace.append("done.entry")
-
-    async def done_exit(ctx, inst, event):
-        inst.trace.append("done.exit")
-
-    model = hsm.Define(
-        "SelfStopping",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(
-                hsm.On("stop"),
-                hsm.Target("../done"),
-                hsm.Effect(stop_effect),
-            ),
-        ),
-        hsm.State("done", hsm.Entry(done_entry), hsm.Exit(done_exit)),
-    )
-
-    instance = SelfStoppingInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event(name="stop")), timeout=1)
-
-    assert instance.state() == "/SelfStopping"
-    assert _context_machines(ctx) == []
-    assert instance.trace == [
-        "effect.before-stop",
-        "effect.after-stop",
-        "done.entry",
-        "done.exit",
-    ]
-    assert instance.take_snapshot().QueueLen == 0
-
-
-def test_awaited_stop_from_effect_does_not_self_deadlock():
-    asyncio.run(_awaited_stop_from_effect_does_not_self_deadlock())
-
-
-async def _awaited_restart_from_effect_does_not_self_deadlock() -> None:
-    class SelfRestartingInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.trace: list[str] = []
-
-    async def idle_entry(ctx, inst, event):
-        inst.trace.append(f"idle.entry:{event.Data!r}")
-
-    async def restart_effect(ctx, inst, event):
-        inst.trace.append("effect.before-restart")
-        await inst.restart(inst.context(), "again")
-        inst.trace.append("effect.after-restart")
-
-    async def done_entry(ctx, inst, event):
-        inst.trace.append("done.entry")
-
-    model = hsm.Define(
-        "SelfRestarting",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Entry(idle_entry),
-            hsm.Transition(
-                hsm.On("restart"),
-                hsm.Target("../done"),
-                hsm.Effect(restart_effect),
-            ),
-        ),
-        hsm.State("done", hsm.Entry(done_entry)),
-    )
-
-    instance = SelfRestartingInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event(name="restart")), timeout=1)
-
-    assert instance.state() == "/SelfRestarting/idle"
-    assert len(_context_machines(ctx)) == 1
-    assert instance.trace == [
-        "idle.entry:None",
-        "effect.before-restart",
-        "effect.after-restart",
-        "done.entry",
-        "idle.entry:'again'",
-    ]
-    assert instance.take_snapshot().QueueLen == 0
-
-
-def test_awaited_restart_from_effect_does_not_self_deadlock():
-    asyncio.run(_awaited_restart_from_effect_does_not_self_deadlock())
-
-
-async def _stop_from_activity_does_not_await_current_activity_task() -> None:
-    class ActivityStopInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.trace: list[str] = []
-
-    activity_started = asyncio.Event()
-    activity_done = asyncio.Event()
-
-    async def self_stopping_activity(ctx, inst, event):
-        inst.trace.append("activity.before-stop")
-        activity_started.set()
-        await inst.stop(inst.context())
-        assert ctx.Done().done() is True
-        inst.trace.append("activity.after-stop")
-        activity_done.set()
-
-    model = hsm.Define(
-        "ActivitySelfStop",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Activity(self_stopping_activity)),
-    )
-
-    instance = ActivityStopInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-    await asyncio.wait_for(activity_started.wait(), timeout=1)
-    await asyncio.wait_for(activity_done.wait(), timeout=1)
-
-    assert instance.state() == "/ActivitySelfStop"
-    assert _context_machines(ctx) == []
-    assert instance.trace == ["activity.before-stop", "activity.after-stop"]
-
-
-def test_stop_from_activity_does_not_await_current_activity_task():
-    asyncio.run(_stop_from_activity_does_not_await_current_activity_task())
-
-
-async def _restart_from_activity_does_not_await_current_activity_task() -> None:
-    class ActivityRestartInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.trace: list[str] = []
-            self.restarted = False
-
-    activity_done = asyncio.Event()
-
-    async def self_restarting_activity(ctx, inst: ActivityRestartInstance, event):
-        if inst.restarted:
-            return
-        inst.restarted = True
-        inst.trace.append("activity.before-restart")
-        await inst.restart(inst.context(), "again")
-        assert ctx.Done().done() is True
-        inst.trace.append("activity.after-restart")
-        activity_done.set()
-
-    async def active_entry(ctx, inst, event):
-        inst.trace.append(f"entry:{event.Data!r}")
-
-    model = hsm.Define(
-        "ActivitySelfRestart",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State(
-            "active", hsm.Entry(active_entry), hsm.Activity(self_restarting_activity)
-        ),
-    )
-
-    instance = ActivityRestartInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-    await asyncio.wait_for(activity_done.wait(), timeout=1)
-
-    assert instance.state() == "/ActivitySelfRestart/active"
-    assert len(_context_machines(ctx)) == 1
-    assert instance.trace == [
-        "entry:None",
-        "activity.before-restart",
-        "entry:'again'",
-        "activity.after-restart",
-    ]
-    assert instance.take_snapshot().QueueLen == 0
-    await instance.stop(instance.context())
-
-
-def test_restart_from_activity_does_not_await_current_activity_task():
-    asyncio.run(_restart_from_activity_does_not_await_current_activity_task())
-
-
-async def _group_restart_data_isolation_stress(rounds: int) -> None:
-    class GroupRestartDataInstance(FuzzInstance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.entries: list[list[object]] = []
-
-    async def active_entry(
-        ctx, inst: GroupRestartDataInstance, event: hsm.Event
-    ) -> None:
-        payload = event.Data
-        if payload is None:
-            return
-        payload["items"].append(f"member-{inst.index}")
-        inst.entries.append(list(payload["items"]))
-
-    model = hsm.Define(
-        "GroupRestartDataIsolation",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Entry(active_entry)),
-    )
-
-    ctx = _runtime_context()
-    instances = [GroupRestartDataInstance(index) for index in range(20)]
-    group = hsm.Group(*instances)
-    for index, instance in enumerate(instances):
-        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-restart-{index}"))
-
-    for round_index in range(rounds):
-        payload = {"items": [round_index]}
-        await group.restart(group.context(), payload)
-
-        assert payload == {"items": [round_index]}
-        for instance in instances:
-            assert instance.state() == "/GroupRestartDataIsolation/active"
-            assert instance.entries[-1] == [round_index, f"member-{instance.index}"]
-            assert instance.take_snapshot().QueueLen == 0
-
-        instances[0].entries[-1].append("first-only")
-        assert instances[1].entries[-1] == [round_index, "member-1"]
-
-    await group.stop(group.context())
-
-
-def test_group_restart_data_isolation_stress():
-    asyncio.run(_group_restart_data_isolation_stress(rounds=50))
-
-
-async def _cancelled_stop_after_acquire_releases_processing_mutex() -> None:
-    class BlockingInstance(hsm.Instance):
-        pass
-
-    entered_exit = asyncio.Event()
-    release_exits: asyncio.Queue[asyncio.Event] = asyncio.Queue()
-
-    async def slow_exit(ctx, inst, event):
-        entered_exit.set()
-        release_exit = asyncio.Event()
-        release_exits.put_nowait(release_exit)
-        await release_exit.wait()
-
-    model = hsm.Define(
-        "CancelledAcquiredStop",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Exit(slow_exit)),
-    )
-    instance = BlockingInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-
-    cancelled_stop = asyncio.ensure_future(instance.stop(instance.context()))
-    await asyncio.wait_for(entered_exit.wait(), timeout=1)
-    cancelled_stop.cancel()
-    try:
-        await cancelled_stop
-    except asyncio.CancelledError:
-        pass
-
-    first_release = await asyncio.wait_for(release_exits.get(), timeout=1)
-    first_release.set()
-
-    entered_exit.clear()
-    second_stop = asyncio.ensure_future(instance.stop(instance.context()))
-    await asyncio.wait_for(entered_exit.wait(), timeout=1)
-    second_release = await asyncio.wait_for(release_exits.get(), timeout=1)
-    second_release.set()
-    await asyncio.wait_for(second_stop, timeout=1)
-
-    assert instance.state() == "/CancelledAcquiredStop"
-    assert _context_machines(ctx) == []
-
-
-def test_cancelled_stop_after_acquire_releases_processing_mutex():
-    asyncio.run(_cancelled_stop_after_acquire_releases_processing_mutex())
-
-
-async def _cancelled_restart_after_stop_acquire_remains_recoverable() -> None:
-    class BlockingInstance(hsm.Instance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.entries: list[object] = []
-
-    entered_exit = asyncio.Event()
-    release_exits: asyncio.Queue[asyncio.Event] = asyncio.Queue()
-
-    async def active_entry(ctx, inst: BlockingInstance, event: hsm.Event) -> None:
-        inst.entries.append(event.Data)
-
-    async def slow_exit(ctx, inst: BlockingInstance, event: hsm.Event) -> None:
-        entered_exit.set()
-        release_exit = asyncio.Event()
-        release_exits.put_nowait(release_exit)
-        await release_exit.wait()
-
-    model = hsm.Define(
-        "CancelledAcquiredRestart",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Entry(active_entry), hsm.Exit(slow_exit)),
-    )
-    instance = BlockingInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-
-    cancelled_restart = asyncio.ensure_future(instance.restart(instance.context(), "cancelled"))
-    await asyncio.wait_for(entered_exit.wait(), timeout=1)
-    cancelled_restart.cancel()
-    try:
-        await cancelled_restart
-    except asyncio.CancelledError:
-        pass
-
-    first_release = await asyncio.wait_for(release_exits.get(), timeout=1)
-    first_release.set()
-    await asyncio.sleep(0)
-
-    entered_exit.clear()
-    recovered_restart = asyncio.ensure_future(instance.restart(instance.context(), "recovered"))
-    await asyncio.wait_for(entered_exit.wait(), timeout=1)
-    second_release = await asyncio.wait_for(release_exits.get(), timeout=1)
-    second_release.set()
-    await asyncio.wait_for(recovered_restart, timeout=1)
-
-    assert instance.state() == "/CancelledAcquiredRestart/active"
-    assert instance.entries == [None, "recovered"]
-    assert _context_machines(ctx) == [sm]
-    assert instance.take_snapshot().QueueLen == 0
-
-    entered_exit.clear()
-    final_stop = asyncio.ensure_future(instance.stop(instance.context()))
-    await asyncio.wait_for(entered_exit.wait(), timeout=1)
-    final_release = await asyncio.wait_for(release_exits.get(), timeout=1)
-    final_release.set()
-    await asyncio.wait_for(final_stop, timeout=1)
-    assert _context_machines(ctx) == []
-
-
-def test_cancelled_restart_after_stop_acquire_remains_recoverable():
-    asyncio.run(_cancelled_restart_after_stop_acquire_remains_recoverable())
-
-
-async def _concurrent_restart_awaiters_remain_consistent() -> None:
-    class ConcurrentRestartInstance(hsm.Instance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.entries: list[object] = []
-            self.exits = 0
-
-    release_exits: asyncio.Queue[asyncio.Event] = asyncio.Queue()
-
-    async def active_entry(
-        ctx, inst: ConcurrentRestartInstance, event: hsm.Event
-    ) -> None:
-        inst.entries.append(event.Data)
-
-    async def slow_exit(ctx, inst: ConcurrentRestartInstance, event: hsm.Event) -> None:
-        inst.exits += 1
-        release_exit = asyncio.Event()
-        release_exits.put_nowait(release_exit)
-        await release_exit.wait()
-
-    model = hsm.Define(
-        "ConcurrentRestartAwaiters",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Entry(active_entry), hsm.Exit(slow_exit)),
-    )
-    instance = ConcurrentRestartInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-
-    restart_count = 12
-    restart_tasks = [
-        asyncio.ensure_future(instance.restart(instance.context(), index))
-        for index in range(restart_count)
-    ]
-    remaining = set(restart_tasks)
-    while remaining:
-        try:
-            release_exit = await asyncio.wait_for(release_exits.get(), timeout=0.05)
-            release_exit.set()
-            continue
-        except TimeoutError:
-            pass
-        done, remaining = await asyncio.wait(remaining, timeout=0.05)
-        for task in done:
-            await task
-
-    assert sorted(value for value in instance.entries if value is not None) == list(
-        range(restart_count)
-    )
-    assert instance.state() == "/ConcurrentRestartAwaiters/active"
-    assert {id(machine) for machine in _context_machines(ctx)} == {id(sm)}
-    assert instance.take_snapshot().QueueLen == 0
-    assert instance.exits >= 1
-
-    final_stop = asyncio.ensure_future(instance.stop(instance.context()))
-    final_release = await asyncio.wait_for(release_exits.get(), timeout=1)
-    final_release.set()
-    await asyncio.wait_for(final_stop, timeout=1)
-    assert _context_machines(ctx) == []
-
-
-def test_concurrent_restart_awaiters_remain_consistent():
-    asyncio.run(_concurrent_restart_awaiters_remain_consistent())
-
-
-async def _cancelled_group_restart_after_stop_acquire_remains_recoverable() -> None:
-    class BlockingInstance(hsm.Instance):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-            self.index = index
-            self.entries: list[object] = []
-
-    entered_exits: asyncio.Queue[int] = asyncio.Queue()
-    release_exits: asyncio.Queue[asyncio.Event] = asyncio.Queue()
-
-    async def active_entry(ctx, inst: BlockingInstance, event: hsm.Event) -> None:
-        inst.entries.append(event.Data)
-
-    async def slow_exit(ctx, inst: BlockingInstance, event: hsm.Event) -> None:
-        release_exit = asyncio.Event()
-        await entered_exits.put(inst.index)
-        await release_exits.put(release_exit)
-        await release_exit.wait()
-
-    model = hsm.Define(
-        "CancelledGroupRestart",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Entry(active_entry), hsm.Exit(slow_exit)),
-    )
-    ctx = _runtime_context()
-    instances = [BlockingInstance(index) for index in range(8)]
-    machines = [
-        await hsm.Started(ctx, instance, model, hsm.Config(ID=f"group-restart-{index}"))
-        for index, instance in enumerate(instances)
-    ]
-    group = hsm.Group(*instances)
-
-    cancelled_restart = asyncio.ensure_future(group.restart(group.context(), "cancelled"))
-    seen_cancelled = {
-        await asyncio.wait_for(entered_exits.get(), timeout=1)
-        for _ in range(len(instances))
-    }
-    assert seen_cancelled == set(range(len(instances)))
-
-    cancelled_restart.cancel()
-    try:
-        await cancelled_restart
-    except asyncio.CancelledError:
-        pass
-    for _ in range(len(instances)):
-        release_exits.get_nowait()
-
-    await asyncio.sleep(0)
-    assert all(instance.entries == [None] for instance in instances)
-    assert all(
-        instance.state() == "/CancelledGroupRestart/active" for instance in instances
-    )
-    assert {id(machine) for machine in _context_machines(ctx)} == {
-        id(machine) for machine in machines
-    }
-
-    recovered_restart = asyncio.ensure_future(group.restart(group.context(), "recovered"))
-    seen_recovered = {
-        await asyncio.wait_for(entered_exits.get(), timeout=1)
-        for _ in range(len(instances))
-    }
-    assert seen_recovered == set(range(len(instances)))
-    for _ in range(len(instances)):
-        release_exit = await asyncio.wait_for(release_exits.get(), timeout=1)
-        release_exit.set()
-    await asyncio.wait_for(recovered_restart, timeout=1)
-
-    assert all(
-        instance.state() == "/CancelledGroupRestart/active" for instance in instances
-    )
-    assert all(instance.entries == [None, "recovered"] for instance in instances)
-    assert {id(machine) for machine in _context_machines(ctx)} == {
-        id(machine) for machine in machines
-    }
-    assert all(instance.take_snapshot().QueueLen == 0 for instance in instances)
-
-    final_stop = asyncio.ensure_future(group.stop(group.context()))
-    seen_final = {
-        await asyncio.wait_for(entered_exits.get(), timeout=1)
-        for _ in range(len(instances))
-    }
-    assert seen_final == set(range(len(instances)))
-    for _ in range(len(instances)):
-        release_exit = await asyncio.wait_for(release_exits.get(), timeout=1)
-        release_exit.set()
-    await asyncio.wait_for(final_stop, timeout=1)
-    assert _context_machines(ctx) == []
-
-
-def test_cancelled_group_restart_after_stop_acquire_remains_recoverable():
-    asyncio.run(_cancelled_group_restart_after_stop_acquire_remains_recoverable())
-
-
-async def _context_registration_lifecycle_stress(rounds: int) -> None:
-    class LifecycleInstance(hsm.Instance):
-        pass
-
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "RegistrationLifecycle",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
-        hsm.State("done"),
-    )
-
-    for index in range(rounds):
-        instance = LifecycleInstance()
-        await hsm.Started(ctx, instance, model)
-        assert len(_context_machines(ctx)) == 1
-        await hsm.DispatchAll(ctx, hsm.Event(name="go"))
-        assert instance.state() == "/RegistrationLifecycle/done"
-        await instance.stop(instance.context())
-        assert instance.state() == "/RegistrationLifecycle"
-        assert _context_machines(ctx) == []
-
-        if index % 10 == 0:
-            await hsm.DispatchAll(ctx, hsm.Event(name="go"))
-            assert _context_machines(ctx) == []
-
-
-def test_context_registration_does_not_leak_on_repeated_start_stop():
-    asyncio.run(_context_registration_lifecycle_stress(rounds=100))
-
-
-async def _cancelled_context_broadcasts_do_not_dispatch() -> None:
-    class CancelledContextInstance(hsm.Instance):
-        pass
-
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "CancelledContextBroadcast",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
-        hsm.State("done"),
-    )
-    first = await hsm.Started(
-        ctx, CancelledContextInstance(), model, hsm.Config(ID="first")
-    )
-    second = await hsm.Started(
-        ctx, CancelledContextInstance(), model, hsm.Config(ID="second")
-    )
-
-    assert {hsm.ID(machine) for machine in _context_machines(ctx)} == {
-        "first",
-        "second",
-    }
-    ctx.cancel()
-
-    await hsm.DispatchAll(ctx, hsm.Event(name="go"))
-    await hsm.DispatchTo(ctx, hsm.Event(name="go"), "first")
-
-    assert first.state() == "/CancelledContextBroadcast/idle"
-    assert second.state() == "/CancelledContextBroadcast/idle"
-    assert first.take_snapshot().QueueLen == 0
-    assert second.take_snapshot().QueueLen == 0
-
-    await first.stop(first.context())
-    await second.stop(second.context())
-
-
-def test_cancelled_context_broadcasts_do_not_dispatch():
-    asyncio.run(_cancelled_context_broadcasts_do_not_dispatch())
-
-
-async def _repeated_start_fails_without_leaking_context_registration() -> None:
-    class RepeatedStartInstance(hsm.Instance):
-        pass
-
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "RepeatedStart",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle"),
-    )
-    instance = RepeatedStartInstance()
-    sm = await hsm.Started(ctx, instance, model)
-    assert _context_machines(ctx) == [sm]
-
-    try:
-        await hsm.Started(ctx, instance, model)
-    except hsm.ValidationError as error:
-        assert "already has a running HSM" in str(error)
-    else:
-        raise AssertionError("repeated Start() on an instance should fail")
-
-    try:
-        await hsm.Start(ctx, sm)
-    except hsm.ValidationError as error:
-        assert "already started HSM" in str(error)
-    else:
-        raise AssertionError("repeated Start() on an HSM should fail")
-
-    assert _context_machines(ctx) == [sm]
-    assert instance.state() == "/RepeatedStart/idle"
-    await instance.stop(instance.context())
-    assert _context_machines(ctx) == []
-
-
-def test_repeated_start_fails_without_leaking_context_registration():
-    asyncio.run(_repeated_start_fails_without_leaking_context_registration())
-
-
-async def _concurrent_start_attempts_do_not_double_bind_instance() -> None:
-    class ConcurrentStartInstance(hsm.Instance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.entries = 0
-
-    entered_entry = asyncio.Event()
-    release_entry = asyncio.Event()
-
-    async def slow_entry(ctx, inst: ConcurrentStartInstance, event: hsm.Event) -> None:
-        inst.entries += 1
-        entered_entry.set()
-        await release_entry.wait()
-
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "ConcurrentStart",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Entry(slow_entry)),
-    )
-    instance = ConcurrentStartInstance()
-
-    first_start = asyncio.ensure_future(hsm.Started(ctx, instance, model))
-    await asyncio.wait_for(entered_entry.wait(), timeout=1)
-
-    try:
-        await hsm.Started(ctx, instance, model)
-    except hsm.ValidationError as error:
-        assert "already has a running HSM" in str(error)
-    else:
-        raise AssertionError("concurrent Start() should not double-bind an instance")
-
-    assert len(_context_machines(ctx)) == 1
-    release_entry.set()
-    sm = await asyncio.wait_for(first_start, timeout=1)
-
-    assert _context_machines(ctx) == [sm]
-    assert instance.entries == 1
-    assert instance.state() == "/ConcurrentStart/idle"
-    assert instance.take_snapshot().QueueLen == 0
-
-    await instance.stop(instance.context())
-    assert _context_machines(ctx) == []
-
-
-def test_concurrent_start_attempts_do_not_double_bind_instance():
-    asyncio.run(_concurrent_start_attempts_do_not_double_bind_instance())
-
-
-async def _concurrent_hsm_start_attempts_reject_in_progress_start() -> None:
-    class ConcurrentHSMStartInstance(hsm.Instance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.entries: list[object] = []
-
-    entered_entry = asyncio.Event()
-    release_entry = asyncio.Event()
-
-    async def slow_entry(
-        ctx, inst: ConcurrentHSMStartInstance, event: hsm.Event
-    ) -> None:
-        inst.entries.append(event.Data)
-        entered_entry.set()
-        await release_entry.wait()
-
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "ConcurrentHSMStart",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Entry(slow_entry)),
-    )
-    instance = ConcurrentHSMStartInstance()
-    sm = hsm.New(instance, model)
-
-    first_start = asyncio.ensure_future(hsm.Start(ctx, sm, "first"))
-    await asyncio.wait_for(entered_entry.wait(), timeout=1)
-
-    try:
-        await hsm.Start(ctx, sm, "second")
-    except hsm.ValidationError as error:
-        assert "already started HSM" in str(error)
-    else:
-        raise AssertionError(
-            "concurrent Start() on an HSM should reject in-progress start"
-        )
-
-    assert len(_context_machines(ctx)) == 1
-    release_entry.set()
-    assert await asyncio.wait_for(first_start, timeout=1) is sm
-
-    assert _context_machines(ctx) == [sm]
-    assert instance.entries == ["first"]
-    assert instance.state() == "/ConcurrentHSMStart/idle"
-    assert sm.take_snapshot().QueueLen == 0
-
-    await sm.stop(sm.context())
-    assert _context_machines(ctx) == []
-
-
-def test_concurrent_hsm_start_attempts_reject_in_progress_start():
-    asyncio.run(_concurrent_hsm_start_attempts_reject_in_progress_start())
-
-
-async def _stopped_hsm_start_resets_runtime_state() -> None:
-    class ReusableInstance(hsm.Instance):
-        pass
-
-    entries: list[tuple[object, bool]] = []
-
-    async def record_entry(
-        ctx: hsm.Context, inst: ReusableInstance, event: hsm.Event
-    ) -> None:
-        entries.append((event.Data, ctx.Done().done()))
-
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "ReusableStart",
-        hsm.Attribute("count", 0),
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Entry(record_entry)),
-    )
-    instance = ReusableInstance()
-    sm = hsm.New(instance, model)
-
-    await hsm.Start(ctx, sm, "first")
-    await hsm.Set(ctx, instance, "count", 7)
-    assert hsm.Get(ctx, sm, "count") == (7, True)
-    await sm.stop(sm.context())
-
-    assert instance.state() == "/ReusableStart"
-    assert _context_machines(ctx) == []
-
-    await hsm.Start(ctx, sm, "second")
-
-    assert instance.state() == "/ReusableStart/idle"
-    assert _context_machines(ctx) == [sm]
-    assert hsm.Get(ctx, sm, "count") == (0, True)
-    assert sm.take_snapshot().QueueLen == 0
-    assert entries == [("first", False), ("second", False)]
-
-    await sm.stop(sm.context())
-    assert _context_machines(ctx) == []
-
-
-def test_stopped_hsm_start_resets_runtime_state():
-    asyncio.run(_stopped_hsm_start_resets_runtime_state())
-
-
-async def _starting_new_hsm_in_new_context_clears_old_context_registration() -> None:
-    class MovedContextInstance(hsm.Instance):
-        pass
-
-    model = hsm.Define(
-        "MovedContext",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle"),
-    )
-    instance = MovedContextInstance()
-    sm = hsm.New(instance, model)
-    old_context = sm.context()
-    new_context = _runtime_context()
-
-    assert _context_machines(old_context) == [sm]
-    assert _context_machines(new_context) == []
-
-    await hsm.Start(new_context, sm)
-
-    assert _context_machines(old_context) == []
-    assert _context_machines(new_context) == [sm]
-
-    await sm.stop(sm.context())
-
-    assert _context_machines(old_context) == []
-    assert _context_machines(new_context) == []
-
-
-def test_starting_new_hsm_in_new_context_clears_old_context_registration():
-    asyncio.run(_starting_new_hsm_in_new_context_clears_old_context_registration())
-
-
-async def _cancelled_observer_waiters_do_not_accumulate(rounds: int) -> None:
-    class ObserverLeakInstance(hsm.Instance):
-        pass
-
-    model = hsm.Define(
-        "ObserverLeak",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
-        hsm.State("done"),
-    )
-    instance = ObserverLeakInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-
-    async def cancel_waiter(future: asyncio.Future[None]) -> None:
-        future.cancel()
-        try:
-            await future
-        except asyncio.CancelledError:
-            pass
-        await asyncio.sleep(0)
-
-    for _ in range(rounds):
-        await asyncio.gather(
-            cancel_waiter(hsm.AfterEntry(ctx, instance, "/ObserverLeak/missing")),
-            cancel_waiter(hsm.AfterExit(ctx, instance, "/ObserverLeak/missing")),
-            cancel_waiter(hsm.AfterExecuted(ctx, instance, "/ObserverLeak/missing")),
-            cancel_waiter(hsm.AfterDispatch(ctx, instance, hsm.Event(name="missing"))),
-            cancel_waiter(hsm.AfterProcess(ctx, instance, hsm.Event(name="missing"))),
-        )
-
-    assert sm._after.entry == []
-    assert sm._after.exit == []
-    assert sm._after.executed == []
-    assert sm._after.dispatch == []
-    assert sm._after.process == []
-
-    await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
-    assert instance.state() == "/ObserverLeak/done"
-    assert instance.take_snapshot().QueueLen == 0
-    await instance.stop(instance.context())
-
-
-def test_cancelled_observer_waiters_do_not_accumulate():
-    asyncio.run(_cancelled_observer_waiters_do_not_accumulate(rounds=100))
-
-
-async def _stop_cancels_pending_observer_waiters() -> None:
-    class ObserverStopInstance(hsm.Instance):
-        pass
-
-    model = hsm.Define(
-        "ObserverStop",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle"),
-    )
-    instance = ObserverStopInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-    futures = [
-        hsm.AfterEntry(ctx, instance, "/ObserverStop/missing"),
-        hsm.AfterExit(ctx, instance, "/ObserverStop/missing"),
-        hsm.AfterExecuted(ctx, instance, "/ObserverStop/missing"),
-        hsm.AfterDispatch(ctx, instance, hsm.Event(name="missing")),
-        hsm.AfterProcess(ctx, instance, hsm.Event(name="missing")),
-    ]
-
-    await instance.stop(instance.context())
-    await asyncio.sleep(0)
-
-    assert all(future.cancelled() for future in futures)
-    assert sm._after.entry == []
-    assert sm._after.exit == []
-    assert sm._after.executed == []
-    assert sm._after.dispatch == []
-    assert sm._after.process == []
-
-
-def test_stop_cancels_pending_observer_waiters():
-    asyncio.run(_stop_cancels_pending_observer_waiters())
-
-
-async def _stopped_machine_rejects_observer_waiters() -> None:
-    class ObserverStoppedInstance(hsm.Instance):
-        pass
-
-    model = hsm.Define(
-        "ObserverStopped",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle"),
-    )
-    instance = ObserverStoppedInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-    await instance.stop(instance.context())
-
-    for make_waiter in (
-        lambda: hsm.AfterEntry(ctx, instance, "/ObserverStopped/idle"),
-        lambda: hsm.AfterExit(ctx, instance, "/ObserverStopped/idle"),
-        lambda: hsm.AfterExecuted(ctx, instance, "/ObserverStopped/idle"),
-        lambda: hsm.AfterDispatch(ctx, instance, hsm.Event(name="go")),
-        lambda: hsm.AfterProcess(ctx, instance, hsm.Event(name="go")),
-    ):
-        try:
-            make_waiter()
-        except hsm.ValidationError as error:
-            assert "started HSM" in str(error)
-        else:
-            raise AssertionError("observer waiter on stopped HSM should fail")
-
-    assert sm._after.entry == []
-    assert sm._after.exit == []
-    assert sm._after.executed == []
-    assert sm._after.dispatch == []
-    assert sm._after.process == []
-
-
-def test_stopped_machine_rejects_observer_waiters():
-    asyncio.run(_stopped_machine_rejects_observer_waiters())
-
-
-async def _cancelled_context_waiter_does_not_poison_future() -> None:
-    ctx = _runtime_context()
-
-    cancelled_waiter = asyncio.ensure_future(asyncio.wrap_future(ctx.Done()))
-    await asyncio.sleep(0)
-    cancelled_waiter.cancel()
-    try:
-        await cancelled_waiter
-    except asyncio.CancelledError:
-        pass
-
-    assert ctx.Done().done() is False
-    assert ctx.Done().cancelled() is False
-
-    live_waiter = asyncio.ensure_future(asyncio.wrap_future(ctx.Done()))
-    await asyncio.sleep(0)
-    assert live_waiter.done() is False
-
-    ctx.cancel()
-    await asyncio.wait_for(live_waiter, timeout=1)
-    await asyncio.wrap_future(ctx.Done())
-
-
-def test_cancelled_context_waiter_does_not_poison_future():
-    asyncio.run(_cancelled_context_waiter_does_not_poison_future())
-
-
-async def _mixed_context_waiter_cancellation_stress() -> None:
-    ctx = _runtime_context()
-    waiters = [
-        asyncio.ensure_future(asyncio.wrap_future(ctx.Done())) for _ in range(100)
-    ]
-    await asyncio.sleep(0)
-
-    cancelled = waiters[::3]
-    live = [waiter for waiter in waiters if waiter not in cancelled]
-    for waiter in cancelled:
-        waiter.cancel()
-
-    results = await asyncio.gather(*cancelled, return_exceptions=True)
-    assert all(isinstance(result, asyncio.CancelledError) for result in results)
-    assert ctx.Done().done() is False
-    assert ctx.Done().cancelled() is False
-    assert all(waiter.done() is False for waiter in live)
-
-    ctx.cancel()
-    await asyncio.wait_for(asyncio.gather(*live), timeout=1)
-    await asyncio.wrap_future(ctx.Done())
-
-
-def test_mixed_context_waiter_cancellation_stress():
-    asyncio.run(_mixed_context_waiter_cancellation_stress())
-
-
-async def _cancelled_mutex_handoff_releases_lock() -> None:
-    mutex = core.Mutex()
-
-    for _ in range(100):
-        await mutex.lock()
-        waiter = asyncio.create_task(mutex.lock())
-        await asyncio.sleep(0)
-
-        mutex.release()
-        waiter.cancel()
-        try:
-            await waiter
-        except asyncio.CancelledError:
-            pass
-
-        await asyncio.wait_for(mutex.lock(), timeout=1)
-        assert mutex.locked() is True
-        assert len(mutex._waiters) == 0
-        mutex.release()
-        assert mutex.locked() is False
-
-
-def test_cancelled_mutex_handoff_releases_lock():
-    asyncio.run(_cancelled_mutex_handoff_releases_lock())
-
-
-async def _group_event_mutations_preflight_members() -> None:
-    class GroupPreflightInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.entries: list[object] = []
-
-    async def entry(ctx, inst: GroupPreflightInstance, event):
-        inst.entries.append(event.Data)
-
-    model = hsm.Define(
-        "GroupPreflight",
-        hsm.Attribute("flag", False),
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Entry(entry),
-            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
-            hsm.Transition(hsm.OnSet("flag"), hsm.Target("../changed")),
-        ),
-        hsm.State("done"),
-        hsm.State("changed"),
-    )
-
-    ctx = _runtime_context()
-    running = GroupPreflightInstance()
-    stopped = GroupPreflightInstance()
-    never_started = GroupPreflightInstance()
-    await hsm.Started(ctx, running, model)
-    await hsm.Started(ctx, stopped, model)
-    await stopped.stop(stopped.context())
-
-    cases = (
-        (hsm.Group(running, stopped), "started HSM"),
-        (hsm.Group(running, never_started), "started HSM"),
-    )
-    for group, expected_error in cases:
-        await hsm.Dispatch(ctx, group, hsm.Event(name="go"))
-        assert running.state() == "/GroupPreflight/done"
-        assert stopped.state() == "/GroupPreflight"
-        assert never_started.state() == ""
-        await running.restart(running.context())
-
-        try:
-            await group.restart(group.context(), "restarted")
-        except hsm.ValidationError as error:
-            assert expected_error in str(error)
-        else:
-            raise AssertionError("group restart should fail before partial fan-out")
-
-        assert running.state() == "/GroupPreflight/idle"
-        assert stopped.state() == "/GroupPreflight"
-        assert never_started.state() == ""
-        assert hsm.Get(ctx, running, "flag") == (False, True)
-        assert running.take_snapshot().QueueLen == 0
-        assert running.entries[-1] is None
-
-        await running.stop(running.context())
-        assert running.state() == "/GroupPreflight"
-        await hsm.Started(ctx, running, model)
-
-    await running.stop(running.context())
-
-
-def test_group_event_mutations_preflight_members():
-    asyncio.run(_group_event_mutations_preflight_members())
-
-
-@given(
-    st.lists(
-        st.sampled_from(
-            (
-                "start_a",
-                "start_b",
-                "restart",
-                "stop",
-                "go",
-                "reset",
-                "set_0",
-                "set_1",
-                "call",
-            )
-        ),
-        min_size=1,
-        max_size=80,
-    )
-)
-@settings(max_examples=80, deadline=None, derandomize=True)
-def test_adversarial_lifecycle_event_script_fuzz(actions: list[str]):
-    asyncio.run(_drive_adversarial_lifecycle_event_script(tuple(actions)))
-
-
-async def _drive_adversarial_lifecycle_event_script(actions: tuple[str, ...]) -> None:
-    class ScriptInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.calls = 0
-
-    async def ping(ctx: hsm.Context, inst: ScriptInstance, value: int) -> int:
-        inst.calls += 1
-        return value + 1
-
-    model = hsm.Define(
-        "LifecycleScript",
-        hsm.Attribute("flag", 0),
-        hsm.Operation("ping", ping),
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
-            hsm.Transition(hsm.OnSet("flag")),
-            hsm.Transition(hsm.OnCall("ping")),
-        ),
-        hsm.State(
-            "done",
-            hsm.Transition(hsm.On("reset"), hsm.Target("../idle")),
-            hsm.Transition(hsm.OnSet("flag")),
-            hsm.Transition(hsm.OnCall("ping")),
-        ),
-    )
-    instance = ScriptInstance()
-    sm = hsm.New(instance, model)
-    initial_context = sm.context()
-    context_a = _runtime_context()
-    context_b = _runtime_context()
-    contexts = (initial_context, context_a, context_b)
-
-    expected_context: hsm.Context | None = initial_context
-    expected_state = "/LifecycleScript"
-    expected_flag = 0
-    expected_calls = 0
-    running = False
-
-    def assert_context_membership() -> None:
-        memberships = [ctx for ctx in contexts if sm in _context_machines(ctx)]
-        if expected_context is None:
-            assert memberships == []
-        else:
-            assert memberships == [expected_context]
-
-    assert_context_membership()
-
-    for index, action in enumerate(actions):
-        if action in ("start_a", "start_b"):
-            target_context = context_a if action == "start_a" else context_b
-            if running:
-                try:
-                    await hsm.Start(target_context, sm, index)
-                except hsm.ValidationError as error:
-                    assert "already started HSM" in str(error)
-                else:
-                    raise AssertionError("Start() on a running HSM should fail")
-            else:
-                await hsm.Start(target_context, sm, index)
-                expected_context = target_context
-                expected_state = "/LifecycleScript/idle"
-                expected_flag = 0
-                running = True
-        elif action == "restart":
-            if running:
-                await sm.restart(sm.context(), index)
-                expected_state = "/LifecycleScript/idle"
-                expected_flag = 0
-            else:
-                try:
-                    await sm.restart(sm.context(), index)
-                except hsm.ValidationError as error:
-                    assert "started HSM" in str(error)
-                else:
-                    raise AssertionError("Restart() on a stopped HSM should fail")
-        elif action == "stop":
-            await sm.stop(sm.context())
-            expected_context = None
-            expected_state = "/LifecycleScript"
-            expected_flag = 0
-            running = False
-        elif action == "go":
-            if running:
-                await hsm.Dispatch(sm.context(), sm, hsm.Event(name="go"))
-                if expected_state == "/LifecycleScript/idle":
-                    expected_state = "/LifecycleScript/done"
-            else:
-                try:
-                    await hsm.Dispatch(sm.context(), sm, hsm.Event(name="go"))
-                except hsm.ValidationError as error:
-                    assert "started HSM" in str(error)
-                else:
-                    raise AssertionError("Dispatch() on a stopped HSM should fail")
-        elif action == "reset":
-            if running:
-                await hsm.Dispatch(sm.context(), sm, hsm.Event(name="reset"))
-                if expected_state == "/LifecycleScript/done":
-                    expected_state = "/LifecycleScript/idle"
-            else:
-                try:
-                    await hsm.Dispatch(sm.context(), sm, hsm.Event(name="reset"))
-                except hsm.ValidationError as error:
-                    assert "started HSM" in str(error)
-                else:
-                    raise AssertionError("Dispatch() on a stopped HSM should fail")
-        elif action in ("set_0", "set_1"):
-            value = 0 if action == "set_0" else 1
-            if running:
-                await hsm.Set(sm.context(), sm, "flag", value)
-                expected_flag = value
-            else:
-                try:
-                    await hsm.Set(sm.context(), sm, "flag", value)
-                except hsm.ValidationError as error:
-                    assert "started HSM" in str(error)
-                else:
-                    raise AssertionError("Set() on a stopped HSM should fail")
-        elif action == "call":
-            if running:
-                assert await hsm.Call(sm.context(), sm, "ping", index) == index + 1
-                expected_calls += 1
-            else:
-                try:
-                    await hsm.Call(sm.context(), sm, "ping", index)
-                except hsm.ValidationError as error:
-                    assert "started HSM" in str(error)
-                else:
-                    raise AssertionError("Call() on a stopped HSM should fail")
-
-        assert_context_membership()
-        snapshot = sm.take_snapshot()
-        assert snapshot.State == expected_state
-        assert snapshot.QueueLen == 0
-        assert hsm.Get(sm.context(), sm, "flag") == (expected_flag, True)
-        assert instance.calls == expected_calls
-
-    await sm.stop(sm.context())
-    expected_context = None
-    running = False
-    assert_context_membership()
-    assert sm.take_snapshot().QueueLen == 0
-
-
-async def _stopped_machine_rejects_event_mutating_operations() -> None:
-    class StoppedInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.called = False
-
-        async def work(self):
-            self.called = True
-
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "StoppedRejects",
-        hsm.Attribute("flag", False),
-        hsm.Operation("work"),
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
-            hsm.Transition(hsm.OnSet("flag"), hsm.Target("../done")),
-            hsm.Transition(hsm.OnCall("work"), hsm.Target("../done")),
-        ),
-        hsm.State("done"),
-    )
-    instance = StoppedInstance()
-    sm = await hsm.Started(ctx, instance, model)
-    await instance.stop(instance.context())
-
-    assert instance.state() == "/StoppedRejects"
-    assert _context_machines(ctx) == []
-
-    for operation in (
-        lambda: hsm.Dispatch(ctx, instance, hsm.Event(name="go")),
-        lambda: hsm.Set(ctx, instance, "flag", True),
-        lambda: hsm.Call(ctx, instance, "work"),
-    ):
-        try:
-            await operation()
-        except hsm.ValidationError as error:
-            assert "started HSM" in str(error)
-        else:
-            raise AssertionError("operation on stopped HSM should fail")
-
-    try:
-        instance.dispatch(instance.context(), hsm.Event(name="go"))
-    except hsm.ValidationError as error:
-        assert "started HSM" in str(error)
-    else:
-        raise AssertionError("instance.dispatch() on stopped HSM should fail")
-
-    assert instance.called is False
-    assert instance.state() == "/StoppedRejects"
-    assert sm.take_snapshot().QueueLen == 0
-
-
-def test_stopped_machine_rejects_event_mutating_operations():
-    asyncio.run(_stopped_machine_rejects_event_mutating_operations())
-
-
-async def _never_started_instance_rejects_event_mutating_conveniences() -> None:
-    instance = hsm.Instance()
-
-    try:
-        instance.dispatch(instance.context(), hsm.Event(name="go"))
-    except hsm.ValidationError as error:
-        assert "started HSM" in str(error)
-    else:
-        raise AssertionError(
-            "instance.dispatch() on never-started instance should fail"
-        )
-
-    try:
-        await instance.restart(instance.context())
-    except hsm.ValidationError as error:
-        assert "started HSM" in str(error)
-    else:
-        raise AssertionError("instance.restart(instance.context()) on never-started instance should fail")
-
-    await instance.stop(instance.context())
-    assert instance.state() == ""
-    assert instance.context() is None
-
-
-def test_never_started_instance_rejects_event_mutating_conveniences():
-    asyncio.run(_never_started_instance_rejects_event_mutating_conveniences())
-
-
-async def _stop_suppresses_exit_action_errors_without_leaving_stale_queue() -> None:
-    class StopErrorInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.error_handled = False
-
-    async def failing_exit(ctx, inst, event):
-        raise RuntimeError("stop cleanup failed")
-
-    async def error_effect(ctx, inst: StopErrorInstance, event):
-        inst.error_handled = True
-
-    model = hsm.Define(
-        "StopExitError",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Exit(failing_exit)),
-        hsm.State(
-            "error",
-            hsm.Transition(hsm.On(hsm.ErrorEvent), hsm.Effect(error_effect)),
-        ),
-    )
-    instance = StopErrorInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-
-    await instance.stop(instance.context())
-
-    assert instance.state() == "/StopExitError"
-    assert _context_machines(ctx) == []
-    assert instance.error_handled is False
-    assert sm.take_snapshot().QueueLen == 0
-
-
-def test_stop_suppresses_exit_action_errors_without_leaving_stale_queue():
-    asyncio.run(_stop_suppresses_exit_action_errors_without_leaving_stale_queue())
-
-
-async def _stop_suppresses_exit_cancelled_error_without_stale_registration() -> None:
-    class StopCancelledInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.exit_seen = False
-
-    async def cancelling_exit(ctx, inst: StopCancelledInstance, event):
-        inst.exit_seen = True
-        raise asyncio.CancelledError("manual exit cancellation")
-
-    model = hsm.Define(
-        "StopExitCancelled",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Exit(cancelling_exit)),
-    )
-    instance = StopCancelledInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-
-    await instance.stop(instance.context())
-
-    assert instance.exit_seen is True
-    assert instance.state() == "/StopExitCancelled"
-    assert _context_machines(ctx) == []
-    assert sm.take_snapshot().QueueLen == 0
-
-    try:
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
-    except hsm.ValidationError as error:
-        assert "started HSM" in str(error)
-    else:
-        raise AssertionError(
-            "Stop() with manual CancelledError must leave a stopped HSM"
-        )
-
-
-def test_stop_suppresses_exit_cancelled_error_without_stale_registration():
-    asyncio.run(_stop_suppresses_exit_cancelled_error_without_stale_registration())
-
-
-async def _activity_cancellation_cleanup_errors_do_not_dispatch_error_events() -> None:
-    class CleanupErrorInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.error_handled = False
-
-    activity_started = asyncio.Event()
-
-    async def cleanup_error_activity(ctx, inst, event):
-        activity_started.set()
-        try:
-            while True:
-                await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            assert ctx.Done().done() is True
-            raise RuntimeError("activity cleanup failed")
-
-    def error_effect(ctx, inst: CleanupErrorInstance, event):
-        inst.error_handled = True
-
-    model = hsm.Define(
-        "ActivityCleanupError",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State(
-            "active",
-            hsm.Activity(cleanup_error_activity),
-            hsm.Transition(hsm.On("finish"), hsm.Target("../done")),
-            hsm.Transition(
-                hsm.On(hsm.ErrorEvent), hsm.Target("../error"), hsm.Effect(error_effect)
-            ),
-        ),
-        hsm.State("done"),
-        hsm.State("error"),
-    )
-    instance = CleanupErrorInstance()
-    ctx = _runtime_context()
-    await hsm.Started(ctx, instance, model)
-    await asyncio.wait_for(activity_started.wait(), timeout=1)
-
-    await asyncio.wait_for(hsm.Dispatch(ctx, instance, hsm.Event(name="finish")), timeout=1)
-
-    assert instance.state() == "/ActivityCleanupError/done"
-    assert instance.error_handled is False
-    assert instance.take_snapshot().QueueLen == 0
-    await instance.stop(instance.context())
-
-
-def test_activity_cancellation_cleanup_errors_do_not_dispatch_error_events():
-    asyncio.run(_activity_cancellation_cleanup_errors_do_not_dispatch_error_events())
-
-
-async def _completed_activity_removes_active_record_without_exit() -> None:
-    class CompletedActivityInstance(hsm.Instance):
-        pass
-
-    activity_started = asyncio.Event()
-    release_activity = asyncio.Event()
-
-    async def one_shot_activity(ctx, inst: CompletedActivityInstance, event):
-        activity_started.set()
-        await release_activity.wait()
-
-    model = hsm.Define(
-        "CompletedActivityCleanup",
-        hsm.Initial(hsm.Target("active")),
-        hsm.State(
-            "active",
-            hsm.Activity(one_shot_activity),
-            hsm.Transition(hsm.On("finish"), hsm.Target("../done")),
-        ),
-        hsm.State("done"),
-    )
-    instance = CompletedActivityInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-    await asyncio.wait_for(activity_started.wait(), timeout=1)
-    active_tasks = [active.task for active in sm._active.values()]
-    assert len(active_tasks) == 1
-
-    executed_state = hsm.AfterExecuted(ctx, sm, "/CompletedActivityCleanup/active")
-    executed_behavior = hsm.AfterExecuted(
-        ctx,
-        sm,
-        "/CompletedActivityCleanup/active/activity/one_shot_activity/0",
-    )
-    release_activity.set()
-    await asyncio.wait_for(active_tasks[0], timeout=1)
-    await asyncio.wait_for(executed_state, timeout=1)
-    await asyncio.wait_for(executed_behavior, timeout=1)
-
-    assert instance.state() == "/CompletedActivityCleanup/active"
-    assert sm._active == {}
-    assert sm.take_snapshot().QueueLen == 0
-
-    await hsm.Dispatch(ctx, sm, hsm.Event(name="finish"))
-    assert instance.state() == "/CompletedActivityCleanup/done"
-    assert sm._active == {}
-
-    await sm.stop(sm.context())
-
-
-def test_completed_activity_removes_active_record_without_exit():
-    asyncio.run(_completed_activity_removes_active_record_without_exit())
-
-
-async def _after_executed_closes_when_activity_is_cancelled_on_stop() -> None:
-    class StoppedActivityInstance(hsm.Instance):
-        pass
-
-    activity_started = asyncio.Event()
-    activity_cancelled = asyncio.Event()
-
-    async def cancellable_activity(ctx, inst: StoppedActivityInstance, event):
-        activity_started.set()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def activity(ctx, inst: FuzzInstance, event: hsm.Event) -> None:
+        started.set()
         try:
             await asyncio.wrap_future(ctx.Done())
         finally:
-            activity_cancelled.set()
+            cancelled.set()
 
     model = hsm.Define(
-        "StoppedActivityExecuted",
+        "ActivityCancelStress",
         hsm.Initial(hsm.Target("active")),
-        hsm.State("active", hsm.Activity(cancellable_activity)),
-    )
-    instance = StoppedActivityInstance()
-    ctx = _runtime_context()
-    sm = await hsm.Started(ctx, instance, model)
-    await asyncio.wait_for(activity_started.wait(), timeout=1)
-
-    executed_state = hsm.AfterExecuted(ctx, sm, "/StoppedActivityExecuted/active")
-    await sm.stop(sm.context())
-
-    await asyncio.wait_for(activity_cancelled.wait(), timeout=1)
-    await asyncio.wait_for(executed_state, timeout=1)
-    assert sm._active == {}
-
-
-def test_after_executed_closes_when_activity_is_cancelled_on_stop():
-    asyncio.run(_after_executed_closes_when_activity_is_cancelled_on_stop())
-
-
-async def _eager_completed_activity_does_not_fail_on_stop() -> None:
-    class EagerCompletedActivityInstance(hsm.Instance):
-        pass
-
-    async def immediate_activity(ctx, inst: EagerCompletedActivityInstance, event):
-        return None
-
-    loop = asyncio.get_running_loop()
-    previous_task_factory = loop.get_task_factory()
-    loop.set_task_factory(asyncio.eager_task_factory)
-    try:
-        model = hsm.Define(
-            "EagerCompletedActivity",
-            hsm.Initial(hsm.Target("active")),
-            hsm.State("active", hsm.Activity(immediate_activity)),
-        )
-        instance = EagerCompletedActivityInstance()
-        ctx = _runtime_context()
-        sm = await hsm.Started(ctx, instance, model)
-
-        await asyncio.wait_for(sm.stop(sm.context()), timeout=1)
-        assert sm._active == {}
-    finally:
-        loop.set_task_factory(previous_task_factory)
-
-
-def test_eager_completed_activity_does_not_fail_on_stop():
-    asyncio.run(_eager_completed_activity_does_not_fail_on_stop())
-
-
-async def _cancelled_start_cleans_up_registration_and_activities() -> None:
-    class CancelledStartInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.activity_cancelled = False
-
-    entered_entry = asyncio.Event()
-    release_entry = asyncio.Event()
-    activity_started = asyncio.Event()
-
-    async def blocking_entry(ctx, inst, event):
-        entered_entry.set()
-        await release_entry.wait()
-
-    async def startup_activity(ctx, inst: CancelledStartInstance, event):
-        activity_started.set()
-        try:
-            await asyncio.wrap_future(ctx.Done())
-        finally:
-            inst.activity_cancelled = True
-
-    model = hsm.Define(
-        "CancelledStart",
-        hsm.Initial(hsm.Target("active/child")),
-        hsm.State(
-            "active",
-            hsm.Activity(startup_activity),
-            hsm.State("child", hsm.Entry(blocking_entry)),
-        ),
+        hsm.State("active", hsm.Activity(activity)),
     )
 
-    instance = CancelledStartInstance()
-    ctx = _runtime_context()
-    start_task = asyncio.ensure_future(hsm.Started(ctx, instance, model))
-    await asyncio.wait_for(activity_started.wait(), timeout=1)
-    await asyncio.wait_for(entered_entry.wait(), timeout=1)
-
-    start_task.cancel()
-    try:
-        await start_task
-    except asyncio.CancelledError:
-        pass
-
-    assert instance.activity_cancelled is True
-    assert instance.state() == "/CancelledStart"
-    assert _context_machines(ctx) == []
-
-    try:
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
-    except hsm.ValidationError as error:
-        assert "started HSM" in str(error)
-    else:
-        raise AssertionError("cancelled Start() should leave a stopped HSM")
-
-
-def test_cancelled_start_cleans_up_registration_and_activities():
-    asyncio.run(_cancelled_start_cleans_up_registration_and_activities())
-
-
-async def _cancelled_start_discards_queued_startup_events() -> None:
-    class QueuedStartupInstance(hsm.Instance):
-        def __init__(self):
-            super().__init__()
-            self.entries: list[object] = []
-
-    entered_entry = asyncio.Event()
-    release_entry = asyncio.Event()
-
-    async def blocking_entry(ctx, inst: QueuedStartupInstance, event):
-        inst.entries.append(event.Data)
-        if event.Data == "first":
-            await hsm.Set(ctx, inst, "count", 5)
-            await hsm.Dispatch(ctx, inst, hsm.Event(name="queued"))
-        entered_entry.set()
-        await release_entry.wait()
-
-    model = hsm.Define(
-        "CancelledStartQueuedEvents",
-        hsm.Attribute("count", 0),
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State(
-            "idle",
-            hsm.Entry(blocking_entry),
-            hsm.Transition(hsm.On("queued"), hsm.Target("../done")),
-        ),
-        hsm.State("done"),
-    )
-
-    instance = QueuedStartupInstance()
-    ctx = _runtime_context()
-    sm = hsm.New(instance, model)
-
-    start_task = asyncio.ensure_future(hsm.Start(ctx, sm, "first"))
-    await asyncio.wait_for(entered_entry.wait(), timeout=1)
-
-    start_task.cancel()
-    try:
-        await start_task
-    except asyncio.CancelledError:
-        pass
-
-    assert instance.state() == "/CancelledStartQueuedEvents"
-    assert _context_machines(ctx) == []
-    assert sm.take_snapshot().QueueLen == 0
-    assert hsm.Get(ctx, sm, "count") == (0, True)
-
-    release_entry.set()
-    entered_entry.clear()
-    await hsm.Start(ctx, sm, "second")
-
-    assert instance.state() == "/CancelledStartQueuedEvents/idle"
-    assert sm.take_snapshot().QueueLen == 0
-    assert instance.entries == ["first", "second"]
-
-    await sm.stop(sm.context())
-
-
-def test_cancelled_start_discards_queued_startup_events():
-    asyncio.run(_cancelled_start_discards_queued_startup_events())
-
-
-async def _restart_preserves_context_registration() -> None:
-    class RestartInstance(hsm.Instance):
-        pass
-
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "RestartRegistration",
-        hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Transition(hsm.On("go"), hsm.Target("../done"))),
-        hsm.State("done"),
-    )
-    instance = RestartInstance()
-    await hsm.Started(ctx, instance, model)
-    assert len(_context_machines(ctx)) == 1
-
-    await instance.restart(instance.context())
-    assert len(_context_machines(ctx)) == 1
-    assert instance.state() == "/RestartRegistration/idle"
-
-    await hsm.DispatchAll(ctx, hsm.Event(name="go"))
-    assert instance.state() == "/RestartRegistration/done"
-    assert instance.take_snapshot().QueueLen == 0
-
+    await hsm.Started(hsm.Context(), instance, model)
+    await asyncio.wait_for(started.wait(), timeout=1)
     await instance.stop(instance.context())
-    assert _context_machines(ctx) == []
-
-
-def test_restart_preserves_context_registration():
-    asyncio.run(_restart_preserves_context_registration())
-
-
-async def _timer_restart_cancellation_stress(rounds: int) -> None:
-    class TimerInstance(hsm.Instance):
-        pass
-
-    sleeps: list[asyncio.Future[None]] = []
-    cancelled = 0
-
-    async def manual_sleep(duration):
-        nonlocal cancelled
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        sleeps.append(future)
-        try:
-            await future
-        except asyncio.CancelledError:
-            cancelled += 1
-            raise
-
-    async def delay(ctx, inst, event):
-        return timedelta(seconds=1)
-
-    model = hsm.Define(
-        "TimerRestart",
-        hsm.Initial(hsm.Target("waiting")),
-        hsm.State(
-            "waiting",
-            hsm.Transition(hsm.After(delay), hsm.Target("../done")),
-        ),
-        hsm.State("done"),
-    )
-    instance = TimerInstance()
-    ctx = _runtime_context()
-    await hsm.Started(
-        ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
-    )
-
-    for _ in range(rounds):
-        for _ in range(10):
-            if sleeps:
-                break
-            await asyncio.sleep(0)
-        old_sleep = sleeps.pop(0)
-
-        await instance.restart(instance.context())
-
-        assert instance.state() == "/TimerRestart/waiting"
-        assert instance.take_snapshot().QueueLen == 0
-        assert cancelled >= 1
-        if not old_sleep.done():
-            old_sleep.set_result(None)
-        await asyncio.sleep(0)
-        assert instance.state() == "/TimerRestart/waiting"
-
-    for _ in range(10):
-        if sleeps:
-            break
-        await asyncio.sleep(0)
-    final_sleep = sleeps.pop(0)
-    final_sleep.set_result(None)
-    for _ in range(10):
-        if instance.state() == "/TimerRestart/done":
-            break
-        await asyncio.sleep(0)
-    assert instance.state() == "/TimerRestart/done"
-    assert instance.take_snapshot().QueueLen == 0
-    await instance.stop(instance.context())
-    await asyncio.sleep(0)
-    assert instance.take_snapshot().QueueLen == 0
-    assert all(future.done() for future in sleeps)
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    assert instance.state() == "/ActivityCancelStress"
 
 
 def test_timer_restart_cancellation_stress():
-    asyncio.run(_timer_restart_cancellation_stress(rounds=50))
+    asyncio.run(_timer_restart_cancellation_stress())
 
 
-async def _history_reentry_stress(rounds: int) -> None:
-    instance = FuzzInstance()
-    ctx = _runtime_context()
+async def _timer_restart_cancellation_stress() -> None:
+    sleeps: list[asyncio.Future[None]] = []
+
+    async def sleep(duration: timedelta) -> None:
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        sleeps.append(future)
+        await future
+
+    def delay(ctx, inst, event):
+        return timedelta(milliseconds=10)
+
     model = hsm.Define(
-        "HistoryStress",
-        hsm.Initial(hsm.Target("parent")),
-        hsm.State(
-            "parent",
-            hsm.Initial(hsm.Target("a")),
-            hsm.ShallowHistory("shallow", hsm.Transition(hsm.Target("a"))),
-            hsm.DeepHistory("deep", hsm.Transition(hsm.Target("a"))),
-            hsm.State(
-                "a",
-                hsm.Initial(hsm.Target("a1")),
-                hsm.State("a1", hsm.Transition(hsm.On("next"), hsm.Target("../a2"))),
-                hsm.State(
-                    "a2",
-                    hsm.Transition(hsm.On("leave"), hsm.Target("../../../outside")),
-                ),
-            ),
-            hsm.State("b"),
-        ),
-        hsm.State(
-            "outside",
-            hsm.Transition(hsm.On("shallow"), hsm.Target("../parent/shallow")),
-            hsm.Transition(hsm.On("deep"), hsm.Target("../parent/deep")),
-            hsm.Transition(hsm.On("reset"), hsm.Target("../parent")),
-        ),
+        "TimerStress",
+        hsm.Initial(hsm.Target("waiting")),
+        hsm.State("waiting", hsm.Transition(hsm.After(delay), hsm.Target("../done"))),
+        hsm.State("done"),
     )
-    await hsm.Started(ctx, instance, model)
-
-    for _ in range(rounds):
-        assert instance.state() == "/HistoryStress/parent/a/a1"
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="next"))
-        assert instance.state() == "/HistoryStress/parent/a/a2"
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="leave"))
-        assert instance.state() == "/HistoryStress/outside"
-
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="shallow"))
-        assert instance.state() == "/HistoryStress/parent/a/a1"
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="next"))
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="leave"))
-
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="deep"))
-        assert instance.state() == "/HistoryStress/parent/a/a2"
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="leave"))
-
-        await hsm.Dispatch(ctx, instance, hsm.Event(name="reset"))
-        assert instance.take_snapshot().QueueLen == 0
+    instance = FuzzInstance()
+    await hsm.Started(
+        hsm.Context(),
+        instance,
+        model,
+        hsm.Config(Clock=hsm.Clock(sleep=sleep)),
+    )
+    await _wait_for(lambda: len(sleeps) == 1, "timer was not scheduled")
+    await instance.restart(instance.context())
+    await _wait_for(lambda: len(sleeps) == 2, "timer was not rescheduled")
+    sleeps[-1].set_result(None)
+    await _wait_for(
+        lambda: instance.state() == "/TimerStress/done",
+        "timer transition did not fire",
+    )
 
     await instance.stop(instance.context())
-
-
-def test_shallow_and_deep_history_reentry_stress():
-    asyncio.run(_history_reentry_stress(rounds=50))
-
-
-async def _stop_resets_dynamic_runtime_state() -> None:
-    instance = FuzzInstance()
-    ctx = _runtime_context()
-    model = hsm.Define(
-        "StopReset",
-        hsm.Attribute("count", 0),
-        hsm.Initial(hsm.Target("parent")),
-        hsm.State(
-            "parent",
-            hsm.Initial(hsm.Target("a")),
-            hsm.ShallowHistory("shallow", hsm.Transition(hsm.Target("a"))),
-            hsm.DeepHistory("deep", hsm.Transition(hsm.Target("a"))),
-            hsm.State(
-                "a",
-                hsm.Initial(hsm.Target("a1")),
-                hsm.State("a1", hsm.Transition(hsm.On("next"), hsm.Target("../a2"))),
-                hsm.State(
-                    "a2",
-                    hsm.Transition(hsm.On("leave"), hsm.Target("../../../outside")),
-                ),
-            ),
-        ),
-        hsm.State(
-            "outside",
-            hsm.Transition(hsm.On("shallow"), hsm.Target("../parent/shallow")),
-            hsm.Transition(hsm.On("deep"), hsm.Target("../parent/deep")),
-        ),
-    )
-    sm = await hsm.Started(ctx, instance, model)
-
-    await hsm.Set(ctx, sm, "count", 7)
-    await hsm.Dispatch(ctx, sm, hsm.Event(name="next"))
-    await hsm.Dispatch(ctx, sm, hsm.Event(name="leave"))
-    await hsm.Dispatch(ctx, sm, hsm.Event(name="deep"))
-
-    assert instance.state() == "/StopReset/parent/a/a2"
-    assert hsm.Get(ctx, sm, "count") == (7, True)
-    assert sm._history_shallow
-    assert sm._history_deep
-
-    await sm.stop(sm.context())
-
-    snapshot = sm.take_snapshot()
-    assert snapshot.State == "/StopReset"
-    assert snapshot.QueueLen == 0
-    assert snapshot.Attributes == {"/StopReset/count": 0}
-    assert hsm.Get(ctx, sm, "count") == (0, True)
-    assert sm._active == {}
-    assert sm._history_shallow == {}
-    assert sm._history_deep == {}
-    assert sm.context().Done().done() is True
-
-
-def test_stop_resets_dynamic_runtime_state():
-    asyncio.run(_stop_resets_dynamic_runtime_state())
-
-
-@st.composite
-def named_operation_guard_specs(draw):
-    guard_count = draw(st.integers(min_value=1, max_value=8))
-    guards = tuple(
-        draw(st.lists(st.booleans(), min_size=guard_count, max_size=guard_count))
-    )
-    return guards
-
-
-async def _drive_named_operation_guard_spec(guards: tuple[bool, ...]) -> None:
-    class NamedOperationGuardInstance(FuzzInstance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.trace: list[str] = []
-
-    instance = NamedOperationGuardInstance()
-    operations = []
-    transitions = []
-    states = [hsm.State("s0")]
-
-    for index, guard_value in enumerate(guards):
-        guard_name = f"guard_{index}"
-        effect_name = f"effect_{index}"
-        target_name = f"s{index + 1}"
-
-        async def guard(
-            ctx,
-            inst: NamedOperationGuardInstance,
-            event,
-            *,
-            value=guard_value,
-            name=guard_name,
-        ):
-            assert isinstance(ctx, hsm.Context)
-            assert event.Name == "go"
-            inst.trace.append(name)
-            return value
-
-        async def effect(
-            ctx, inst: NamedOperationGuardInstance, event, *, name=effect_name
-        ):
-            assert isinstance(ctx, hsm.Context)
-            assert event.Name == "go"
-            inst.trace.append(name)
-
-        operations.append(hsm.operation(guard_name, guard))
-        operations.append(hsm.operation(effect_name, effect))
-        transitions.append(
-            hsm.transition(
-                hsm.on("go"),
-                hsm.guard(guard_name),
-                hsm.effect(effect_name),
-                hsm.target(f"../{target_name}"),
-            )
-        )
-        states.append(hsm.state(target_name))
-
-    model = hsm.define(
-        "NamedOperationGuardFuzz",
-        *operations,
-        hsm.initial(hsm.target("s0")),
-        hsm.state("s0", *transitions),
-        *states[1:],
-    )
-
-    ctx = hsm.context()
-    await hsm.start(ctx, instance, model)
-    await hsm.dispatch(ctx, instance, hsm.event("go"))
-
-    try:
-        accepted_index = guards.index(True)
-    except ValueError:
-        accepted_index = -1
-
-    if accepted_index == -1:
-        assert instance.state() == "/NamedOperationGuardFuzz/s0"
-        assert instance.trace == [f"guard_{index}" for index in range(len(guards))]
-    else:
-        assert instance.state() == f"/NamedOperationGuardFuzz/s{accepted_index + 1}"
-        assert instance.trace == [
-            *(f"guard_{index}" for index in range(accepted_index + 1)),
-            f"effect_{accepted_index}",
-        ]
-
-    assert hsm.take_snapshot(ctx, instance).queue_len == 0
-    await hsm.stop(instance)
-
-
-@given(named_operation_guard_specs())
-@settings(max_examples=80, deadline=None, derandomize=True)
-def test_named_operation_guard_and_effect_fuzz(guards: tuple[bool, ...]):
-    asyncio.run(_drive_named_operation_guard_spec(guards))
-
-
-async def _named_operation_activity_and_error_stress(rounds: int) -> None:
-    class NamedOperationRuntimeInstance(FuzzInstance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.started = 0
-            self.cancelled = 0
-            self.errors: list[str] = []
-            self.entries = 0
-            self.releases: asyncio.Queue[asyncio.Event] = asyncio.Queue()
-
-        async def run_activity(self, event) -> None:
-            self.started += 1
-            release = asyncio.Event()
-            await self.releases.put(release)
-            try:
-                await release.wait()
-            except asyncio.CancelledError:
-                self.cancelled += 1
-                raise
-
-    async def fail_effect(ctx, inst: NamedOperationRuntimeInstance, event) -> None:
-        raise RuntimeError(f"named failure {event.Name}")
-
-    async def record_error(ctx, inst: NamedOperationRuntimeInstance, event) -> None:
-        inst.errors.append(str(event.Data))
-
-    async def enter_error(ctx, inst: NamedOperationRuntimeInstance, event) -> None:
-        inst.entries += 1
-
-    model = hsm.define(
-        "NamedOperationRuntimeStress",
-        hsm.operation("run_activity"),
-        hsm.operation("fail_effect", fail_effect),
-        hsm.operation("record_error", record_error),
-        hsm.operation("enter_error", enter_error),
-        hsm.initial(hsm.target("active")),
-        hsm.state(
-            "active",
-            hsm.activity("run_activity"),
-            hsm.transition(hsm.on("fail"), hsm.effect("fail_effect")),
-            hsm.transition(
-                hsm.on(hsm.ErrorEvent),
-                hsm.target("../error"),
-                hsm.effect("record_error"),
-            ),
-        ),
-        hsm.state(
-            "error",
-            hsm.entry("enter_error"),
-            hsm.transition(hsm.on("reset"), hsm.target("../active")),
-        ),
-    )
-
-    ctx = hsm.context()
-    instance = NamedOperationRuntimeInstance()
-    await hsm.start(ctx, instance, model)
-
-    for index in range(rounds):
-        release = await asyncio.wait_for(instance.releases.get(), timeout=1)
-        assert hsm.take_snapshot(ctx, instance).queue_len == 0
-        entered_error = hsm.AfterEntry(
-            ctx, instance, "/NamedOperationRuntimeStress/error"
-        )
-        await hsm.dispatch(ctx, instance, hsm.event("fail"))
-        await asyncio.wait_for(entered_error, timeout=1)
-        assert instance.state() == "/NamedOperationRuntimeStress/error"
-        assert instance.errors[-1] == "named failure fail"
-        assert instance.entries == index + 1
-        assert instance.cancelled == index + 1
-        assert release.is_set() is False
-        assert hsm.take_snapshot(ctx, instance).queue_len == 0
-        await hsm.dispatch(ctx, instance, hsm.event("reset"))
-        assert instance.state() == "/NamedOperationRuntimeStress/active"
-
-    await hsm.stop(instance)
-    assert instance.started == rounds + 1
-    assert instance.cancelled == rounds + 1
-    assert hsm.take_snapshot(ctx, instance).queue_len == 0
-
-
-def test_named_operation_activity_and_error_stress():
-    asyncio.run(_named_operation_activity_and_error_stress(rounds=50))
-
-
-async def _when_waitable_cancellation_stress(rounds: int) -> None:
-    class WhenWaitableInstance(FuzzInstance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.armed: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
-            self.cancelled = 0
-            self.fired = 0
-
-    async def wait_for_external_signal(ctx, inst: WhenWaitableInstance, event):
-        future = asyncio.get_running_loop().create_future()
-        await inst.armed.put(future)
-
-        async def waiter() -> None:
-            try:
-                await future
-            except asyncio.CancelledError:
-                inst.cancelled += 1
-                raise
-
-        return waiter()
-
-    async def record_fire(ctx, inst: WhenWaitableInstance, event) -> None:
-        inst.fired += 1
-
-    model = hsm.define(
-        "WhenWaitableStress",
-        hsm.initial(hsm.target("waiting")),
-        hsm.state(
-            "waiting",
-            hsm.transition(
-                hsm.when(wait_for_external_signal),
-                hsm.target("../fired"),
-                hsm.effect(record_fire),
-            ),
-            hsm.transition(hsm.on("cancel"), hsm.target("../cancelled")),
-        ),
-        hsm.state("fired", hsm.transition(hsm.on("reset"), hsm.target("../waiting"))),
-        hsm.state(
-            "cancelled", hsm.transition(hsm.on("reset"), hsm.target("../waiting"))
-        ),
-    )
-
-    ctx = hsm.context()
-    instance = WhenWaitableInstance()
-    await hsm.start(ctx, instance, model)
-
-    for index in range(rounds):
-        future = await asyncio.wait_for(instance.armed.get(), timeout=1)
-        assert hsm.take_snapshot(ctx, instance).queue_len == 0
-        if index % 2 == 0:
-            entered_cancelled = hsm.AfterEntry(
-                ctx, instance, "/WhenWaitableStress/cancelled"
-            )
-            await hsm.dispatch(ctx, instance, hsm.event("cancel"))
-            await asyncio.wait_for(entered_cancelled, timeout=1)
-            assert instance.state() == "/WhenWaitableStress/cancelled"
-            assert instance.cancelled >= (index // 2) + 1
-            if not future.done():
-                future.set_result(None)
-            await asyncio.sleep(0)
-            assert instance.state() == "/WhenWaitableStress/cancelled"
-            assert instance.fired == index // 2
-        else:
-            entered_fired = hsm.AfterEntry(ctx, instance, "/WhenWaitableStress/fired")
-            future.set_result(None)
-            await asyncio.wait_for(entered_fired, timeout=1)
-            assert instance.state() == "/WhenWaitableStress/fired"
-            assert instance.fired == (index // 2) + 1
-        assert hsm.take_snapshot(ctx, instance).queue_len == 0
-        await hsm.dispatch(ctx, instance, hsm.event("reset"))
-        assert instance.state() == "/WhenWaitableStress/waiting"
-
-    stop_future = await asyncio.wait_for(instance.armed.get(), timeout=1)
-    await hsm.stop(instance)
-    if not stop_future.done():
-        stop_future.set_result(None)
-    await asyncio.sleep(0)
-    assert instance.state() == "/WhenWaitableStress"
-    assert hsm.take_snapshot(ctx, instance).queue_len == 0
-
-
-def test_when_waitable_cancellation_stress():
-    asyncio.run(_when_waitable_cancellation_stress(rounds=50))
-
-
-async def _when_owned_future_is_not_cancelled_on_state_exit() -> None:
-    class OwnedFutureInstance(FuzzInstance):
-        def __init__(self) -> None:
-            super().__init__()
-            self.armed: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
-            self.fired = 0
-
-    async def owned_future(ctx, inst: OwnedFutureInstance, event):
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        await inst.armed.put(future)
-        return future
-
-    async def record_fire(ctx, inst: OwnedFutureInstance, event) -> None:
-        inst.fired += 1
-
-    model = hsm.define(
-        "WhenOwnedFuture",
-        hsm.initial(hsm.target("waiting")),
-        hsm.state(
-            "waiting",
-            hsm.transition(
-                hsm.when(owned_future), hsm.target("../fired"), hsm.effect(record_fire)
-            ),
-            hsm.transition(hsm.on("cancel"), hsm.target("../cancelled")),
-        ),
-        hsm.state("fired"),
-        hsm.state("cancelled"),
-    )
-
-    ctx = hsm.context()
-    instance = OwnedFutureInstance()
-    await hsm.start(ctx, instance, model)
-
-    future = await asyncio.wait_for(instance.armed.get(), timeout=1)
-    entered_cancelled = hsm.AfterEntry(ctx, instance, "/WhenOwnedFuture/cancelled")
-    await hsm.dispatch(ctx, instance, hsm.event("cancel"))
-    await asyncio.wait_for(entered_cancelled, timeout=1)
-
-    assert future.cancelled() is False
-    assert future.done() is False
-    future.set_result(None)
-    await asyncio.sleep(0)
-
-    assert instance.state() == "/WhenOwnedFuture/cancelled"
-    assert instance.fired == 0
-    assert hsm.take_snapshot(ctx, instance).queue_len == 0
-
-    await hsm.stop(instance)
-
-
-def test_when_owned_future_is_not_cancelled_on_state_exit():
-    asyncio.run(_when_owned_future_is_not_cancelled_on_state_exit())

@@ -3902,6 +3902,7 @@ class HSM(BehaviorElement[TInstance]):
                 source=event.source,
                 target=event.target,
                 schema=event.schema,
+                metadata=event.metadata,
             )
         current_state = self._state
         current_qualified_name = current_state.qualified_name
@@ -4074,6 +4075,7 @@ class HSM(BehaviorElement[TInstance]):
                 source=event.source,
                 target=event.target,
                 schema=event.schema,
+                metadata=event.metadata,
             )
         if error := self._queue.push(ctx, event):
             if queue_error := self._queue.push(ctx, ErrorEvent.WithData(error)):
@@ -4802,6 +4804,7 @@ def DispatchTo(
                     source=event.source,
                     target=event.target or snapshot.ID,
                     schema=event.schema,
+                    metadata=event.metadata,
                 ),
             )
         )

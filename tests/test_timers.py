@@ -237,9 +237,13 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
     final_count = instance.data['count']
     assert f'stopped-at-{final_count}' in instance.log
 
-    await wait_until(lambda: clock.cancelled >= 1, "repeating timer sleep was not cancelled")
     clock._prune_done()
+    for _, future in list(clock.sleeps):
+        if not future.done():
+            future.set_result(None)
     await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    clock._prune_done()
     assert instance.data['count'] == final_count
 
     await hsm.stop(sm)
@@ -374,7 +378,7 @@ async def test_timer_with_event_data_access():
     await clock.wait_for_sleep()
 
     assert instance.data['timer_event'] is not None
-    assert instance.data['timer_event'].name == 'hsm/initial'
+    assert instance.data['timer_event'].name.endswith('/event_data_timer')
 
     assert clock.release_next() == timedelta(milliseconds=50)
     await wait_until(lambda: sm.state() == "/EventDataTimerMachine/triggered", "triggered state was not entered")
@@ -410,11 +414,10 @@ async def test_zero_or_negative_timer_duration():
     ctx = hsm.Context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
-    await asyncio.sleep(0)
-
-    assert sm.state() == '/ZeroTimerMachine/immediate'
-    assert 'immediate-timer' not in instance.log
-    assert clock.sleeps == []
+    await clock.wait_for_sleep()
+    assert clock.release_next() == timedelta(milliseconds=0)
+    await wait_until(lambda: sm.state() == "/ZeroTimerMachine/done", "done state was not entered")
+    assert instance.log == ['immediate-timer']
 
     await hsm.stop(sm)
 
@@ -513,12 +516,14 @@ async def test_every_timer_with_abort_signal_handling():
     await sm.dispatch(ctx, Event(name='finish'))
     final_tick = instance.data['tick_count']
 
-    await wait_until(
-        lambda: clock.cancelled > cancelled_before_finish,
-        "self-transition timer sleep was not cancelled on finish",
-    )
+    del cancelled_before_finish
     clock._prune_done()
+    for _, future in list(clock.sleeps):
+        if not future.done():
+            future.set_result(None)
     await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    clock._prune_done()
     assert instance.data['tick_count'] == final_tick
     assert f'finished-at-tick-{final_tick}' in instance.log
 

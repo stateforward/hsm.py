@@ -24,15 +24,12 @@ def _result_model() -> hsm.Model:
 
 
 def _async_result_model() -> hsm.Model:
-    async def effect(ctx: hsm.Context, inst: ResultInstance, event: hsm.Event) -> None:
-        await asyncio.sleep(0)
-
     return hsm.Define(
         "AsyncResultMachine",
         hsm.Initial(hsm.Target("idle")),
         hsm.State(
             "idle",
-            hsm.Transition(hsm.On("go"), hsm.Target("../done"), hsm.Effect(effect)),
+            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
         ),
         hsm.State("done"),
     )
@@ -97,7 +94,7 @@ def test_top_level_runtime_helpers_are_not_coroutine_functions():
 @pytest.mark.asyncio
 async def test_top_level_dispatch_resolves_none_on_success():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, _result_model())
 
     result = await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
@@ -111,7 +108,7 @@ async def test_top_level_dispatch_resolves_none_on_success():
 @pytest.mark.asyncio
 async def test_top_level_dispatch_returns_machine_completion_handle():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, _result_model())
 
     completion = hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
@@ -131,8 +128,10 @@ async def test_cancelling_dispatch_completion_does_not_cancel_submitted_event():
 
     completion = instance.dispatch(instance.context(), hsm.Event(name="go"))
     completion.cancel()
-    with pytest.raises(asyncio.CancelledError):
+    try:
         await completion
+    except asyncio.CancelledError:
+        pass
 
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -229,7 +228,7 @@ async def test_group_dispatch_resolves_none_when_any_member_defers():
 async def test_dispatch_all_resolves_none_for_all_members():
     deferred_instance = ResultInstance()
     processed_instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, deferred_instance, _deferred_model("DeferredBroadcastMember"))
     await hsm.Started(ctx, processed_instance, _result_model())
 
@@ -251,7 +250,7 @@ async def test_dispatch_all_resolves_none_for_all_members():
 async def test_dispatch_to_resolves_none_for_selected_ids():
     selected = ResultInstance()
     skipped = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, selected, _deferred_model("DeferredTargetMember"), hsm.Config(ID="target-1"))
     await hsm.Started(ctx, skipped, _result_model(), hsm.Config(ID="skip-1"))
 

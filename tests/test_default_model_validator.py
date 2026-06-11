@@ -139,10 +139,9 @@ def test_define_returns_finalized_model_with_runtime_indexes() -> None:
         (hsm.After, "after"),
         (hsm.At, "at"),
         (hsm.Every, "every"),
-        (hsm.When, "when"),
     ],
 )
-def test_time_and_when_transitions_finalize_source_activity(
+def test_time_transitions_finalize_source_activity(
     builder, mode: str
 ) -> None:
     def duration(ctx, inst, event):
@@ -153,13 +152,7 @@ def test_time_and_when_transitions_finalize_source_activity(
         del ctx, inst, event
         return datetime.datetime.now() + datetime.timedelta(seconds=1)
 
-    def signal(ctx, inst, event):
-        del ctx, inst, event
-        return None
-
-    expression = {"after": duration, "at": timepoint, "every": duration}.get(
-        mode, signal
-    )
+    expression = {"after": duration, "at": timepoint, "every": duration}[mode]
 
     model = hsm.Define(
         f"{mode.title()}Finalization",

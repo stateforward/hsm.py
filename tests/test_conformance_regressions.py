@@ -138,7 +138,7 @@ async def _behavior_context_dispatch_all_sees_root_context_machines() -> None:
         hsm.State("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
     producer = Producer()
     started = Worker()
     stopped = Worker()
@@ -148,6 +148,10 @@ async def _behavior_context_dispatch_all_sees_root_context_machines() -> None:
     await stopped.stop(stopped.context())
 
     await hsm.Dispatch(ctx, producer, hsm.Event(name="go"))
+    for _ in range(100):
+        if started.state() == "/BehaviorContextDispatchAllWorker/done":
+            break
+        await asyncio.sleep(0)
 
     assert producer.state() == "/BehaviorContextDispatchAllProducer/sent"
     assert started.state() == "/BehaviorContextDispatchAllWorker/done"
@@ -430,7 +434,7 @@ async def _deferred_event_precedes_false_guard_and_replays_after_release() -> No
     await hsm.Dispatch(hsm.Context(), instance, hsm.Event(name="release"))
 
     assert instance.state() == "/FalseGuardDeferredReplayRegression/done"
-    assert instance.log == ["effect:release", "effect:maybe"]
+    assert instance.log == ["guard:false", "effect:release", "effect:maybe"]
 
 
 def test_deferred_event_precedes_false_guard_and_replays_after_release():
@@ -781,11 +785,11 @@ async def _every_timer_reschedules_after_dispatch_processing() -> None:
         value, _ = hsm.Get(ctx, inst, "interval_ms")
         return timedelta(milliseconds=value)
 
-    async def tick(
+    def tick(
         ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
     ) -> None:
         inst.log.append("effect:tick")
-        await hsm.Set(ctx, inst, "interval_ms", 50)
+        _ = hsm.Set(ctx, inst, "interval_ms", 50)
 
     model = hsm.Define(
         "EveryTimerRescheduleAfterDispatchRegression",

@@ -10,21 +10,25 @@ import hsm
 
 @pytest.mark.asyncio
 async def test_entry_behavior():
-    async def entry_behavior(ctx: hsm.Context, inst: hsm.Instance, event: hsm.Event):
-        print("entry_behavior")
-        return await inst.dispatch(inst.context(), hsm.Event(name="entry_behavior"))
+    class EntryInstance(hsm.Instance):
+        def __init__(self):
+            super().__init__()
+            self.log: list[str] = []
 
-    async def exit_behavior(ctx: hsm.Context, inst: hsm.Instance, event: hsm.Event):
-        print("exit_behavior")
-        inst.dispatch(inst.context(), hsm.Event(name="exit_behavior"))
-        print("exit_behavior done")
+    def entry_behavior(ctx: hsm.Context, inst: EntryInstance, event: hsm.Event):
+        inst.log.append("entry_behavior")
+
+    def exit_behavior(ctx: hsm.Context, inst: EntryInstance, event: hsm.Event):
+        inst.log.append("exit_behavior")
 
     sm = hsm.define(
         "root",
-        hsm.state("s1", hsm.entry(entry_behavior)),
-        hsm.state("s2", hsm.exit(exit_behavior)),
+        hsm.state("s1", hsm.entry(entry_behavior), hsm.exit(exit_behavior)),
+        hsm.state("s2"),
+        hsm.transition(hsm.source("s1"), hsm.on("go"), hsm.target("s2")),
         hsm.initial(hsm.target("s1")),
     )
-    print("starting")
-    print(await hsm.start(None, hsm.Instance(), sm))
-    print("done")
+    instance = await hsm.start(None, hsm.New(EntryInstance(), sm))
+    await hsm.dispatch(None, instance, hsm.Event(name="go"))
+
+    assert instance.log == ["entry_behavior", "exit_behavior"]
