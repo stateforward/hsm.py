@@ -1,10 +1,11 @@
 import asyncio
 import dataclasses
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
 import hsm.hsm as core
+from hsm import generic
 
 
 class CoverageInstance(core.Instance):
@@ -48,8 +49,14 @@ def test_context_config_and_queue_public_contracts():
     parent = core.Context().WithValue("request", "root")
     child, cancel = parent.WithCancel()
     assert child.Value("request") == "root"
+    assert child.Deadline() == (None, False)
+    assert child.deadline() == (None, False)
+    assert child.Err() is None
+    assert child.err() is None
     cancel()
     assert child.Done().done()
+    assert child.Err() is core.context.CanceledError
+    child.cancel()
 
     queue = core.MultiQueue()
     assert queue.push(core.Event(name="regular")) == (None,)
@@ -59,6 +66,7 @@ def test_context_config_and_queue_public_contracts():
     assert ok and error is None and event.name == "complete"
     event, ok, error = queue.pop()
     assert ok and error is None and event.name == "regular"
+    queue.clear()
 
     clock = core.Clock()
     config = core.Config(ID="machine-1", Name="/Alias", Data={"boot": True}, Clock=clock, Queue=queue)
@@ -67,8 +75,176 @@ def test_context_config_and_queue_public_contracts():
     assert config.data == {"boot": True}
     assert config.clock is clock
     assert config.queue is queue
+    assert config.ID == "machine-1"
+    assert config.Name == "/Alias"
+    assert config.Data == {"boot": True}
+    assert config.Clock is clock
+    assert config.Queue is queue
     with pytest.raises(dataclasses.FrozenInstanceError):
         config.id = "machine-2"
+
+    class MissingPop:
+        def push(self, event):
+            return (None,)
+
+        def len(self):
+            return (0, None)
+
+    with pytest.raises(TypeError, match="callable pop"):
+        core.MultiQueue(MissingPop())
+
+    class FailingFifo(core.Fifo):
+        def push(self, event):
+            return (None,)
+
+        def pop(self):
+            raise RuntimeError("pop failed")
+
+        def len(self):
+            raise RuntimeError("len failed")
+
+    failing_queue = core.MultiQueue(FailingFifo())
+    event, ok, error = failing_queue.pop()
+    assert event == core.Event()
+    assert ok is False
+    assert isinstance(error, RuntimeError)
+    count, error = failing_queue.len()
+    assert count == 0
+    assert isinstance(error, RuntimeError)
+
+
+def test_value_object_properties_and_generic_helpers():
+    element = core.Element(id="element-1", qualified_name="/Root/child")
+    assert element.Kind() == core.ElementKind
+    assert element.ID() == "element-1"
+    assert element.QualifiedName() == "/Root/child"
+    assert element.owner() == "/Root"
+    assert element.name() == "child"
+    assert core.Element(qualified_name="/").owner() == ""
+    assert core.StateElement(qualified_name="/Root/state").Kind() == core.StateKind
+
+    metadata = {"trace": "abc"}
+    event = core.Event(
+        name="go",
+        data={"value": 1},
+        kind=core.TimeEventKind,
+        id="event-1",
+        source="source",
+        target="target",
+        schema=dict,
+        metadata=metadata,
+    )
+    assert event.Name == "go"
+    assert event.Data == {"value": 1}
+    assert event.ID == "event-1"
+    assert event.Source == "source"
+    assert event.Target == "target"
+    assert event.Kind == core.TimeEventKind
+    assert event.Schema is dict
+    assert event.with_data(2).Data == 2
+    event_with_id = event.with_data_and_id(3, "event-2")
+    assert event_with_id.Data == 3
+    assert event_with_id.ID == "event-2"
+    assert event_with_id.metadata is metadata
+    assert core.CompletionEvent("done").Kind == core.CompletionEventKind
+
+    change = core.AttributeChange(name="count", old_value=1, value=2)
+    assert change.Name == "count"
+    assert change.Old == 1
+    assert change.New == 2
+    assert change.Value == 2
+
+    snapshot = core.Snapshot(
+        ID="machine",
+        QualifiedName="/Machine",
+        State="/Machine/idle",
+        Attributes={"x": 1},
+        QueueLen=2,
+    )
+    assert snapshot.id == "machine"
+    assert snapshot.qualified_name == "/Machine"
+    assert snapshot.state == "/Machine/idle"
+    assert snapshot.attributes == {"x": 1}
+    assert snapshot.queue_len == 2
+    assert snapshot.transitions == ()
+
+    queue = generic.Queue[str]()
+    assert queue.pop() == (None, False, None)
+    assert queue.push("one") == (None,)
+    assert queue.len() == (1, None)
+    assert queue.pop() == ("one", True, None)
+    queue.push("two")
+    queue.clear()
+    assert queue.len() == (0, None)
+
+    values = generic.Map[str, int]()
+    assert values.load("missing") == (None, False)
+    values.store("one", 1)
+    assert values.load("one") == (1, True)
+    assert values.swap("two", 2) == (None, False)
+    assert values.swap("two", 3) == (2, True)
+    assert dict(values.items()) == {"one": 1, "two": 3}
+    values.delete("one")
+    assert values.load("one") == (None, False)
+    values.clear()
+    assert values.items() == ()
+
+
+@pytest.mark.asyncio
+async def test_generic_awaitable_and_clock_timer_branches():
+    awaitable = generic.Awaitable[int]()
+    waiter = asyncio.create_task(awaitable.wait())
+    await asyncio.sleep(0)
+    awaitable.set_result(4)
+    awaitable.set_result(5)
+    assert await waiter == 4
+    assert await awaitable == 4
+    assert awaitable.done()
+    assert awaitable.result() == 4
+    assert awaitable.exception() is None
+
+    failed = generic.Awaitable[int]()
+    failed.set_exception(RuntimeError("boom"))
+    with pytest.raises(RuntimeError, match="boom"):
+        await failed.wait()
+    assert isinstance(failed.exception(), RuntimeError)
+
+    cancelled = generic.Awaitable[int]()
+    assert cancelled.cancel()
+    assert cancelled.cancelled()
+
+    timer = core.Timer(timedelta(milliseconds=0))
+    assert isinstance(await timer, datetime)
+    assert timer.Stop() is False
+    assert timer.Reset(timedelta(seconds=1)) is False
+    assert timer.Stop() is True
+    with pytest.raises(asyncio.CancelledError):
+        await timer
+
+    sleep_calls: list[timedelta] = []
+
+    def sync_sleep(duration: timedelta) -> None:
+        sleep_calls.append(duration)
+
+    clock = core.Clock(Sleep=sync_sleep)
+    await clock.Sleep(timedelta(milliseconds=1))
+    assert sleep_calls == [timedelta(milliseconds=1)]
+    assert isinstance(await clock.After(timedelta(milliseconds=1)), datetime)
+
+    now = datetime.now()
+    after_clock = core.Clock(After=lambda duration: now)
+    assert await after_clock.After(timedelta(milliseconds=1)) is now
+
+    async def async_after(duration: timedelta) -> datetime:
+        return now
+
+    async_after_clock = core.Clock(After=async_after)
+    assert await async_after_clock.After(timedelta(milliseconds=1)) is now
+
+    custom_timer = core.Timer(timedelta(seconds=1))
+    timer_clock = core.Clock(NewTimer=lambda duration: custom_timer)
+    assert timer_clock.NewTimer(timedelta(seconds=1)) is custom_timer
+    custom_timer.Stop()
 
 
 @pytest.mark.asyncio
@@ -113,6 +289,7 @@ async def test_lifecycle_set_call_and_snapshot_contracts():
     assert await core.Set(ctx, instance, "flag", True) is None
     assert instance.state() == "/RuntimeCoverage/changed"
     assert core.Get(ctx, instance, "flag") == (True, True)
+    assert core.Get(instance.context(), None, "flag") == (True, True)
 
     result = await core.Call(ctx, instance, "double", 7)
     for _ in range(100):
@@ -122,6 +299,10 @@ async def test_lifecycle_set_call_and_snapshot_contracts():
     assert result == 14
     assert instance.log == ["entry:boot", "set:True", "double:7", "/RuntimeCoverage/double"]
     assert instance.state() == "/RuntimeCoverage/called"
+
+    assert await core.Call(instance.context(), None, "double", 3) == 6
+    await core.Set(instance.context(), None, "flag", False)
+    assert core.Get(instance.context(), None, "flag") == (False, True)
 
     payload = {"items": ["one"]}
     await core.Set(ctx, instance, "payload", payload)
@@ -133,6 +314,50 @@ async def test_lifecycle_set_call_and_snapshot_contracts():
         snapshot.Attributes["/RuntimeCoverage/payload"] = {}
 
     await core.Stop(instance)
+
+
+@pytest.mark.asyncio
+async def test_not_started_instance_and_top_level_error_contracts():
+    instance = CoverageInstance()
+    ctx = core.Context()
+
+    assert instance.state() == ""
+    assert isinstance(instance.context(), core.Context)
+    assert isinstance(instance.clock(), core.DefaultClock)
+    assert instance.get("missing") == (None, False)
+    assert instance.take_snapshot() == core.Snapshot()
+
+    with pytest.raises(core.ErrorValidatingModel, match="dispatch requires"):
+        await instance.dispatch(ctx, core.Event(name="go"))
+    with pytest.raises(core.ErrorValidatingModel, match="initialized instance"):
+        await instance.start(ctx)
+    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+        await instance.set("flag", True)
+    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+        await instance.call("work")
+    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+        await instance.restart(ctx)
+    assert await instance.stop(ctx) is None
+    with pytest.raises(core.ErrorValidatingModel, match="take snapshot requires"):
+        core.TakeSnapshot(ctx, instance)
+
+    assert core.Get(None, None, "missing") == (None, False)
+    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+        await core.Set(None, None, "missing", True)
+    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+        await core.Call(None, None, "missing")
+
+    empty = core.Group("empty")
+    assert empty.state() == []
+    assert isinstance(empty.context(), core.Context)
+    assert core.ID(empty) == "empty"
+    assert core.QualifiedName(empty) == ""
+    assert core.Name(empty) == ""
+    assert await empty.dispatch(empty.context(), core.Event(name="noop")) is None
+    await empty.stop(empty.context())
+    await empty.restart(empty.context())
+    with pytest.raises(TypeError, match="expected hsm.Instance"):
+        core.Group(object())
 
 
 @pytest.mark.asyncio

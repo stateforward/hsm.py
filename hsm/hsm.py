@@ -133,7 +133,9 @@ class Element:
     kind: kind.Kind = ElementKind
     id: str = dataclasses.field(default="")
     qualified_name: str = dataclasses.field(default="")
-    owned_elements: list[Element] = dataclasses.field(default_factory=list)
+    owned_elements: list[Element] = dataclasses.field(
+        default_factory=typing.cast(typing.Callable[[], list["Element"]], list)
+    )
     location: Location = dataclasses.field(default_factory=Location.capture)
 
     def __init_subclass__(cls, kind: kind.Kind | None = None) -> None:
@@ -168,7 +170,9 @@ class Element:
 
 @dataclasses.dataclass(kw_only=True)
 class NamespaceElement(Element, kind=NamespaceKind):
-    members: dict[str, Element] = dataclasses.field(default_factory=dict)
+    members: dict[str, Element] = dataclasses.field(
+        default_factory=dict[str, Element]
+    )
 
 
 @typing.runtime_checkable
@@ -233,7 +237,7 @@ class ObservationElement(
     operation: ObservationExpression[TInstance] = dataclasses.field(
         default=lambda ctx, instance, event: None
     )
-    targets: list[str] = dataclasses.field(default_factory=list)
+    targets: list[str] = dataclasses.field(default_factory=list[str])
 
     @typing.override
     def redefine(
@@ -385,16 +389,16 @@ class ObservationElement(
 
 @dataclasses.dataclass(kw_only=True)
 class VertexElement(Element, kind=VertexKind):
-    transitions: list[str] = dataclasses.field(default_factory=list)
+    transitions: list[str] = dataclasses.field(default_factory=list[str])
 
 
 @dataclasses.dataclass(kw_only=True)
 class StateElement(VertexElement, NamespaceElement, kind=StateKind):
     initial: str = dataclasses.field(default_factory=str)
-    entry: list[str] = dataclasses.field(default_factory=list)
-    exit: list[str] = dataclasses.field(default_factory=list)
-    activity: list[str] = dataclasses.field(default_factory=list)
-    deferred: list[str] = dataclasses.field(default_factory=list)
+    entry: list[str] = dataclasses.field(default_factory=list[str])
+    exit: list[str] = dataclasses.field(default_factory=list[str])
+    activity: list[str] = dataclasses.field(default_factory=list[str])
+    deferred: list[str] = dataclasses.field(default_factory=list[str])
     submachine: "Model | None" = None
 
 
@@ -468,7 +472,7 @@ class Event(typing.Generic[TEventData]):
     source: str = dataclasses.field(default_factory=str)
     target: str = dataclasses.field(default_factory=str)
     schema: object | None = None
-    metadata: dict[str, object] = dataclasses.field(default_factory=dict)
+    metadata: dict[str, object] = dataclasses.field(default_factory=dict[str, object])
 
     def WithData[TNewData](self, data: TNewData) -> "Event[TNewData]":
         return Event(
@@ -537,8 +541,8 @@ class CompletionEvent(Event[TEventData]):
 
 @dataclasses.dataclass(kw_only=True)
 class TransitionPath:
-    enter: list[str] = dataclasses.field(default_factory=list)
-    exit: list[str] = dataclasses.field(default_factory=list)
+    enter: list[str] = dataclasses.field(default_factory=list[str])
+    exit: list[str] = dataclasses.field(default_factory=list[str])
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -546,13 +550,13 @@ class TransitionElement(Element, kind=TransitionKind):
     source: str = dataclasses.field(default_factory=str)
     target: str = dataclasses.field(default_factory=str)
     guard: str | None = None
-    effect: list[str] = dataclasses.field(default_factory=list)
-    events: list[str] = dataclasses.field(default_factory=list)
+    effect: list[str] = dataclasses.field(default_factory=list[str])
+    events: list[str] = dataclasses.field(default_factory=list[str])
 
 
 @dataclasses.dataclass(kw_only=True)
 class ModelValidator(abc.ABC):
-    validated: list[str] = dataclasses.field(default_factory=list)
+    validated: list[str] = dataclasses.field(default_factory=list[str])
     pattern: typing.ClassVar[re.Pattern[str]] = re.compile(r"(?<!^)(?=[A-Z][a-z])")
 
     def _to_snake_case(self, name: str) -> str:
@@ -968,8 +972,10 @@ class DefaultModelValidator(ModelValidator):
 
 @dataclasses.dataclass(kw_only=True)
 class Model(StateElement):
-    members: dict[str, Element] = dataclasses.field(default_factory=dict)
-    events: dict[str, Event[typing.Any]] = dataclasses.field(default_factory=dict)
+    members: dict[str, Element] = dataclasses.field(default_factory=dict[str, Element])
+    events: dict[str, Event[typing.Any]] = dataclasses.field(
+        default_factory=dict[str, Event[typing.Any]]
+    )
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -1003,17 +1009,19 @@ class Model(StateElement):
 @dataclasses.dataclass(kw_only=True)
 class FinalizedModel(Model):
     transition_map: dict[str, dict[str, list[TransitionElement]]] = dataclasses.field(
-        default_factory=dict
+        default_factory=dict[str, dict[str, list[TransitionElement]]]
     )
-    deferred_map: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
+    deferred_map: dict[str, dict[str, str]] = dataclasses.field(
+        default_factory=dict[str, dict[str, str]]
+    )
     transition_paths: dict[str, dict[str, TransitionPath]] = dataclasses.field(
-        default_factory=dict
+        default_factory=dict[str, dict[str, TransitionPath]]
     )
     history_paths: dict[tuple[str, str], tuple[str, ...]] = dataclasses.field(
-        default_factory=dict
+        default_factory=dict[tuple[str, str], tuple[str, ...]]
     )
     history_targets: dict[tuple[str, str | None], dict[str, str]] = dataclasses.field(
-        default_factory=dict
+        default_factory=dict[tuple[str, str | None], dict[str, str]]
     )
 
 
@@ -2422,7 +2430,11 @@ class RedefinableModel(RedefinableElement[Model]):
 class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
     behaviors: list[
         str | OperationExpression[TInstance] | BehaviorElement[TInstance]
-    ] = dataclasses.field(default_factory=list)
+    ] = dataclasses.field(
+        default_factory=list[
+            str | OperationExpression[TInstance] | BehaviorElement[TInstance]
+        ]
+    )
 
     def redefine_all(
         self,
@@ -2572,18 +2584,19 @@ class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
             self.qualified_name or ".guard",
         )
         constraint: ConstraintElement[TInstance] | None = None
-        if isinstance(self.expression, str):
-            if "/" in self.expression:
+        expression = typing.cast(object, self.expression)
+        if isinstance(expression, str):
+            if "/" in expression:
                 raise ErrorValidatingModel(
                     transition.location,
-                    f'operation name "{self.expression}" cannot contain "/"',
+                    f'operation name "{expression}" cannot contain "/"',
                 )
-            operation_qualified_name = join(model.qualified_name, self.expression)
+            operation_qualified_name = join(model.qualified_name, expression)
             operation_element = _operation_element(model, operation_qualified_name)
             if operation_element is None:
                 raise ErrorValidatingModel(
                     transition.location,
-                    f'missing operation "{self.expression}"',
+                    f'missing operation "{expression}"',
                 )
 
             if operation_element.method is not None and inspect.iscoroutinefunction(
@@ -2610,9 +2623,9 @@ class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
                 qualified_name=qualified_name,
                 expression=typing.cast(Expression[TInstance, bool], operation_guard),
             )
-        elif isinstance(self.expression, ConstraintElement):
+        elif isinstance(expression, ConstraintElement):
             constraint_element = typing.cast(
-                ConstraintElement[TInstance], self.expression
+                ConstraintElement[TInstance], expression
             )
             constraint = ConstraintElement(
                 qualified_name=join(
@@ -2620,9 +2633,9 @@ class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
                 ),
                 expression=constraint_element.expression,
             )
-        elif isinstance(self.expression, RedefinableConstraint):
+        elif isinstance(expression, RedefinableConstraint):
             redefinable_constraint = typing.cast(
-                RedefinableConstraint[TInstance], self.expression
+                RedefinableConstraint[TInstance], expression
             )
             constraint = redefinable_constraint.redefine(model, stack)
             if constraint is None:
@@ -2633,11 +2646,11 @@ class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
         else:
             constraint = ConstraintElement(
                 qualified_name=qualified_name,
-                expression=self.expression,
+                expression=typing.cast(Expression[TInstance, bool], expression),
             )
         previous_guard = transition.guard
         if previous_guard is not None:
-            expression = constraint.expression
+            constraint_expression = constraint.expression
 
             def combined(
                 ctx: context.Context, instance: TInstance, event: Event
@@ -2645,9 +2658,9 @@ class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
                 previous = typing.cast(
                     ConstraintElement[TInstance], model.members[previous_guard]
                 )
-                return previous.expression(ctx, instance, event) and expression(
+                return previous.expression(
                     ctx, instance, event
-                )
+                ) and constraint_expression(ctx, instance, event)
 
             constraint.expression = combined
         model.members[constraint.qualified_name] = constraint
@@ -2738,7 +2751,7 @@ class RedefinableEffectBehavior(RedefinableBehaviors[TInstance]):
 
 @dataclasses.dataclass(kw_only=True)
 class RedefinableStateWithDeferredEvents(RedefinableElement[StateElement]):
-    deferred: list[Event] = dataclasses.field(default_factory=list)
+    deferred: list[Event] = dataclasses.field(default_factory=list[Event])
 
     @typing.override
     def redefine(
@@ -2959,7 +2972,7 @@ class RedefinableExitPoint(RedefinableElement[ExitPointElement]):
 
 @dataclasses.dataclass(kw_only=True)
 class RedefinableTransitionWithEvents(RedefinableElement[TransitionElement]):
-    events: list[Event] = dataclasses.field(default_factory=list)
+    events: list[Event] = dataclasses.field(default_factory=list[Event])
 
     @typing.override
     def redefine(

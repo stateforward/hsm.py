@@ -5,28 +5,28 @@ from typing import Any, assert_type, cast
 import hsm
 
 
-typed_event = hsm.Event("typed", {"count": 1})
+typed_event = hsm.Event(name="typed", data={"count": 1})
 assert_type(typed_event, hsm.Event[dict[str, int]])
-assert_type(typed_event.Data, dict[str, int])
-assert_type(typed_event.data, dict[str, int])
+assert_type(typed_event.Data, dict[str, int] | None)
+assert_type(typed_event.data, dict[str, int] | None)
 
 keyword_event = hsm.Event(name="typed", data=1)
 assert_type(keyword_event, hsm.Event[int])
-assert_type(keyword_event.Data, int)
+assert_type(keyword_event.Data, int | None)
 
-empty_event = hsm.Event("empty")
+empty_event = hsm.Event(name="empty")
 assert_type(empty_event, hsm.Event[Any])
-assert_type(empty_event.Data, Any)
+assert_type(empty_event.Data, Any | None)
 
 with_data_event = empty_event.WithData("payload")
 assert_type(with_data_event, hsm.Event[str])
-assert_type(with_data_event.Data, str)
+assert_type(with_data_event.Data, str | None)
 
 with_data_and_id_event = empty_event.WithDataAndID(1.5, "event-1")
 assert_type(with_data_and_id_event, hsm.Event[float])
-assert_type(with_data_and_id_event.Data, float)
+assert_type(with_data_and_id_event.Data, float | None)
 
 snake_payload = cast(tuple[str], ("payload",))
 snake_data_event = empty_event.with_data(snake_payload)
 assert_type(snake_data_event, hsm.Event[tuple[str]])
-assert_type(snake_data_event.Data, tuple[str])
+assert_type(snake_data_event.Data, tuple[str] | None)

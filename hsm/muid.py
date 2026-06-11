@@ -69,7 +69,7 @@ class MUIDGenerator:
         # Use simple string indexing.
         # Making ALPHABET global or class var might help slightly but string literal is fast enough via intern.
         alphabet = "0123456789abcdefghijklmnopqrstuv"
-        res = []
+        res: list[str] = []
         while num:
             res.append(alphabet[num & 31])
             num >>= 5

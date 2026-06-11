@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1 - 2026-06-11
+
+- Fixed event metadata preservation when dispatch assigns event IDs and when `DispatchTo` fans out events.
+- Updated the Python test suite for the refactored runtime API and current v1.1 conformance behavior.
+
 ## 1.1.0 - 2026-06-11
 
 - Advanced shared HSM conformance coverage with operation, OnCall, history, submachine, exit-point, group, queue, timer, and observation coverage while the v1.1 conformance IR is being updated.
