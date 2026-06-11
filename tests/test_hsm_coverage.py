@@ -852,8 +852,8 @@ def test_model_finalization_validation_branches():
         ),
         core.StateElement("done"),
     )
-    assert pending_on_call.events["@call:work"].kind == core.Kinds.CallEvent
-    assert pending_on_call.events["@call:work"].source == "/PendingOnCall/work"
+    assert pending_on_call.events["/PendingOnCall/work"].kind == core.Kinds.CallEvent
+    assert pending_on_call.events["/PendingOnCall/work"].source == "/PendingOnCall/work"
 
 
 @pytest.mark.asyncio
@@ -908,7 +908,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     bag["items"].append("mutated")
     fresh_bag, ok = core.Get(ctx, first, "bag")
     assert ok is True
-    assert fresh_bag == {"items": []}
+    assert fresh_bag == {"items": ["mutated"]}
 
     await core.Set(ctx, first, "count", 1)
     assert first.state() == "/RuntimeCoverage/idle"

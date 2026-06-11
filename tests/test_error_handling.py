@@ -43,7 +43,7 @@ async def test_error_event_from_activity_exception():
         hsm.state('working',
             hsm.activity(failing_activity),
             hsm.transition(
-                hsm.on('hsm_error'),
+                hsm.on('hsm/error'),
                 hsm.target('../error'),
                 hsm.effect(error_effect)
             )
@@ -95,14 +95,14 @@ async def test_error_event_handled_at_different_hierarchy_levels():
         hsm.initial(hsm.target('parent/child')),
         hsm.state('parent',
             hsm.transition(
-                hsm.on('hsm_error'),
+                hsm.on('hsm/error'),
                 hsm.target('parentError'),
                 hsm.effect(parent_error_effect)
             ),
             hsm.state('child',
                 hsm.activity(child_activity_error),
                 hsm.transition(
-                    hsm.on('hsm_error'),
+                    hsm.on('hsm/error'),
                     hsm.target('../childError'),
                     hsm.effect(child_error_effect)
                 )
@@ -193,7 +193,7 @@ async def test_error_in_entry_actions():
         ),
         hsm.state('error'),
         hsm.transition(
-            hsm.on('hsm_error'),
+            hsm.on('hsm/error'),
             hsm.target('error'),
             hsm.effect(error_effect)
         )
@@ -240,7 +240,7 @@ async def test_error_in_exit_actions():
         hsm.state('next'),
         hsm.state('error'),
         hsm.transition(
-            hsm.on('hsm_error'),
+            hsm.on('hsm/error'),
             hsm.target('error'),
             hsm.effect(error_effect)
         )
@@ -287,7 +287,7 @@ async def test_error_in_transition_effects():
         hsm.state('next'),
         hsm.state('error'),
         hsm.transition(
-            hsm.on('hsm_error'),
+            hsm.on('hsm/error'),
             hsm.target('error'),
             hsm.effect(error_effect)
         )
@@ -333,7 +333,7 @@ async def test_multiple_error_events_in_sequence():
         hsm.state('first',
             hsm.activity(first_error_activity),
             hsm.transition(
-                hsm.on('hsm_error'),
+                hsm.on('hsm/error'),
                 hsm.target('../second'),
                 hsm.effect(first_error_effect)
             )
@@ -341,7 +341,7 @@ async def test_multiple_error_events_in_sequence():
         hsm.state('second',
             hsm.activity(second_error_activity),
             hsm.transition(
-                hsm.on('hsm_error'),
+                hsm.on('hsm/error'),
                 hsm.target('../final'),
                 hsm.effect(second_error_effect)
             )
@@ -395,19 +395,19 @@ async def test_error_event_with_guard_conditions():
         hsm.state('working',
             hsm.activity(error_activity),
             hsm.transition(
-                hsm.on('hsm_error'),
+                hsm.on('hsm/error'),
                 hsm.guard(critical_guard),
                 hsm.target('../critical'),
                 hsm.effect(critical_effect)
             ),
             hsm.transition(
-                hsm.on('hsm_error'),
+                hsm.on('hsm/error'),
                 hsm.guard(warning_guard),
                 hsm.target('../warning'),
                 hsm.effect(warning_effect)
             ),
             hsm.transition(
-                hsm.on('hsm_error'),
+                hsm.on('hsm/error'),
                 hsm.target('../general'),
                 hsm.effect(general_effect)
             )

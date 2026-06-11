@@ -192,7 +192,7 @@ async def test_activity_error_handling():
             "working",
             hsm.activity(error_activity),
             hsm.transition(
-                hsm.on("hsm_error"), hsm.target("../error"), hsm.effect(error_effect)
+                hsm.on("hsm/error"), hsm.target("../error"), hsm.effect(error_effect)
             ),
         ),
         hsm.state("error"),

@@ -1647,21 +1647,29 @@ class Runner:
             return None
         if kind == "set_attr":
             try:
-                _ = hsm.Set(
+                set_result = hsm.Set(
                     ctx, instance, self._require_string(op, "name"), op.get("value")
                 )
+                done = getattr(set_result, "done", None)
+                result = getattr(set_result, "result", None)
+                if callable(done) and callable(result) and done():
+                    _ = result()
             except Exception:
                 self.trace_expected_error_once()
                 raise
             return None
         if kind == "set_attr_from_event_data":
             try:
-                _ = hsm.Set(
+                set_result = hsm.Set(
                     ctx,
                     instance,
                     self._require_string(op, "name"),
                     self.read_path(event.data, op.get("path")),
                 )
+                done = getattr(set_result, "done", None)
+                result = getattr(set_result, "result", None)
+                if callable(done) and callable(result) and done():
+                    _ = result()
             except Exception:
                 self.trace_expected_error_once()
                 raise

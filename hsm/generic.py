@@ -2,9 +2,12 @@ import collections
 import typing
 import concurrent.futures
 import asyncio
+import threading
 
 TReturn = typing.TypeVar("TReturn")
 TItem = typing.TypeVar("TItem")
+TKey = typing.TypeVar("TKey")
+TValue = typing.TypeVar("TValue")
 
 QueuePushResult = tuple[BaseException | None]
 type QueuePopResult[TItem] = tuple[TItem, bool, BaseException | None]
@@ -25,10 +28,9 @@ class Awaitable(typing.Generic[TReturn]):
         except concurrent.futures.InvalidStateError:
             pass
 
-    async def wait(self) -> None:
+    async def wait(self) -> TReturn:
         if self._future.done():
-            _ = self._future.result()
-            return
+            return self._future.result()
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future[TReturn] = loop.create_future()
 
@@ -46,7 +48,7 @@ class Awaitable(typing.Generic[TReturn]):
                 pass
 
         self._future.add_done_callback(wake)
-        await waiter
+        return await waiter
 
     def __await__(self):
         return self.wait().__await__()
@@ -87,3 +89,43 @@ class Queue(typing.Generic[TItem]):
 
     def clear(self) -> None:
         self._items.clear()
+
+
+@typing.final
+class Map(typing.Generic[TKey, TValue]):
+    """Thread-safe map with Go sync.Map-style tuple results."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[TKey, TValue] = {}
+
+    def load(self, key: TKey) -> tuple[TValue, bool]:
+        with self._lock:
+            if key not in self._items:
+                return typing.cast(TValue, None), False
+            return self._items[key], True
+
+    def store(self, key: TKey, value: TValue) -> None:
+        with self._lock:
+            self._items[key] = value
+
+    def swap(self, key: TKey, value: TValue) -> tuple[TValue, bool]:
+        with self._lock:
+            if key in self._items:
+                old_value, exists = self._items[key], True
+            else:
+                old_value, exists = typing.cast(TValue, None), False
+            self._items[key] = value
+            return old_value, exists
+
+    def delete(self, key: TKey) -> None:
+        with self._lock:
+            self._items.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+    def items(self) -> tuple[tuple[TKey, TValue], ...]:
+        with self._lock:
+            return tuple(self._items.items())

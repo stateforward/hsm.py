@@ -90,7 +90,7 @@ Trigger transitions based on time. The duration function must be `async` and ret
 
 ### 9. Error Handling
 
-- Exceptions in any behavioral function automatically dispatch a special `hsm_error` event.
+- Exceptions in any behavioral function automatically dispatch a special `hsm/error` event.
 - The `event.data` of this event contains the original exception.
 - Handle these events with normal transitions to create error-recovery states.
 

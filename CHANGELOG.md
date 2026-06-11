@@ -2,7 +2,7 @@
 
 ## 1.1.0 - 2026-06-11
 
-- Passed all 1,392 shared HSM conformance cases with operation, OnCall, history, submachine, exit-point, group, queue, timer, and observation coverage.
+- Advanced shared HSM conformance coverage with operation, OnCall, history, submachine, exit-point, group, queue, timer, and observation coverage while the v1.1 conformance IR is being updated.
 - Added operation declaration/call support, `OnCall` transitions, and named-operation references for DSL behaviors.
 - Added group dispatch/snapshot behavior, `DispatchAll`, `DispatchTo`, and dispatchable group support.
 - Aligned RTC state visibility so snapshots observe only the last settled state during entry, exit-point, operation, and startup behavior execution.
@@ -11,7 +11,7 @@
 
 ## 1.0.0 - 2026-05-29
 
-- Passed the full shared HSM conformance suite for the Python runtime.
+- Continued alignment with the shared HSM conformance suite for the Python runtime.
 - Added submachine state, entry point, and exit point runtime support.
 - Aligned context propagation with the canonical `Keys.HSM`, `Keys.Owner`, and `Keys.Instances` model.
 - Aligned `DispatchAll`, `DispatchTo`, and group dispatch with fire-and-forget submission plus awaitable completion.

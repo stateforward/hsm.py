@@ -107,6 +107,8 @@ State paths are qualified under the model name. From inside a state, relative pa
 | `"."` | Current source state, used for self-transitions |
 | `"/Door/open"` | Absolute path |
 
+Composed submachines flatten the referenced model under the containing submachine state. If child model `/Motor` is composed as `/Controller/drive`, child state `/Motor/running` is redefined as `/Controller/drive/running`.
+
 ## Transitions
 
 A transition combines a trigger, optional source, optional target, optional guard, and optional effects.
@@ -131,7 +133,7 @@ def record_submit(ctx, inst, event) -> None:
     inst.submitted = True
 ```
 
-`Guard("operation_name")` and `Effect("operation_name")` resolve a declared `Operation` and pass the triggering event as the operation argument. This is the same DSL shape used by TypeScript, Go, and `dsl.md`.
+`Guard("operation_name")` and `Effect("operation_name")` resolve a declared `Operation` and pass the triggering event as the operation argument. Named operation references are unqualified operation names and cannot contain `/`. This is the same DSL shape used by TypeScript, Go, and `dsl.md`.
 
 Transition kinds are inferred:
 
@@ -183,7 +185,7 @@ Common built-ins:
 | --- | --- |
 | `InitialEvent` | Startup transition event |
 | `FinalEvent` | Final/completion event |
-| `ErrorEvent` | Error event dispatched when behavior raises |
+| `ErrorEvent` | Error event named `hsm/error` dispatched when behavior raises |
 | `AnyEvent` | Wildcard fallback event |
 
 Dispatch uses an immutable event envelope (`name`, `source`, `target`, `id`, and `kind`) for routing. `Event.Data`, `Event.schema`, and `Event.metadata` are intentionally shared by reference; payload and metadata ownership belong to the caller/application. Use immutable values or make an application-level copy when handlers must not share mutable objects.
@@ -208,11 +210,11 @@ value, ok = hsm.Get(ctx, instance, "temperature")
 await hsm.Set(ctx, instance, "temperature", 72)
 ```
 
-Short names are accepted by `Get`, `Set`, `Attribute`, and `OnSet`. Direct `Set` stores the provided value by reference. Group `Set` deep-copies the provided value once per member, so member handlers cannot mutate the caller's value or each other's stored value. Snapshots use fully-qualified attribute names, for example `"/Thermostat/temperature"`, and snapshot attribute values are deep-copied from runtime storage.
+Short names are accepted by `Get`, `Set`, `Attribute`, and `OnSet`; they resolve to the top-level model namespace. Submachine attributes are redefined onto the containing top-level model, so names must be unique against states, operations, and other attributes there. Direct `Set` stores the provided value by reference, and `Get` returns that stored value by reference. Group `Set` deep-copies the provided value once per member, so member handlers cannot mutate the caller's value or each other's stored value. Snapshots use fully-qualified attribute names, for example `"/Thermostat/temperature"`, and snapshot attribute values are the stored values.
 
 ## Operations
 
-`Operation(name, callback=None)` declares a callable operation. `OnCall(name)` transitions fire when the operation is called through `Call`.
+`Operation(name, callback=None)` declares a callable operation on the top-level model namespace. Submachine operations are redefined onto the containing top-level model; later definitions with the same name replace earlier bindings. `OnCall(name)` transitions fire when the operation is called through `Call`.
 
 ```python
 async def approve(ctx, inst, request_id: str) -> str:
@@ -400,13 +402,13 @@ hsm.Transition(
 
 <!-- Python aliases and runtime value exports from hsm/hsm.py -->
 
-Implemented PascalCase DSL and runtime functions, except the acronym class `HSM`, expose direct Python snake_case aliases. Current builder and runtime aliases include `define`, `state`, `submachine_state`, `entry_point`, `exit_point`, `attribute`, `operation`, `initial`, `transition`, `source`, `target`, `entry`, `exit`, `activity`, `effect`, `guard`, `on`, `on_set`, `on_call`, `after`, `at`, `every`, `when`, `defer`, `choice`, `shallow_history`, `deep_history`, `final`, `validator`, `finalizer`, `start`, `started`, `stop`, `restart`, `take_snapshot`, `id`, `qualified_name`, `name`, `new_group`, `make_group`, `dispatch`, `call`, `dispatch_all`, and `dispatch_to`. The `hsm.kind` helper module exposes `Make`, `MakeKind`, `IsKind`, `List`, and `Bases` plus Python aliases `make`, `make_kind`, `is_kind`, `list`, and `bases`.
+Implemented PascalCase DSL and runtime functions, except the acronym class `HSM`, expose direct Python snake_case aliases. Current builder and runtime aliases include `define`, `state`, `submachine_state`, `entry_point`, `exit_point`, `attribute`, `operation`, `initial`, `transition`, `source`, `target`, `entry`, `exit`, `activity`, `effect`, `guard`, `on`, `on_set`, `on_call`, `after`, `at`, `every`, `when`, `defer`, `choice`, `shallow_history`, `deep_history`, `final`, `validator`, `finalizer`, `new`, `start`, `started`, `stop`, `restart`, `take_snapshot`, `id`, `qualified_name`, `name`, `new_group`, `make_group`, `dispatch`, `call`, `dispatch_all`, and `dispatch_to`. The `hsm.kind` helper module exposes `Make`, `MakeKind`, `IsKind`, `List`, and `Bases` plus Python aliases `make`, `make_kind`, `is_kind`, `list`, and `bases`.
 
 Runtime values and types exported from the top-level package include `Event`, `CompletionEvent`, `Snapshot`, `Model`, `FinalizedModel`, `ModelValidator`, `DefaultModelValidator`, `ValidatorElement`, `ModelFinalizer`, `DefaultModelFinalizer`, `FinalizerElement`, `Clock`, `DefaultClock`, `Fifo`, `Queue`, `MultiQueue`, queue result tuples such as `QueuePushResult`, `Config`, `Context`, `ContextKey`, `Keys`, `Instance`, `Group`, `Dispatchable`, lifecycle events such as `InitialEvent`, `ErrorEvent`, `AnyEvent`, and `FinalEvent`, and kind constants such as `StateKind`, `TransitionKind`, `EventKind`, `FinalStateKind`, `SubmachineStateKind`, and `ExitPointKind`. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; `Config` accepts and exposes `id`, `name`, `data`, `clock`, and `queue` alongside `ID`, `Name`, `Data`, `Clock`, and `Queue`; snapshots expose both PascalCase fields such as `QueueLen` and `Transitions` and snake_case properties such as `queue_len` and `transitions`. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
 
 ## Current Python Notes
 
-`After`, `At`, `Every`, `When`, `SubmachineState`, `EntryPoint`, `ExitPoint`, `Operation`, `OnCall`, `DispatchAll`, and `DispatchTo` are implemented. The Python runtime passes the shared HSM conformance suite.
+`After`, `At`, `Every`, `When`, `SubmachineState`, `EntryPoint`, `ExitPoint`, `Operation`, `OnCall`, `DispatchAll`, and `DispatchTo` are implemented. The shared HSM conformance IR is being updated for the v1.1 namespace and operation-call semantics.
 
 This package requires Python 3.13 or newer.
 

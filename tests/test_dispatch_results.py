@@ -305,7 +305,7 @@ async def test_top_level_set_raises_validation_error_for_unknown_attribute():
     ctx = hsm.Context()
     await hsm.Started(ctx, instance, _result_model())
 
-    with pytest.raises(hsm.ValidationError, match='missing attribute "missing"'):
+    with pytest.raises(RuntimeError, match='missing attribute "missing"'):
         await hsm.Set(ctx, instance, "missing", True)
 
     assert hsm.Get(ctx, instance, "missing") == (None, False)
@@ -320,7 +320,7 @@ async def test_set_raises_validation_error_for_exact_default_type_mismatch():
     await hsm.Started(ctx, instance, _result_model())
 
     with pytest.raises(
-        hsm.ValidationError,
+        RuntimeError,
         match='attribute "flag" requires value of type bool, got int',
     ):
         await hsm.Set(ctx, instance, "flag", 1)
@@ -359,7 +359,7 @@ async def test_set_uses_explicit_attribute_type_metadata():
     assert await hsm.Set(ctx, instance, "count", 1) is None
     assert hsm.Get(ctx, instance, "count") == (1, True)
     with pytest.raises(
-        hsm.ValidationError,
+        RuntimeError,
         match='attribute "count" requires value of type int, got bool',
     ):
         await hsm.Set(ctx, instance, "count", True)

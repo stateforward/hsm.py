@@ -83,7 +83,7 @@ async def test_submachine_entry_point_bottom_up_event_and_exit_point():
     await hsm.Started(ctx, instance, controller)
 
     await hsm.Dispatch(ctx, instance, hsm.Event(name="enable"))
-    assert instance.state() == "/Controller/drive/Motor/running"
+    assert instance.state() == "/Controller/drive/running"
     assert instance.log == [
         "controller.enable",
         "motor.resume",
@@ -127,7 +127,7 @@ async def test_submachine_unhandled_exit_point_restores_child_leaf_before_error(
 
     assert (
         instance.state()
-        == "/UnhandledExitPointParent/drive/UnhandledExitPointChild/inside"
+        == "/UnhandledExitPointParent/drive/inside"
     )
 
 
@@ -161,7 +161,10 @@ async def test_submachine_exit_point_effect_error_short_circuits_at_boundary():
     with pytest.raises(RuntimeError, match="exit boom"):
         await hsm.Dispatch(ctx, instance, hsm.Event(name="finish"))
 
-    assert instance.state() == "/ExitPointEffectErrorParent/drive"
+    assert (
+        instance.state()
+        == "/ExitPointEffectErrorParent/drive/inside"
+    )
     assert instance.log == ["exit:effect"]
 
 
@@ -325,7 +328,7 @@ async def test_source_qualified_exit_point_handler_precedes_local_fallthrough_ha
 
     assert (
         instance.state()
-        == "/SourceQualifiedExitPriorityParent/drive/SourceQualifiedExitPriorityChild/local"
+        == "/SourceQualifiedExitPriorityParent/drive/local"
     )
     assert instance.log == ["guard:root", "effect:local"]
 
@@ -408,10 +411,10 @@ async def test_submachine_final_completion_bubbles_to_containing_state():
     instance = SubmachineInstance()
     ctx = hsm.Context()
     await hsm.Started(ctx, instance, controller)
-    assert instance.state() == "/ControllerDone/drive/Motor/off"
+    assert instance.state() == "/ControllerDone/drive/off"
 
     await hsm.Dispatch(ctx, instance, hsm.Event(name="start"))
-    assert instance.state() == "/ControllerDone/drive/Motor/running"
+    assert instance.state() == "/ControllerDone/drive/running"
 
     await hsm.Dispatch(ctx, instance, hsm.Event(name="finish"))
     assert instance.state() == "/ControllerDone/idle"
@@ -503,7 +506,7 @@ async def test_submachine_timer_uses_remapped_event_and_parent_clock():
     await asyncio.sleep(0.01)
 
     assert sleeps == [timedelta(milliseconds=5)]
-    assert instance.state() == "/TimerParent/drive/TimerChild/timeout"
+    assert instance.state() == "/TimerParent/drive/timeout"
     assert instance.log == ["effect:timeout", "entry:timeout"]
 
 

@@ -383,7 +383,7 @@ def test_duplicate_timer_trigger_fallback_replays_guard_events_after_entry():
     asyncio.run(_duplicate_timer_trigger_fallback_replays_guard_events_after_entry())
 
 
-async def _false_guarded_deferred_event_replays_after_release() -> None:
+async def _deferred_event_precedes_false_guard_and_replays_after_release() -> None:
     instance = RegressionInstance()
 
     def false_guard(
@@ -430,11 +430,11 @@ async def _false_guarded_deferred_event_replays_after_release() -> None:
     await hsm.Dispatch(hsm.Context(), instance, hsm.Event(name="release"))
 
     assert instance.state() == "/FalseGuardDeferredReplayRegression/done"
-    assert instance.log == ["guard:false", "effect:release", "effect:maybe"]
+    assert instance.log == ["effect:release", "effect:maybe"]
 
 
-def test_false_guarded_deferred_event_replays_after_release():
-    asyncio.run(_false_guarded_deferred_event_replays_after_release())
+def test_deferred_event_precedes_false_guard_and_replays_after_release():
+    asyncio.run(_deferred_event_precedes_false_guard_and_replays_after_release())
 
 
 async def _transition_to_deep_history_preserves_previous_history_snapshot() -> None:

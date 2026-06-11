@@ -306,7 +306,7 @@ async def test_snake_case_dsl_aliases_build_and_run_model():
     assert instance.state() == "/SnakeDslMachine/idle"
     assert hsm.get(ctx, instance, "count") == (0, True)
 
-    await hsm.dispatch(ctx, instance, hsm.event("go"))
+    await hsm.dispatch(ctx, instance, hsm.Event(name="go"))
 
     snapshot = hsm.take_snapshot(ctx, instance)
     assert snapshot.state == "/SnakeDslMachine/done"
@@ -445,6 +445,9 @@ async def test_snapshot_contents_are_read_only_and_point_in_time():
 
     runtime_payload = {"items": [{"nested": ["initial"]}]}
     await hsm.Set(ctx, instance, "payload", runtime_payload)
+    stored_payload, ok = hsm.Get(ctx, instance, "payload")
+    assert ok is True
+    assert stored_payload is runtime_payload
     snapshot = instance.take_snapshot()
 
     runtime_payload["items"][0]["nested"].append("mutated-after-snapshot")
@@ -849,12 +852,12 @@ async def test_operation_oncall_and_call():
 @pytest.mark.asyncio
 async def test_snake_case_named_operation_dsl_builds_and_runs_model():
     class NamedOperationInstance(ParityInstance):
-        async def enter_idle(self, event: hsm.Event) -> None:
+        def enter_idle(self, event: hsm.Event) -> None:
             self.log.append(f"enter_idle:{event.Name}")
 
     instance = NamedOperationInstance()
 
-    async def allow(
+    def allow(
         ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event
     ) -> bool:
         assert isinstance(ctx, hsm.Context)
@@ -862,17 +865,17 @@ async def test_snake_case_named_operation_dsl_builds_and_runs_model():
         inst.log.append(f"guard:{event.Name}")
         return True
 
-    async def leave_idle(
+    def leave_idle(
         ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event
     ) -> None:
         inst.log.append(f"exit:{event.Name}")
 
-    async def effect(
+    def effect(
         ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event
     ) -> None:
         inst.log.append(f"effect:{event.Name}")
 
-    async def enter_done(
+    def enter_done(
         ctx: hsm.Context, inst: NamedOperationInstance, event: hsm.Event
     ) -> None:
         inst.log.append(f"enter_done:{event.Name}")
@@ -899,13 +902,13 @@ async def test_snake_case_named_operation_dsl_builds_and_runs_model():
         hsm.state("done", hsm.entry("enter_done")),
     )
 
-    ctx = hsm.context()
-    await hsm.start(ctx, instance, model)
-    await hsm.dispatch(ctx, instance, hsm.event("go"))
+    ctx = hsm.Context()
+    await hsm.started(ctx, instance, model)
+    await hsm.dispatch(ctx, instance, hsm.Event(name="go"))
 
     assert instance.state() == "/NamedOperationDslMachine/done"
     assert instance.log == [
-        "enter_idle:hsm_initial",
+        "enter_idle:hsm/initial",
         "guard:go",
         "exit:go",
         "effect:go",
@@ -932,6 +935,76 @@ def test_named_operation_dsl_rejects_missing_operation_references():
                 hsm.Transition(
                     hsm.On("go"),
                     hsm.Guard("missing"),
+                    hsm.Target("../done"),
+                ),
+            ),
+            hsm.State("done"),
+        )
+
+    with pytest.raises(
+        hsm.ValidationError, match='operation name "bad/name" cannot contain "/"'
+    ):
+        def work(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> None:
+            del ctx, inst, event
+
+        hsm.Define(
+            "BadNamedOperationReferenceMachine",
+            hsm.Operation("work", work),
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State("idle", hsm.Entry("bad/name")),
+        )
+
+    with pytest.raises(
+        hsm.ValidationError, match='operation name "bad/name" cannot contain "/"'
+    ):
+        def allow(ctx: hsm.Context, inst: ParityInstance, event: hsm.Event) -> bool:
+            del ctx, inst, event
+            return True
+
+        hsm.Define(
+            "BadNamedGuardReferenceMachine",
+            hsm.Operation("allow", allow),
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State(
+                "idle",
+                hsm.Transition(
+                    hsm.On("go"),
+                    hsm.Guard("bad/name"),
+                    hsm.Target("../done"),
+                ),
+            ),
+            hsm.State("done"),
+        )
+
+
+def test_named_operation_dsl_rejects_async_sequential_operation_references():
+    async def async_operation(
+        ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
+    ) -> None:
+        del ctx, inst, event
+
+    with pytest.raises(
+        hsm.ValidationError, match="entry must be a synchronous function"
+    ):
+        hsm.Define(
+            "AsyncNamedEntryOperationMachine",
+            hsm.Operation("enter", async_operation),
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State("idle", hsm.Entry("enter")),
+        )
+
+    with pytest.raises(
+        hsm.ValidationError, match="guard must be a synchronous function"
+    ):
+        hsm.Define(
+            "AsyncNamedGuardOperationMachine",
+            hsm.Operation("allow", async_operation),
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State(
+                "idle",
+                hsm.Transition(
+                    hsm.On("go"),
+                    hsm.Guard("allow"),
                     hsm.Target("../done"),
                 ),
             ),
