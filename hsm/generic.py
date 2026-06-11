@@ -6,6 +6,10 @@ import asyncio
 TReturn = typing.TypeVar("TReturn")
 TItem = typing.TypeVar("TItem")
 
+QueuePushResult = tuple[BaseException | None]
+type QueuePopResult[TItem] = tuple[TItem, bool, BaseException | None]
+QueueLenResult = tuple[int, BaseException | None]
+
 
 @typing.final
 class Awaitable(typing.Generic[TReturn]):
@@ -23,6 +27,7 @@ class Awaitable(typing.Generic[TReturn]):
 
     async def wait(self) -> None:
         if self._future.done():
+            _ = self._future.result()
             return
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future[TReturn] = loop.create_future()
@@ -30,7 +35,10 @@ class Awaitable(typing.Generic[TReturn]):
         def wake(source: concurrent.futures.Future[TReturn]) -> None:
             def complete() -> None:
                 if not waiter.done():
-                    waiter.set_result(source.result())
+                    try:
+                        waiter.set_result(source.result())
+                    except BaseException as error:
+                        waiter.set_exception(error)
 
             try:
                 _ = loop.call_soon_threadsafe(complete)
@@ -65,16 +73,16 @@ class Queue(typing.Generic[TItem]):
     def __init__(self) -> None:
         self._items: collections.deque[TItem] = collections.deque()
 
-    def push(self, item: TItem) -> BaseException | None:
+    def push(self, item: TItem) -> QueuePushResult:
         self._items.append(item)
-        return None
+        return (None,)
 
-    def pop(self) -> tuple[TItem, bool, BaseException | None]:
+    def pop(self) -> QueuePopResult[TItem]:
         if not self._items:
             return typing.cast(TItem, None), False, None
         return self._items.popleft(), True, None
 
-    def len(self) -> tuple[int, BaseException | None]:
+    def len(self) -> QueueLenResult:
         return len(self._items), None
 
     def clear(self) -> None:

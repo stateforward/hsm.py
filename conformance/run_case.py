@@ -89,8 +89,9 @@ class ConformanceInstance(hsm.Instance):
     pass
 
 
-class ConformanceClock:
+class ConformanceClock(hsm.Clock):
     def __init__(self, sleep: Callable[[timedelta], Any]) -> None:
+        super().__init__(sleep=sleep)
         self._sleep = sleep
 
     async def Sleep(self, duration: timedelta) -> None:
@@ -240,15 +241,20 @@ class Runner:
         self.validate_behavior_programs()
         if self.validation_mode:
             self.validate_ir_shape(model_ir)
-        for child_model_ir in self.case.get("models", []):
+        child_model_irs = self.case.get("models", [])
+        for child_model_ir in child_model_irs:
             child_name = self._require_string(child_model_ir, "name")
             if child_name == self.model_name or child_name in self.model_irs_by_name:
                 raise ConformanceError(f"duplicate model {child_name!r}")
             self.model_irs_by_name[child_name] = child_model_ir
-            if self.validation_mode:
+        if self.validation_mode:
+            for child_model_ir in child_model_irs:
                 self.validate_ir_shape(child_model_ir)
-                self.validate_model_references(child_model_ir)
+        for child_model_ir in child_model_irs:
             self.validate_trigger_operands(child_model_ir)
+        if self.validation_mode:
+            for child_model_ir in child_model_irs:
+                self.validate_model_references(child_model_ir)
         self.validate_trigger_operands(model_ir)
         if self.validation_mode:
             self.validate_model_references(model_ir)
@@ -528,7 +534,7 @@ class Runner:
             if "duration_ms" in trigger:
                 millis = int(trigger["duration_ms"])
 
-                async def duration(
+                def duration(
                     ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
                 ) -> timedelta:
                     self.note_timer_scheduled()
@@ -538,7 +544,7 @@ class Runner:
             elif "time_ms" in trigger:
                 millis = int(trigger["time_ms"])
 
-                async def timepoint(
+                def timepoint(
                     ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
                 ) -> datetime:
                     self.note_timer_scheduled()
@@ -595,11 +601,13 @@ class Runner:
         behavior = self.behavior_callback(behavior_id, role="timer")
         should_trace_schedule = self.behavior_is_silent_timer_source(behavior_id)
 
-        async def callback(
+        def callback(
             ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
         ) -> Any:
             try:
-                value = await behavior(ctx, instance, event)
+                value = behavior(ctx, instance, event)
+                if hasattr(value, "__await__"):
+                    raise ConformanceSkip("timer behavior source must be synchronous")
                 if timepoint:
                     result = datetime.now() + self.timepoint_duration_from_millis(value)
                 else:
@@ -902,6 +910,7 @@ class Runner:
         attributes = self._optional_object(model_ir, "attributes")
         state_paths: set[str] = set()
         state_kinds: dict[str, str] = {}
+        state_machines: dict[str, str] = {}
         entry_points: set[str] = set()
         exit_points: set[str] = set()
 
@@ -949,8 +958,28 @@ class Runner:
                     raise ConformanceError(f"duplicate state {name!r}")
                 names.add(name)
                 path = posixpath.normpath(owner_path + "/" + name)
+                kind = state.get("kind", "state")
+                if (
+                    kind in {"shallow_history", "deep_history"}
+                    and owner_path == "/" + model_name
+                ):
+                    raise ConformanceError(
+                        "history must be declared within a nested StateElement"
+                    )
+                if kind in {"shallow_history", "deep_history"} and not state.get(
+                    "transitions"
+                ):
+                    raise ConformanceError("history requires a default transition")
+                if kind == "submachine" and state.get("states"):
+                    raise ConformanceError(
+                        "submachine state cannot contain nested states"
+                    )
                 state_paths.add(path)
-                state_kinds[path] = state.get("kind", "state")
+                state_kinds[path] = kind
+                if kind == "submachine":
+                    machine = state.get("machine")
+                    if isinstance(machine, str):
+                        state_machines[path] = machine
                 state_names(state.get("states", []), path)
             return names
 
@@ -970,11 +999,23 @@ class Runner:
                     raise ConformanceError(f"connection point name collision {name!r}")
                 target_set.add(name)
 
-        def entry_connector_path(name: str) -> str:
+        def connection_path(name: str) -> str:
             return posixpath.normpath(f"/{model_name}/{name}")
 
-        entry_paths = {entry_connector_path(name) for name in entry_points}
-        exit_paths = {connection_path(name, "exit") for name in exit_points}
+        entry_paths = {connection_path(name) for name in entry_points}
+        exit_paths = {connection_path(name) for name in exit_points}
+
+        def connection_names(machine: str, field: str) -> set[str]:
+            child_model = self.model_irs_by_name.get(machine)
+            if not isinstance(child_model, dict):
+                return set()
+            names: set[str] = set()
+            for point in child_model.get(field, []):
+                if isinstance(point, dict):
+                    name = point.get("name")
+                    if isinstance(name, str):
+                        names.add(name)
+            return names
 
         def validate_state_target(path: str) -> None:
             if path not in state_paths:
@@ -1063,6 +1104,32 @@ class Runner:
             trigger = transition.get("trigger")
             if isinstance(trigger, dict):
                 validate_trigger(trigger)
+                if trigger.get("kind") == "exit_point":
+                    trigger_source = source_path or owner_path
+                    if state_kinds.get(trigger_source) != "submachine":
+                        raise ConformanceError(
+                            "ExitPoint outcome can only be handled by a SubmachineState"
+                        )
+                    exit_point_name = self._require_string(trigger, "exit_point")
+                    machine = state_machines.get(trigger_source)
+                    if (
+                        machine is not None
+                        and exit_point_name
+                        not in connection_names(machine, "exit_points")
+                    ):
+                        raise ConformanceError(
+                            f"state '{trigger_source}' has no exit point '{exit_point_name}'"
+                        )
+            if "entry_point" in transition:
+                entry_point_name = self._require_string(transition, "entry_point")
+                if "/" in entry_point_name:
+                    raise ConformanceError(
+                        f'entry point name "{entry_point_name}" cannot contain "/"'
+                    )
+                if "target" not in transition:
+                    raise ConformanceError(
+                        "entry point selector can only target a SubmachineStateElement"
+                    )
             if "target" in transition:
                 raw_target = self._require_string(transition, "target")
                 if raw_target.startswith(".exit/"):
@@ -1075,7 +1142,7 @@ class Runner:
                         owner_path,
                         bare_relative_to_owner=bare_relative_targets,
                     )
-                )
+                    )
                 if any(
                     state_kinds.get(prefix) == "submachine"
                     for prefix in self.path_prefixes(target_path)[:-1]
@@ -1083,6 +1150,23 @@ class Runner:
                     raise ConformanceError(
                         f"cannot target internal state {target_path!r}"
                     )
+                if target_path in entry_paths:
+                    raise ConformanceError("entry point target cannot be internal")
+                if "entry_point" in transition:
+                    entry_point_name = self._require_string(transition, "entry_point")
+                    if state_kinds.get(target_path) != "submachine":
+                        raise ConformanceError(
+                            "entry point selector can only target a SubmachineStateElement"
+                        )
+                    machine = state_machines.get(target_path)
+                    if (
+                        machine is not None
+                        and entry_point_name
+                        not in connection_names(machine, "entry_points")
+                    ):
+                        raise ConformanceError(
+                            f"state '{target_path}' has no entry point '{entry_point_name}'"
+                        )
                 validate_state_target(target_path)
 
         def walk_state(state: dict[str, Any], owner_path: str) -> None:
@@ -1865,11 +1949,10 @@ class Runner:
             instance = self.instance_for_step(step)
             self.flush_timer_scheduled()
             self.trace_lifecycle(step, "restart")
-            await instance.restart(self.ctx)
-            self.clear_deferred_events_for_instance(instance)
             if self.trace_contract_includes("timer_cancelled"):
                 self.trace.append({"type": "timer_cancelled"})
-            await asyncio.sleep(0)
+            await instance.restart(self.ctx)
+            self.clear_deferred_events_for_instance(instance)
             self.last_stable_label = None
             return
         if op == "stop":
@@ -2153,27 +2236,24 @@ class Runner:
 
         return ConformanceClock(sleep)
 
-    def _queue_from_fifo(
-        self, fifo: hsm_core.generic.Queue[hsm.Event]
-    ) -> hsm_core.generic.Queue[hsm.Event]:
+    def _queue_from_fifo(self, fifo: hsm.Fifo) -> hsm.Fifo:
         return fifo
 
-    def queue_from_config(
-        self, config_ir: dict[str, Any]
-    ) -> hsm_core.generic.Queue[hsm.Event] | None:
+    def queue_from_config(self, config_ir: dict[str, Any]) -> hsm.Fifo | None:
         queue_id = config_ir.get("Queue", config_ir.get("queue"))
         if queue_id is None:
             return None
         if queue_id == "len_seven":
 
-            class LenSevenFifo(hsm_core.generic.Queue[hsm.Event]):
-                def push(self, event: hsm.Event) -> BaseException | None:
-                    return None
+            class LenSevenFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
+                    del event
+                    return (None,)
 
-                def pop(self) -> tuple[hsm.Event, bool, BaseException | None]:
+                def pop(self) -> hsm.QueuePopResult:
                     return (hsm.Event(), False, None)
 
-                def len(self) -> tuple[int, BaseException | None]:
+                def len(self) -> hsm.QueueLenResult:
                     return (7, None)
 
             return self._queue_from_fifo(LenSevenFifo())
@@ -2182,15 +2262,15 @@ class Runner:
             failed = False
             runner = self
 
-            class LenErrorOnceFifo(hsm_core.generic.Queue[hsm.Event]):
-                def push(self, event: hsm.Event) -> BaseException | None:
+            class LenErrorOnceFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
                     runner.trace.append(
                         {"type": "trace", "value": f"queue:push:{event.name}"}
                     )
                     events.append(event)
-                    return None
+                    return (None,)
 
-                def pop(self) -> tuple[hsm.Event, bool, BaseException | None]:
+                def pop(self) -> hsm.QueuePopResult:
                     if not events:
                         return (hsm.Event(), False, None)
                     event = events.popleft()
@@ -2199,7 +2279,7 @@ class Runner:
                     )
                     return (event, True, None)
 
-                def len(self) -> tuple[int, BaseException | None]:
+                def len(self) -> hsm.QueueLenResult:
                     nonlocal failed
                     if not failed:
                         failed = True
@@ -2213,17 +2293,17 @@ class Runner:
         if queue_id == "push_error":
             runner = self
 
-            class PushErrorFifo(hsm_core.generic.Queue[hsm.Event]):
-                def push(self, event: hsm.Event) -> BaseException | None:
+            class PushErrorFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
                     runner.trace.append(
                         {"type": "trace", "value": f"queue:push-error:{event.name}"}
                     )
-                    return RuntimeError("queue push boom")
+                    return (RuntimeError("queue push boom"),)
 
-                def pop(self) -> tuple[hsm.Event, bool, BaseException | None]:
+                def pop(self) -> hsm.QueuePopResult:
                     return (hsm.Event(), False, None)
 
-                def len(self) -> tuple[int, BaseException | None]:
+                def len(self) -> hsm.QueueLenResult:
                     return (0, None)
 
             return self._queue_from_fifo(PushErrorFifo())
@@ -2232,15 +2312,15 @@ class Runner:
             failed = False
             runner = self
 
-            class PopErrorOnceFifo(hsm_core.generic.Queue[hsm.Event]):
-                def push(self, event: hsm.Event) -> BaseException | None:
+            class PopErrorOnceFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
                     runner.trace.append(
                         {"type": "trace", "value": f"queue:push:{event.name}"}
                     )
                     events.append(event)
-                    return None
+                    return (None,)
 
-                def pop(self) -> tuple[hsm.Event, bool, BaseException | None]:
+                def pop(self) -> hsm.QueuePopResult:
                     nonlocal failed
                     if not events:
                         return (hsm.Event(), False, None)
@@ -2256,7 +2336,7 @@ class Runner:
                     )
                     return (event, True, None)
 
-                def len(self) -> tuple[int, BaseException | None]:
+                def len(self) -> hsm.QueueLenResult:
                     return (len(events), None)
 
             return self._queue_from_fifo(PopErrorOnceFifo())
@@ -2264,15 +2344,15 @@ class Runner:
             events: deque[hsm.Event] = deque()
             runner = self
 
-            class TraceLifoFifo(hsm_core.generic.Queue[hsm.Event]):
-                def push(self, event: hsm.Event) -> BaseException | None:
+            class TraceLifoFifo(hsm.Fifo):
+                def push(self, event: hsm.Event) -> hsm.QueuePushResult:
                     runner.trace.append(
                         {"type": "trace", "value": f"queue:push:{event.name}"}
                     )
                     events.append(event)
-                    return None
+                    return (None,)
 
-                def pop(self) -> tuple[hsm.Event, bool, BaseException | None]:
+                def pop(self) -> hsm.QueuePopResult:
                     if not events:
                         return (hsm.Event(), False, None)
                     event = events.pop()
@@ -2281,7 +2361,7 @@ class Runner:
                     )
                     return (event, True, None)
 
-                def len(self) -> tuple[int, BaseException | None]:
+                def len(self) -> hsm.QueueLenResult:
                     return (len(events), None)
 
             return self._queue_from_fifo(TraceLifoFifo())
@@ -2290,15 +2370,15 @@ class Runner:
         events: deque[hsm.Event] = deque()
         runner = self
 
-        class TraceFifo(hsm_core.generic.Queue[hsm.Event]):
-            def push(self, event: hsm.Event) -> BaseException | None:
+        class TraceFifo(hsm.Fifo):
+            def push(self, event: hsm.Event) -> hsm.QueuePushResult:
                 runner.trace.append(
                     {"type": "trace", "value": f"queue:push:{event.name}"}
                 )
                 events.append(event)
-                return None
+                return (None,)
 
-            def pop(self) -> tuple[hsm.Event, bool, BaseException | None]:
+            def pop(self) -> hsm.QueuePopResult:
                 if not events:
                     return (hsm.Event(), False, None)
                 event = events.popleft()
@@ -2307,7 +2387,7 @@ class Runner:
                 )
                 return (event, True, None)
 
-            def len(self) -> tuple[int, BaseException | None]:
+            def len(self) -> hsm.QueueLenResult:
                 return (len(events), None)
 
         return self._queue_from_fifo(TraceFifo())
@@ -2421,19 +2501,20 @@ class Runner:
             "attributes": attributes,
             "queue_len": snapshot.QueueLen,
         }
-        events = []
-        for event in getattr(snapshot, "Events", ()) or ():
-            events.append(
+        transitions = []
+        for transition in getattr(snapshot, "Transitions", ()) or ():
+            transitions.append(
                 {
-                    "name": event.Name,
-                    "kind": int(event.Kind),
-                    "target": event.Target,
-                    "guard": event.GuardElement,
-                    "schema": self.normalize_value(event.Schema),
+                    "name": transition.qualified_name,
+                    "kind": int(transition.kind),
+                    "source": transition.source,
+                    "target": transition.target or None,
+                    "events": list(transition.events),
+                    "guard": bool(transition.guard),
                 }
             )
-        if events:
-            normalized["events"] = events
+        if transitions:
+            normalized["transitions"] = transitions
         return normalized
 
     def group_snapshot(self, group_id: str) -> dict[str, Any]:

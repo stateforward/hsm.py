@@ -201,7 +201,7 @@ def test_activity_explicit_dispatch_is_not_deferred_as_generated_change_event():
     asyncio.run(_activity_explicit_dispatch_is_not_deferred_as_generated_change_event())
 
 
-async def _entry_snapshot_observes_entered_state() -> None:
+async def _entry_snapshot_observes_pre_entry_state() -> None:
     instance = RegressionInstance()
 
     def snapshot_entry(
@@ -217,12 +217,12 @@ async def _entry_snapshot_observes_entered_state() -> None:
 
     await hsm.Started(hsm.Context(), instance, model)
 
-    assert instance.log == ["/EntrySnapshotRegression/idle"]
+    assert instance.log == ["/EntrySnapshotRegression"]
     assert instance.state() == "/EntrySnapshotRegression/idle"
 
 
-def test_entry_snapshot_observes_entered_state():
-    asyncio.run(_entry_snapshot_observes_entered_state())
+def test_entry_snapshot_observes_pre_entry_state():
+    asyncio.run(_entry_snapshot_observes_pre_entry_state())
 
 
 async def _failed_nested_initial_preserves_entered_parent_state() -> None:
@@ -677,7 +677,7 @@ def test_conformance_runner_reports_unknown_group_with_group_context():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-async def _snapshot_events_include_ancestor_and_targetless_transitions() -> None:
+async def _snapshot_transitions_include_ancestor_and_targetless_transitions() -> None:
     instance = RegressionInstance()
     model = hsm.Define(
         "SnapshotEventDetailsRegression",
@@ -697,13 +697,20 @@ async def _snapshot_events_include_ancestor_and_targetless_transitions() -> None
     await hsm.Started(hsm.Context(), instance, model)
     snapshot = instance.take_snapshot()
 
-    event_details = {event.Name: event for event in snapshot.Events}
-    assert event_details["parent_go"].Target == "/SnapshotEventDetailsRegression/done"
-    assert event_details["ping"].Target is None
+    transition_details = {
+        event: transition
+        for transition in snapshot.Transitions
+        for event in transition.events
+    }
+    assert (
+        transition_details["parent_go"].target
+        == "/SnapshotEventDetailsRegression/done"
+    )
+    assert transition_details["ping"].target == ""
 
 
-def test_snapshot_events_include_ancestor_and_targetless_transitions():
-    asyncio.run(_snapshot_events_include_ancestor_and_targetless_transitions())
+def test_snapshot_transitions_include_ancestor_and_targetless_transitions():
+    asyncio.run(_snapshot_transitions_include_ancestor_and_targetless_transitions())
 
 
 async def _deferred_queue_replay_does_not_require_event_identity() -> None:
@@ -718,7 +725,6 @@ async def _deferred_queue_replay_does_not_require_event_identity() -> None:
             id=event.id,
             source=event.source,
             target=event.target,
-            qualified_name=event.qualified_name,
             schema=event.schema,
         )
 
@@ -864,11 +870,12 @@ async def _same_source_same_callback_timers_do_not_collapse() -> None:
             break
 
     assert len(sleepers) == 2
-    waiting = model.get("/DuplicateTimerTriggerRegression/waiting", hsm.StateElement)
-    assert waiting is not None
-    first_transition = model.get(waiting.transitions[0], hsm.TransitionElement)
-    second_transition = model.get(waiting.transitions[1], hsm.TransitionElement)
-    assert first_transition is not None and second_transition is not None
+    waiting = model.members["/DuplicateTimerTriggerRegression/waiting"]
+    assert isinstance(waiting, hsm.StateElement)
+    first_transition = model.members[waiting.transitions[0]]
+    second_transition = model.members[waiting.transitions[1]]
+    assert isinstance(first_transition, hsm.TransitionElement)
+    assert isinstance(second_transition, hsm.TransitionElement)
     assert first_transition.events != second_transition.events
 
 

@@ -1089,29 +1089,107 @@ class Timer:
         return was_active
 
 
-class Clock(typing.Protocol):
+class Clock:
+    def __init__(
+        self,
+        *,
+        sleep: typing.Callable[[datetime.timedelta], typing.Any] | None = None,
+        after: typing.Callable[[datetime.timedelta], typing.Any] | None = None,
+        new_timer: typing.Callable[[datetime.timedelta], Timer] | None = None,
+        Sleep: typing.Callable[[datetime.timedelta], typing.Any]
+        | None
+        | object = dataclasses.MISSING,
+        After: typing.Callable[[datetime.timedelta], typing.Any]
+        | None
+        | object = dataclasses.MISSING,
+        NewTimer: typing.Callable[[datetime.timedelta], Timer]
+        | None
+        | object = dataclasses.MISSING,
+    ) -> None:
+        if Sleep is not dataclasses.MISSING:
+            sleep = typing.cast(
+                typing.Callable[[datetime.timedelta], typing.Any] | None, Sleep
+            )
+        if After is not dataclasses.MISSING:
+            after = typing.cast(
+                typing.Callable[[datetime.timedelta], typing.Any] | None, After
+            )
+        if NewTimer is not dataclasses.MISSING:
+            new_timer = typing.cast(
+                typing.Callable[[datetime.timedelta], Timer] | None, NewTimer
+            )
+        self._sleep = sleep
+        self._after = after
+        self._new_timer = new_timer
+
+    async def Sleep(self, duration: datetime.timedelta) -> None:
+        if self._sleep is None:
+            _ = await sleep(duration)
+            return
+        result: object = self._sleep(duration)
+        if isinstance(result, collections.abc.Awaitable):
+            await typing.cast(collections.abc.Awaitable[object], result)
+
     def After(
         self, duration: datetime.timedelta
-    ) -> asyncio.Task[datetime.datetime]: ...
+    ) -> collections.abc.Awaitable[datetime.datetime]:
+        if self._after is not None:
+            result = self._after(duration)
+            if isinstance(result, collections.abc.Awaitable):
+                return typing.cast(
+                    collections.abc.Awaitable[datetime.datetime], result
+                )
 
-    def NewTimer(self, duration: datetime.timedelta) -> Timer: ...
+            async def completed_after() -> datetime.datetime:
+                if isinstance(result, datetime.datetime):
+                    return result
+                return datetime.datetime.now()
 
+            return asyncio.Task(
+                completed_after(),
+                loop=asyncio.get_running_loop(),
+                eager_start=True,
+            )
 
-class DefaultClock:
-    def After(self, duration: datetime.timedelta) -> asyncio.Task[datetime.datetime]:
+        async def wait() -> datetime.datetime:
+            if self._sleep is None:
+                return await sleep(duration)
+            result: object = self._sleep(duration)
+            if isinstance(result, collections.abc.Awaitable):
+                result = await typing.cast(collections.abc.Awaitable[object], result)
+            if isinstance(result, datetime.datetime):
+                return result
+            return datetime.datetime.now()
+
         return asyncio.Task(
-            sleep(duration),
+            wait(),
             loop=asyncio.get_running_loop(),
             eager_start=True,
         )
 
     def NewTimer(self, duration: datetime.timedelta) -> Timer:
+        if self._new_timer is not None:
+            return self._new_timer(duration)
         return Timer(duration)
 
     after: typing.Callable[
-        [typing.Self, datetime.timedelta], asyncio.Task[datetime.datetime]
+        [typing.Self, datetime.timedelta],
+        collections.abc.Awaitable[datetime.datetime],
     ] = After
+    sleep: typing.Callable[[typing.Self, datetime.timedelta], typing.Awaitable[None]] = (
+        Sleep
+    )
     new_timer: typing.Callable[[typing.Self, datetime.timedelta], Timer] = NewTimer
+
+
+class DefaultClock(Clock):
+    pass
+
+
+QueuePushResult = generic.QueuePushResult
+QueuePopResult: typing.TypeAlias = generic.QueuePopResult[Event]
+QueueLenResult = generic.QueueLenResult
+Fifo: typing.TypeAlias = generic.Queue[Event]
 
 
 @dataclasses.dataclass(init=False, kw_only=True, frozen=True)
@@ -1120,7 +1198,7 @@ class Config(typing.Generic[TData]):
     name: str = dataclasses.field(default="")
     data: TData | None = dataclasses.field(default=None)
     clock: Clock | None = dataclasses.field(default=None)
-    queue: generic.Queue[Event] | None = dataclasses.field(default=None)
+    queue: Fifo | MultiQueue | None = dataclasses.field(default=None)
 
     def __init__(
         self,
@@ -1129,12 +1207,12 @@ class Config(typing.Generic[TData]):
         name: str = "",
         data: TData | None = None,
         clock: Clock | None = None,
-        queue: generic.Queue[Event] | None = None,
+        queue: Fifo | MultiQueue | None = None,
         ID: str | object = dataclasses.MISSING,
         Name: str | object = dataclasses.MISSING,
         Data: TData | object = dataclasses.MISSING,
         Clock: Clock | None | object = dataclasses.MISSING,
-        Queue: generic.Queue[Event] | None | object = dataclasses.MISSING,
+        Queue: Fifo | MultiQueue | None | object = dataclasses.MISSING,
     ) -> None:
         if ID is not dataclasses.MISSING:
             id = typing.cast(str, ID)
@@ -1145,7 +1223,7 @@ class Config(typing.Generic[TData]):
         if Clock is not dataclasses.MISSING:
             clock = typing.cast("Clock | None", Clock)
         if Queue is not dataclasses.MISSING:
-            queue = typing.cast(generic.Queue[Event] | None, Queue)
+            queue = typing.cast(Fifo | MultiQueue | None, Queue)
         object.__setattr__(self, "id", id)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "data", data)
@@ -1169,7 +1247,7 @@ class Config(typing.Generic[TData]):
         return self.clock
 
     @property
-    def Queue(self) -> generic.Queue[Event] | None:
+    def Queue(self) -> Fifo | MultiQueue | None:
         return self.queue
 
 
@@ -1223,7 +1301,7 @@ class Snapshot:
 
 
 InitialEvent = Event(name="hsm/initial", kind=EventKind)
-ErrorEvent = Event(name="hsm/error", kind=ErrorEventKind)
+ErrorEvent = Event(name="hsm_error", kind=ErrorEventKind)
 AnyEvent = Event(name="*", kind=EventKind)
 FinalEvent = Event(name="hsm/final", kind=CompletionEventKind)
 InfiniteDuration = datetime.timedelta(-1)
@@ -1497,11 +1575,40 @@ class DefaultModelFinalizer(ModelFinalizer):
     ) -> TransitionPath:
         if transition.target == "":
             return TransitionPath()
+        source = model.members.get(transition.source)
+        if isinstance(source, EntryPointElement):
+            boundary = posixpath.dirname(source.owner())
+            return TransitionPath(
+                enter=self._finalize_enter_path(
+                    model, posixpath.dirname(boundary), transition.target
+                )
+            )
+        target = model.members.get(transition.target)
+        if isinstance(target, EntryPointElement):
+            boundary = posixpath.dirname(target.owner())
+            lca = (
+                posixpath.dirname(transition.source)
+                if kind.Is(transition.kind, SelfKind)
+                else LCA(current, boundary)
+            )
+            if kind.Is(transition.kind, ExternalKind) and transition.source == boundary:
+                lca = posixpath.dirname(boundary)
+            return TransitionPath(
+                enter=[transition.target],
+                exit=self._finalize_exit_path(lca, current),
+            )
         lca = (
             posixpath.dirname(transition.source)
             if kind.Is(transition.kind, SelfKind)
             else LCA(current, transition.target)
         )
+        if (
+            kind.Is(transition.kind, LocalKind)
+            and isinstance(target, StateElement)
+            and kind.Is(target.kind, SubmachineStateKind)
+            and IsAncestor(target.qualified_name, current)
+        ):
+            lca = posixpath.dirname(target.qualified_name)
         return TransitionPath(
             enter=self._finalize_enter_path(model, lca, transition.target),
             exit=self._finalize_exit_path(lca, current),
@@ -1638,6 +1745,12 @@ class RedefinableTransition(RedefinableElement[TransitionElement]):
                     f"transition '{self.qualified_name}' not found",
                 )
             if transition.kind != TransitionKind:
+                return transition
+            target = model.members.get(transition.target)
+            if isinstance(target, EntryPointElement) and transition.source == (
+                posixpath.dirname(target.owner())
+            ):
+                transition.kind = ExternalKind
                 return transition
             if transition.target == transition.source:
                 transition.kind = SelfKind
@@ -2583,22 +2696,44 @@ class Mutex:
 
 @typing.final
 class MultiQueue:
-    def __init__(self, fifo: generic.Queue[Event] | None = None) -> None:
+    def __init__(self, fifo: "Fifo | MultiQueue | None" = None) -> None:
         self._lock = threading.Lock()
         self._lifo: collections.deque[Event] = collections.deque()
-        self._fifo: generic.Queue[Event] = fifo or generic.Queue()
+        self._fifo: Fifo | MultiQueue = fifo or Fifo()
+        for method in ("push", "pop", "len"):
+            if not callable(getattr(self._fifo, method, None)):
+                raise TypeError(f"fifo must define callable {method}")
+
+    @typing.overload
+    def push(
+        self, ctx_or_event: Event[typing.Any], event: None = None
+    ) -> QueuePushResult: ...
+
+    @typing.overload
+    def push(
+        self, ctx_or_event: context.Context, event: Event[typing.Any]
+    ) -> BaseException | None: ...
 
     def push(
-        self, _: context.Context, event: Event[typing.Any]
-    ) -> BaseException | None:
+        self,
+        ctx_or_event: context.Context | Event[typing.Any],
+        event: Event[typing.Any] | None = None,
+    ) -> BaseException | None | QueuePushResult:
+        direct = event is None
+        if event is None:
+            event = typing.cast(Event[typing.Any], ctx_or_event)
         if kind.Is(event.kind, CompletionEventKind):
             with self._lock:
                 self._lifo.appendleft(event)
-            return None
+            return (None,) if direct else None
         with self._lock:
-            return self._fifo.push(event)
+            result = self._fifo.push(event)
+        error = result[0]
+        return (error,) if direct else error
 
-    def pop(self, _: context.Context) -> tuple[Event, bool, BaseException | None]:
+    def pop(
+        self, _: context.Context | None = None
+    ) -> tuple[Event, bool, BaseException | None]:
         with self._lock:
             if self._lifo:
                 return (self._lifo.popleft(), True, None)
@@ -2607,7 +2742,7 @@ class MultiQueue:
             except BaseException as error:
                 return (Event(), False, error)
 
-    def len(self, _: context.Context) -> tuple[int, BaseException | None]:
+    def len(self, _: context.Context | None = None) -> tuple[int, BaseException | None]:
         with self._lock:
             completion_len = len(self._lifo)
             try:
@@ -2622,6 +2757,9 @@ class MultiQueue:
         with self._lock:
             self._lifo.clear()
             self._fifo.clear()
+
+
+Queue = MultiQueue
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -2660,7 +2798,11 @@ class Instance:
         self, ctx: context.Context, event: Event
     ) -> collections.abc.Awaitable[None]:
         if self.__hsm is None:
-            return _error(RuntimeError("dispatch requires a started HSM"))
+            return _error(
+                ErrorValidatingModel(
+                    Location.capture(), "dispatch requires a started HSM"
+                )
+            )
         return self.__hsm.dispatch(ctx, event)
 
     def state(self) -> str:
@@ -2702,7 +2844,11 @@ class Instance:
         self, ctx: context.Context, data: TData = None
     ) -> collections.abc.Awaitable["HSM[typing.Self] | None"]:
         if self.__hsm is None:
-            return _error(RuntimeError("restart requires a started HSM"))
+            return _error(
+                ErrorValidatingModel(
+                    Location.capture(), "restart requires a started HSM"
+                )
+            )
         return self.__hsm.restart(ctx, data)
 
     def take_snapshot(self) -> Snapshot:
@@ -2739,7 +2885,7 @@ class HSM(BehaviorElement[TInstance]):
                 await self._processing.lock()
                 try:
                     state = await self._enter(
-                        ctx, self.model, InitialEvent.WithData(event.data), True
+                        ctx, self.model, InitialEvent.WithData(event.data), False
                     )
                     if state is not None:
                         self._state = state
@@ -2769,7 +2915,9 @@ class HSM(BehaviorElement[TInstance]):
         self._instance = instance
         self._processing = Mutex()
         self._queue = (
-            MultiQueue(config.Queue) if config.Queue is not None else MultiQueue()
+            config.Queue
+            if isinstance(config.Queue, MultiQueue)
+            else MultiQueue(config.Queue)
         )
         # self._after = _AfterWaiters()
         self._state = model
@@ -2791,6 +2939,8 @@ class HSM(BehaviorElement[TInstance]):
         return self._clock
 
     async def _start(self, ctx: context.Context, data: TData = None) -> typing.Self:
+        if self._state != self.model or self._processing.locked():
+            raise ErrorValidatingModel(Location.capture(), "already started HSM")
         maybe_instances = ctx.value(Keys.Instances)
         if isinstance(maybe_instances, collections.abc.MutableMapping):
             instances = typing.cast(
@@ -2820,7 +2970,7 @@ class HSM(BehaviorElement[TInstance]):
         ctx: context.Context,
         vertex: VertexElement,
         event: Event[TData],
-        default_entry: bool,
+        explicit_entry: bool,
     ) -> VertexElement | None:
         if isinstance(vertex, StateElement):
             state = vertex
@@ -2838,7 +2988,7 @@ class HSM(BehaviorElement[TInstance]):
                 if error := self._queue.push(ctx, completion_event):
                     raise error
                 return state
-            if not default_entry or state.initial == "":
+            if explicit_entry or state.initial == "":
                 return state
             initial = self.model.members[state.initial]
             if isinstance(initial, VertexElement) and initial.transitions:
@@ -2876,7 +3026,7 @@ class HSM(BehaviorElement[TInstance]):
                         VertexElement, self.model.members[entering]
                     )
                     current = await self._enter(
-                        ctx, entry_vertex, event, entering == remembered
+                        ctx, entry_vertex, event, entering != remembered
                     )
                 return current
             if not vertex.transitions:
@@ -2900,13 +3050,6 @@ class HSM(BehaviorElement[TInstance]):
         vertex: EntryPointElement,
         event: Event[TData],
     ) -> VertexElement | None:
-        boundary = get(
-            self.model,
-            posixpath.dirname(vertex.owner()),
-            VertexElement,
-        )
-        if boundary is not None:
-            self._state = boundary
         if not vertex.transitions:
             return vertex
         transition = typing.cast(
@@ -2933,11 +3076,6 @@ class HSM(BehaviorElement[TInstance]):
             target="",
             schema=event.schema,
         )
-        transitions = self.model.transition_map.get(boundary_name, {}).get(
-            exit_event.name
-        )
-        if not transitions:
-            raise RuntimeError(f'unhandled exit point "{vertex.name()}"')
         original_state = self._state
         self._state = boundary
         if vertex.transitions:
@@ -2980,11 +3118,21 @@ class HSM(BehaviorElement[TInstance]):
     ) -> None:
         if isinstance(behavior, ConcurrentBehaviorElement):
             activity_ctx = context.Context(ctx)
+
+            async def activity() -> None:
+                try:
+                    await typing.cast(
+                        collections.abc.Coroutine[None, None, None],
+                        behavior.operation(activity_ctx, self._instance, event),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    if not activity_ctx.is_done():
+                        _ = self.dispatch(ctx, ErrorEvent.WithData(error))
+
             task = asyncio.Task(
-                typing.cast(
-                    collections.abc.Coroutine[None, None, None],
-                    behavior.operation(activity_ctx, self._instance, event),
-                ),
+                activity(),
                 loop=asyncio.get_running_loop(),
                 name=behavior.qualified_name,
                 eager_start=True,
@@ -3136,7 +3284,8 @@ class HSM(BehaviorElement[TInstance]):
             else:
                 event, ok, error = self._queue.pop(ctx)
                 if error is not None:
-                    raise error
+                    event = ErrorEvent.WithData(error)
+                    ok = True
                 if not ok:
                     break
             transitioned, defer_owner, exited, source = await self._process_event(
@@ -3161,12 +3310,12 @@ class HSM(BehaviorElement[TInstance]):
                     ):
                         continue
                     if error := self._queue.push(ctx, deferred_event):
-                        raise error
+                        _ = await self._process_event(ctx, ErrorEvent.WithData(error))
                 deferred = waiting
                 continue
         for _, deferred_event in deferred:
             if error := self._queue.push(ctx, deferred_event):
-                raise error
+                _ = await self._process_event(ctx, ErrorEvent.WithData(error))
         self._processing.release()
         return
 
@@ -3209,9 +3358,9 @@ class HSM(BehaviorElement[TInstance]):
             return current
         for entering in path.enter:
             enter_vertex = typing.cast(VertexElement, self.model.members[entering])
-            default_entry = entering == transition.target
-            current = await self._enter(ctx, enter_vertex, event, default_entry)
-            if default_entry:
+            explicit_entry = entering != transition.target
+            current = await self._enter(ctx, enter_vertex, event, explicit_entry)
+            if not explicit_entry:
                 return current
         return typing.cast(VertexElement, self.model.members[transition.target])
 
@@ -3245,6 +3394,12 @@ class HSM(BehaviorElement[TInstance]):
         ctx: context.Context,
         event: Event[TData],
     ) -> collections.abc.Awaitable[None]:
+        if self._state == self.model and not self._processing.locked():
+            return _error(
+                ErrorValidatingModel(
+                    Location.capture(), "operation requires a started HSM"
+                )
+            )
         if self._processing.try_lock():
             if not event.id:
                 event = Event(
@@ -3257,15 +3412,20 @@ class HSM(BehaviorElement[TInstance]):
                     schema=event.schema,
                 )
             if error := self._queue.push(ctx, event):
-                self._processing.release()
-                raise error
+                if queue_error := self._queue.push(ctx, ErrorEvent.WithData(error)):
+                    self._processing.release()
+                    raise queue_error
             deferred: list[tuple[str, Event]] = []
             pending: list[Event] = []
             while queued := self._queue.pop(ctx):
                 queued_event, ok, error = queued
                 if error is not None:
-                    self._processing.release()
-                    raise error
+                    if queue_error := self._queue.push(
+                        ctx, ErrorEvent.WithData(error)
+                    ):
+                        self._processing.release()
+                        raise queue_error
+                    continue
                 if not ok:
                     break
                 current_qualified_name = self._state.qualified_name
@@ -3299,7 +3459,8 @@ class HSM(BehaviorElement[TInstance]):
             )
             return asyncio.shield(task)
         if error := self._queue.push(ctx, event):
-            raise error
+            if queue_error := self._queue.push(ctx, ErrorEvent.WithData(error)):
+                raise queue_error
         return self._processing.wait()
 
     async def _stop(self, ctx: context.Context) -> None:
@@ -3333,20 +3494,24 @@ class HSM(BehaviorElement[TInstance]):
     def take_snapshot(self) -> Snapshot:
         queue_len, error = self._queue.len(self._context)
         if error is not None:
-            raise error
+            queue_len = 0
+            if queue_error := self._queue.push(
+                self._context, ErrorEvent.WithData(error)
+            ):
+                raise queue_error
+        transitions: dict[str, TransitionElement] = {}
+        for transition_list in self.model.transition_map[
+            self._state.qualified_name
+        ].values():
+            for transition in transition_list:
+                transitions.setdefault(transition.qualified_name, transition)
         return Snapshot(
             ID=self.id,
             QualifiedName=self.qualified_name,
             State=self._state.qualified_name,
             Attributes={},
             QueueLen=queue_len,
-            Transitions=tuple(
-                t
-                for transitions in self.model.transition_map[
-                    self._state.qualified_name
-                ].values()
-                for t in transitions
-            ),
+            Transitions=tuple(transitions.values()),
         )
 
     def stop(self, ctx: context.Context) -> collections.abc.Awaitable[None]:
@@ -3359,6 +3524,12 @@ class HSM(BehaviorElement[TInstance]):
     def restart(
         self, ctx: context.Context, data: TData = None
     ) -> collections.abc.Awaitable[typing.Self | None]:
+        if self._state == self.model and not self._processing.locked():
+            return _error(
+                ErrorValidatingModel(
+                    Location.capture(), "restart requires a started HSM"
+                )
+            )
         if ctx is self._context:
             values: dict[typing.Hashable, object] = {}
             instances = self._context.value(Keys.Instances)
@@ -3433,8 +3604,19 @@ class Group(BehaviorElement[Instance]):
         event: Event[TData],
     ) -> collections.abc.Awaitable[None]:
         async def dispatch_all():
+            completions: list[collections.abc.Awaitable[None]] = []
+            for instance in self._instances:
+                machine = getattr(instance, "_Instance__hsm", None)
+                if (
+                    not isinstance(machine, HSM)
+                    or machine.state() == machine.model.qualified_name
+                ):
+                    continue
+                completions.append(instance.dispatch(ctx, event))
+            if not completions:
+                return
             _ = await asyncio.gather(
-                *[instance.dispatch(ctx, event) for instance in self._instances]
+                *(asyncio.shield(completion) for completion in completions)
             )
 
         return asyncio.ensure_future(dispatch_all())
@@ -3725,6 +3907,15 @@ def Started(
     model: Model,
     config: Config | None = None,
 ) -> collections.abc.Awaitable[HSM[TInstance]]:
+    existing = getattr(instance, "_Instance__hsm", None)
+    processing = getattr(existing, "_processing", None)
+    if isinstance(existing, HSM) and (
+        existing.state() != existing.model.qualified_name
+        or (isinstance(processing, Mutex) and processing.locked())
+    ):
+        raise ErrorValidatingModel(
+            Location.capture(), "instance already has a running HSM"
+        )
     hsm = HSM(instance=instance, model=model, config=config)
     return Start(ctx, hsm, config.Data if config is not None else None)
 
@@ -3919,6 +4110,7 @@ dispatch_all = DispatchAll
 dispatch_to = DispatchTo
 dispatchable = Dispatchable
 group = Group
+queue = Queue
 
 __all__ = [
     "Activity",
@@ -3980,6 +4172,7 @@ __all__ = [
     "ExitPointElement",
     "ExitPointKind",
     "ExternalKind",
+    "Fifo",
     "Final",
     "Finalizer",
     "FinalizerElement",
@@ -4007,6 +4200,7 @@ __all__ = [
     "Model",
     "ModelFinalizer",
     "ModelValidator",
+    "MultiQueue",
     "Name",
     "NamespaceElement",
     "NewGroup",
@@ -4022,6 +4216,10 @@ __all__ = [
     "PseudostateKind",
     "RedefinableElement",
     "QualifiedName",
+    "Queue",
+    "QueueLenResult",
+    "QueuePopResult",
+    "QueuePushResult",
     "Restart",
     "SelfKind",
     "SequentialKind",
@@ -4082,6 +4280,7 @@ __all__ = [
     "observe",
     "on",
     "qualified_name",
+    "queue",
     "restart",
     "shallow_history",
     "source",

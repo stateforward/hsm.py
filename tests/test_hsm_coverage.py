@@ -941,7 +941,7 @@ async def test_runtime_wrapper_group_and_call_edge_branches():
     snapshot = core.TakeSnapshot(ctx, first)
     assert snapshot.State == "/RuntimeCoverage/idle"
     assert snapshot.QueueLen == 0
-    assert all(event.Name != "ghost" for event in snapshot.Events)
+    assert all(transition.qualified_name != "ghost" for transition in snapshot.Transitions)
 
     group = core.NewGroup(first, core.NewGroup(second), None)
     assert group.state() == [

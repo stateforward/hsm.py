@@ -110,7 +110,6 @@ def test_snake_case_dsl_aliases_are_available():
         "entry": hsm.Entry,
         "event": hsm.Event,
         "completion_event": hsm.CompletionEvent,
-        "event_snapshot": hsm.EventSnapshot,
         "every": hsm.Every,
         "exit": hsm.Exit,
         "expression": hsm.Expression,
@@ -353,12 +352,12 @@ async def test_pascal_case_aliases_and_snapshot():
     assert hsm.QualifiedName(instance) == "/AliasMachine"
     assert hsm.Name(instance) == "AliasMachine"
     assert any(
-        event.Name == "go" and event.Target == "/AliasMachine/done"
-        for event in snapshot.Events
+        "go" in transition.events and transition.target == "/AliasMachine/done"
+        for transition in snapshot.Transitions
     )
     assert any(
-        event.name == "go" and event.target == "/AliasMachine/done"
-        for event in snapshot.events
+        "go" in transition.events and transition.target == "/AliasMachine/done"
+        for transition in snapshot.transitions
     )
 
     await instance.stop(instance.context())
@@ -412,8 +411,9 @@ async def test_attribute_onset_get_set_and_snapshot():
     initial_snapshot = instance.take_snapshot()
     assert initial_snapshot.Attributes["/AttributeMachine/count"] == 1
     assert any(
-        event.Name == "/AttributeMachine/count" and event.Kind == hsm.ChangeEventKind
-        for event in initial_snapshot.Events
+        transition.events == ["/AttributeMachine/count"]
+        and transition.target == "/AttributeMachine/changed"
+        for transition in initial_snapshot.Transitions
     )
 
     await hsm.Set(ctx, instance, "count", 2)
@@ -451,20 +451,14 @@ async def test_snapshot_contents_are_read_only_and_point_in_time():
 
     snapshot_payload = snapshot.Attributes["/SnapshotReadOnly/payload"]
     assert snapshot_payload["items"][0]["nested"] == ("initial",)
-    assert isinstance(snapshot.Events, tuple)
+    assert isinstance(snapshot.Transitions, tuple)
 
     with pytest.raises(TypeError):
         snapshot.Attributes["/SnapshotReadOnly/payload"] = {"items": []}
     with pytest.raises(AttributeError):
         snapshot_payload["items"][0]["nested"].append("snapshot-mutated")
     with pytest.raises(AttributeError):
-        snapshot.Events.append(
-            hsm.EventSnapshot("extra", hsm.EventKind, "", False, None)
-        )
-    with pytest.raises(AttributeError):
-        snapshot.Events[0].Name = "changed"
-    with pytest.raises(AttributeError):
-        snapshot.Events[0].Schema["fields"].append("changed")
+        snapshot.Transitions.append("extra")
 
     await instance.stop(instance.context())
 

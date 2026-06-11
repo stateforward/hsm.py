@@ -63,6 +63,7 @@ async def test_submachine_entry_point_bottom_up_event_and_exit_point():
         hsm.SubmachineState(
             "drive",
             _motor_model(),
+            hsm.Entry(_record("controller.drive")),
             hsm.Transition(
                 hsm.ExitPoint("faulted"),
                 hsm.Target("../fault"),
@@ -86,6 +87,7 @@ async def test_submachine_entry_point_bottom_up_event_and_exit_point():
     assert instance.log == [
         "controller.enable",
         "motor.resume",
+        "controller.drive",
         "motor.running",
     ]
 
@@ -94,6 +96,7 @@ async def test_submachine_entry_point_bottom_up_event_and_exit_point():
     assert instance.log == [
         "controller.enable",
         "motor.resume",
+        "controller.drive",
         "motor.running",
         "motor.faulted",
         "controller.faulted",
@@ -163,7 +166,7 @@ async def test_submachine_exit_point_effect_error_short_circuits_at_boundary():
 
 
 @pytest.mark.asyncio
-async def test_submachine_entry_point_effect_error_short_circuits_at_boundary():
+async def test_submachine_entry_point_effect_error_preserves_source_state():
     def fail(ctx, inst: SubmachineInstance, event):
         inst.log.append("entry-point:effect")
         raise RuntimeError("entry point boom")
@@ -196,7 +199,7 @@ async def test_submachine_entry_point_effect_error_short_circuits_at_boundary():
     with pytest.raises(RuntimeError, match="entry point boom"):
         await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
 
-    assert instance.state() == "/EntryPointEffectErrorParent/drive"
+    assert instance.state() == "/EntryPointEffectErrorParent/outside"
     assert instance.log == ["entry-point:effect"]
 
 
