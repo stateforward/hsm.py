@@ -47,6 +47,7 @@ OperationExpression = typing.Callable[
     [context.Context, TInstance, "Event"],
     collections.abc.Coroutine[None, None, None] | None,
 ]
+OperationMethod = typing.Callable[..., typing.Any]
 ObservationExpression = OperationExpression[TInstance]
 
 
@@ -401,7 +402,7 @@ class AttributeElement(Element, kind=AttributeKind):
 
 @dataclasses.dataclass(kw_only=True)
 class OperationElement(Element, typing.Generic[TInstance], kind=OperationKind):
-    method: OperationExpression[TInstance] | None = dataclasses.field(default=None)
+    method: OperationMethod | None = dataclasses.field(default=None)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -458,6 +459,7 @@ class Event(typing.Generic[TEventData]):
     source: str = dataclasses.field(default_factory=str)
     target: str = dataclasses.field(default_factory=str)
     schema: object | None = None
+    metadata: dict[str, object] = dataclasses.field(default_factory=dict)
 
     def WithData[TNewData](self, data: TNewData) -> "Event[TNewData]":
         return Event(
@@ -468,6 +470,7 @@ class Event(typing.Generic[TEventData]):
             source=self.source,
             target=self.target,
             schema=self.schema,
+            metadata=self.metadata,
         )
 
     def WithDataAndID[TNewData](self, data: TNewData, id: str) -> "Event[TNewData]":
@@ -479,6 +482,7 @@ class Event(typing.Generic[TEventData]):
             source=self.source,
             target=self.target,
             schema=self.schema,
+            metadata=self.metadata,
         )
 
     def with_data[TNewData](self, data: TNewData) -> "Event[TNewData]":
@@ -1054,6 +1058,10 @@ def _attribute_member_key(namespace: str, name: str) -> str:
     return join(namespace, ".attributes", name)
 
 
+def _operation_member_key(namespace: str, name: str) -> str:
+    return join(namespace, ".operations", name)
+
+
 def _attribute_element(model: Model, qualified_name: str) -> AttributeElement | None:
     for member in model.members.values():
         if (
@@ -1064,9 +1072,23 @@ def _attribute_element(model: Model, qualified_name: str) -> AttributeElement | 
     return None
 
 
+def _operation_element(
+    model: Model, qualified_name: str
+) -> OperationElement[typing.Any] | None:
+    for member in model.members.values():
+        if (
+            isinstance(member, OperationElement)
+            and member.qualified_name == qualified_name
+        ):
+            return typing.cast(OperationElement[typing.Any], member)
+    return None
+
+
 def _model_member_count(model: Model) -> int:
     return sum(
-        1 for member in model.members.values() if not isinstance(member, AttributeElement)
+        1
+        for member in model.members.values()
+        if not isinstance(member, (AttributeElement, OperationElement))
     )
 
 
@@ -1085,6 +1107,18 @@ def _attribute_scope(model: Model, owner: str) -> str:
             break
         current = parent
     return model.qualified_name
+
+
+def _behavior_scope(model: Model, owner: str) -> str:
+    current = owner
+    while current:
+        if isinstance(model.members.get(current), StateElement):
+            return current
+        parent = posixpath.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return owner
 
 
 def _resolve_attribute_qualified_name(
@@ -1115,6 +1149,33 @@ def _unique_attribute_qualified_name(model: Model, name: str) -> str | None:
         if isinstance(member, AttributeElement) and member.name() == name
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def _resolve_operation_qualified_name(
+    model: Model,
+    owner: str,
+    name: str,
+    *,
+    prefer_root: bool = False,
+) -> str:
+    if posixpath.isabs(name):
+        return join(name)
+    if prefer_root:
+        root_name = join(model.qualified_name, name)
+        if _operation_element(model, root_name) is not None:
+            return root_name
+    current = owner
+    while current:
+        qualified_name = join(current, name)
+        if _operation_element(model, qualified_name) is not None:
+            return qualified_name
+        if current == model.qualified_name:
+            break
+        parent = posixpath.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return join(model.qualified_name, name)
 
 
 def _attribute_accepts(value_type: type[typing.Any] | None, value: typing.Any) -> bool:
@@ -1237,9 +1298,7 @@ class Clock:
         if self._after is not None:
             result = self._after(duration)
             if isinstance(result, collections.abc.Awaitable):
-                return typing.cast(
-                    collections.abc.Awaitable[datetime.datetime], result
-                )
+                return typing.cast(collections.abc.Awaitable[datetime.datetime], result)
 
             async def completed_after() -> datetime.datetime:
                 if isinstance(result, datetime.datetime):
@@ -1277,9 +1336,9 @@ class Clock:
         [typing.Self, datetime.timedelta],
         collections.abc.Awaitable[datetime.datetime],
     ] = After
-    sleep: typing.Callable[[typing.Self, datetime.timedelta], typing.Awaitable[None]] = (
-        Sleep
-    )
+    sleep: typing.Callable[
+        [typing.Self, datetime.timedelta], typing.Awaitable[None]
+    ] = Sleep
     new_timer: typing.Callable[[typing.Self, datetime.timedelta], Timer] = NewTimer
 
 
@@ -2189,7 +2248,9 @@ class RedefinableTransition(RedefinableElement[TransitionElement]):
             if source_name in ("", "."):
                 source = find(stack, StateElement)
                 source_name = (
-                    source.qualified_name if source is not None else model.qualified_name
+                    source.qualified_name
+                    if source is not None
+                    else model.qualified_name
                 )
             qualified_name = _resolve_attribute_qualified_name(
                 model, source_name, self.qualified_name
@@ -2210,6 +2271,96 @@ class RedefinableTransition(RedefinableElement[TransitionElement]):
                     declared_name=self.qualified_name,
                     implicit=True,
                     location=self.location,
+                )
+            return transition
+
+    @dataclasses.dataclass(kw_only=True)
+    class OnCallEvent(RedefinableElement[TransitionElement]):
+        @typing.override
+        def redefine(
+            self,
+            model: Model,
+            stack: list[Element],
+            element: TransitionElement | None = None,
+        ) -> TransitionElement | None:
+            transition = find(stack, TransitionElement)
+            if transition is None:
+                raise ErrorValidatingModel(
+                    self.location,
+                    "OnCall() must be called within a TransitionElement",
+                )
+            if self.qualified_name == "":
+                raise ErrorValidatingModel(
+                    self.location, "OnCall() requires a non-empty operation name"
+                )
+            if "/" in self.qualified_name:
+                raise ErrorValidatingModel(
+                    self.location,
+                    f'operation name "{self.qualified_name}" cannot contain "/"',
+                )
+            event_name = f"@call:{self.qualified_name}"
+            source_name = transition.source
+            if source_name in ("", "."):
+                source = find(stack, StateElement)
+                source_name = (
+                    source.qualified_name
+                    if source is not None
+                    else model.qualified_name
+                )
+            qualified_name = _resolve_operation_qualified_name(
+                model, source_name, self.qualified_name
+            )
+            transition.events.append(event_name)
+            model.events[event_name] = Event(
+                kind=CallEventKind,
+                name=event_name,
+                source=qualified_name,
+            )
+            model.owned_elements.append(
+                RedefinableTransition.OnCallResolver(
+                    qualified_name=self.qualified_name,
+                    location=self.location,
+                    transition=transition.qualified_name,
+                )
+            )
+            return transition
+
+    @dataclasses.dataclass(kw_only=True)
+    class OnCallResolver(RedefinableElement[TransitionElement]):
+        transition: str = dataclasses.field(default_factory=str)
+
+        @typing.override
+        def redefine(
+            self,
+            model: Model,
+            stack: list[Element],
+            element: TransitionElement | None = None,
+        ) -> TransitionElement | None:
+            del stack, element
+            transition = get(model, self.transition, TransitionElement)
+            if transition is None:
+                raise ErrorValidatingModel(
+                    self.location,
+                    f"transition '{self.transition}' not found",
+                )
+            qualified_name = _resolve_operation_qualified_name(
+                model,
+                transition.source or model.qualified_name,
+                self.qualified_name,
+            )
+            if _operation_element(model, qualified_name) is None:
+                return transition
+            event_name = f"@call:{self.qualified_name}"
+            event = model.events.get(event_name)
+            if event is not None:
+                model.events[event_name] = Event(
+                    kind=event.kind,
+                    name=event.name,
+                    data=event.data,
+                    id=event.id,
+                    source=qualified_name,
+                    target=event.target,
+                    schema=event.schema,
                 )
             return transition
 
@@ -2265,7 +2416,9 @@ class RedefinableTransition(RedefinableElement[TransitionElement]):
             if source_name in ("", "."):
                 source = find(stack, StateElement)
                 source_name = (
-                    source.qualified_name if source is not None else model.qualified_name
+                    source.qualified_name
+                    if source is not None
+                    else model.qualified_name
                 )
             scope = _attribute_scope(model, source_name)
             has_attribute_event = False
@@ -2339,9 +2492,7 @@ class RedefinableTransition(RedefinableElement[TransitionElement]):
             event.startswith(ExitPointEventPrefix) for event in transition.events
         ):
             index = len(source_element.transitions)
-            for current_index, transition_name in enumerate(
-                source_element.transitions
-            ):
+            for current_index, transition_name in enumerate(source_element.transitions):
                 existing = get(model, transition_name, TransitionElement)
                 if (
                     existing is not None
@@ -2444,9 +2595,9 @@ class RedefinableModel(RedefinableElement[Model]):
 
 @dataclasses.dataclass(kw_only=True)
 class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
-    behaviors: list[OperationExpression[TInstance] | BehaviorElement[TInstance]] = (
-        dataclasses.field(default_factory=list)
-    )
+    behaviors: list[
+        str | OperationExpression[TInstance] | BehaviorElement[TInstance]
+    ] = dataclasses.field(default_factory=list)
 
     def redefine_all(
         self,
@@ -2458,7 +2609,38 @@ class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
         behaviors: list[BehaviorElement[TInstance]] = []
         for behavior_or_method in self.behaviors:
             behavior: BehaviorElement[TInstance] | None = None
-            if isinstance(behavior_or_method, BehaviorElement):
+            if isinstance(behavior_or_method, str):
+                operation = _operation_behavior(model, owner, behavior_or_method)
+                if kind == ConcurrentKind:
+
+                    async def concurrent_operation(
+                        ctx: context.Context,
+                        instance: TInstance,
+                        event: Event,
+                        operation: OperationExpression[TInstance] = typing.cast(
+                            OperationExpression[TInstance], operation
+                        ),
+                    ) -> None:
+                        result = operation(ctx, instance, event)
+                        if isinstance(result, collections.abc.Awaitable):
+                            _ = await result
+
+                    behavior = ConcurrentBehaviorElement(
+                        kind=ConcurrentKind,
+                        qualified_name=join(owner.qualified_name, behavior_or_method),
+                        operation=concurrent_operation,
+                        location=self.location,
+                    )
+                else:
+                    behavior = BehaviorElement(
+                        kind=BehaviorKind,
+                        qualified_name=join(owner.qualified_name, behavior_or_method),
+                        operation=typing.cast(
+                            OperationExpression[TInstance], operation
+                        ),
+                        location=self.location,
+                    )
+            elif isinstance(behavior_or_method, BehaviorElement):
                 behavior_element = typing.cast(
                     BehaviorElement[TInstance], behavior_or_method
                 )
@@ -2507,7 +2689,7 @@ class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
 
 @dataclasses.dataclass(kw_only=True)
 class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
-    expression: "Expression[TInstance, bool] | ConstraintElement[TInstance] | RedefinableConstraint[TInstance]"
+    expression: "str | Expression[TInstance, bool] | ConstraintElement[TInstance] | RedefinableConstraint[TInstance]"
 
     @typing.override
     def redefine(
@@ -2527,7 +2709,20 @@ class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
             self.qualified_name or ".guard",
         )
         constraint: ConstraintElement[TInstance] | None = None
-        if isinstance(self.expression, ConstraintElement):
+        if isinstance(self.expression, str):
+            operation = _operation_behavior(model, transition, self.expression)
+
+            def operation_guard(
+                ctx: context.Context, instance: TInstance, event: Event
+            ) -> bool:
+                result = operation(ctx, instance, event)
+                return bool(result)
+
+            constraint = ConstraintElement(
+                qualified_name=qualified_name,
+                expression=operation_guard,
+            )
+        elif isinstance(self.expression, ConstraintElement):
             constraint_element = typing.cast(
                 ConstraintElement[TInstance], self.expression
             )
@@ -2956,13 +3151,70 @@ class RedefinableOperation(RedefinableElement[OperationElement[TInstance]]):
         stack: list[Element],
         element: OperationElement[TInstance] | None = None,
     ) -> OperationElement[TInstance] | None:
-        operation = find(stack, OperationElement[TInstance])
-        if operation is None:
+        del element
+        if self.qualified_name == "":
+            raise ErrorValidatingModel(self.location, "operation name cannot be empty")
+        if "/" in self.qualified_name:
             raise ErrorValidatingModel(
                 self.location,
-                "operation must be called within a State or Transition",
+                f'operation name "{self.qualified_name}" cannot contain "/"',
             )
-        return element
+        namespace = find(stack, StateElement)
+        if namespace is None:
+            raise ErrorValidatingModel(
+                self.location,
+                "operation must be called within Define() or State()",
+            )
+        qualified_name = join(namespace.qualified_name, self.qualified_name)
+        if _operation_element(model, qualified_name) is not None:
+            raise ErrorValidatingModel(
+                self.location,
+                f"duplicate operation {self.qualified_name}",
+            )
+        method: OperationMethod | None = None
+        if self.owned_elements:
+            payload = self.owned_elements[0]
+            if isinstance(payload, OperationElement):
+                method = payload.method
+        operation = OperationElement[TInstance](
+            qualified_name=qualified_name,
+            method=method,
+            location=self.location,
+        )
+        model.members[
+            _operation_member_key(namespace.qualified_name, self.qualified_name)
+        ] = operation
+        return operation
+
+
+def _operation_behavior(
+    model: Model,
+    owner: Element,
+    name: str,
+) -> OperationExpression[typing.Any]:
+    qualified_name = _resolve_operation_qualified_name(
+        model, owner.qualified_name, name
+    )
+    operation = _operation_element(model, qualified_name)
+    if operation is None:
+        raise ErrorValidatingModel(
+            owner.location,
+            f'missing operation "{name}"',
+        )
+
+    def callback(ctx: context.Context, instance: Instance, event: Event) -> typing.Any:
+        behavior_ctx = context.with_value(ctx, _BehaviorOwnerKey, operation.owner())
+        if operation.method is not None:
+            return operation.method(behavior_ctx, instance, event)
+        method = getattr(instance, operation.name(), None)
+        if not callable(method):
+            raise ErrorValidatingModel(
+                operation.location,
+                f'missing operation "{operation.name()}"',
+            )
+        return method(event)
+
+    return typing.cast(OperationExpression[typing.Any], callback)
 
 
 @typing.final
@@ -3088,6 +3340,12 @@ def _done() -> generic.Awaitable[None]:
     return awaitable
 
 
+def _result[T](value: T) -> generic.Awaitable[T]:
+    awaitable = generic.Awaitable[T]()
+    awaitable.set_result(value)
+    return awaitable
+
+
 @functools.cache
 def _error(exception: BaseException) -> generic.Awaitable[None]:
     awaitable = generic.Awaitable[None]()
@@ -3150,15 +3408,24 @@ class Instance:
             )
         return self.__hsm.set(self.context(), name, value)
 
-    def Set(
-        self, name: str, value: typing.Any
-    ) -> collections.abc.Awaitable[None]:
+    def Set(self, name: str, value: typing.Any) -> collections.abc.Awaitable[None]:
         return self.set(name, value)
 
-    # def call(self, name: str, *args: typing.Any) -> typing.Awaitable[typing.Any]:
-    #     if self.__hsm is None:
-    #         raise RuntimeError("operation requires a started HSM")
-    #     return self.__hsm.call(name, *args)
+    def call(
+        self, name: str, *args: typing.Any
+    ) -> collections.abc.Awaitable[typing.Any]:
+        if self.__hsm is None:
+            return _error(
+                ErrorValidatingModel(
+                    Location.capture(), "operation requires a started HSM"
+                )
+            )
+        return self.__hsm.call(self.context(), name, *args)
+
+    def Call(
+        self, name: str, *args: typing.Any
+    ) -> collections.abc.Awaitable[typing.Any]:
+        return self.call(name, *args)
 
     def stop(self, ctx: context.Context) -> collections.abc.Awaitable[None]:
         if self.__hsm is None:
@@ -3225,7 +3492,9 @@ class HSM(BehaviorElement[TInstance]):
                 loop=asyncio.get_running_loop(),
                 eager_start=True,
             )
-            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            task.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
             return None
 
         super().__init__(
@@ -3276,9 +3545,7 @@ class HSM(BehaviorElement[TInstance]):
             if ctx is not None and ctx.value(Keys.HSM) is self
             else self.model.qualified_name
         )
-        qualified_name = _resolve_attribute_qualified_name(
-            self.model, owner, name
-        )
+        qualified_name = _resolve_attribute_qualified_name(self.model, owner, name)
         if _attribute_element(self.model, qualified_name) is None:
             qualified_name = (
                 _unique_attribute_qualified_name(self.model, name) or qualified_name
@@ -3315,9 +3582,7 @@ class HSM(BehaviorElement[TInstance]):
             if ctx.value(Keys.HSM) is self
             else self.model.qualified_name
         )
-        qualified_name = _resolve_attribute_qualified_name(
-            self.model, owner, name
-        )
+        qualified_name = _resolve_attribute_qualified_name(self.model, owner, name)
         attribute = _attribute_element(self.model, qualified_name)
         if attribute is None:
             qualified_name = (
@@ -3337,7 +3602,9 @@ class HSM(BehaviorElement[TInstance]):
                 Location.capture(), f'attribute "{name}" not found'
             )
         if not _attribute_accepts(attribute.value_type, value):
-            expected = getattr(attribute.value_type, "__name__", str(attribute.value_type))
+            expected = getattr(
+                attribute.value_type, "__name__", str(attribute.value_type)
+            )
             actual = type(value).__name__
             raise ErrorValidatingModel(
                 Location.capture(),
@@ -3361,6 +3628,116 @@ class HSM(BehaviorElement[TInstance]):
                 ),
             ),
         )
+
+    def _resolve_operation(
+        self, ctx: context.Context, name: str
+    ) -> OperationElement[TInstance] | None:
+        behavior_owner = ctx.value(_BehaviorOwnerKey)
+        owner = (
+            behavior_owner
+            if isinstance(behavior_owner, str)
+            else self._state.qualified_name
+            if ctx.value(Keys.HSM) is self
+            else self.model.qualified_name
+        )
+        qualified_name = _resolve_operation_qualified_name(
+            self.model,
+            owner,
+            name,
+            prefer_root=not isinstance(behavior_owner, str),
+        )
+        return _operation_element(self.model, qualified_name)
+
+    def _invoke_operation(
+        self,
+        ctx: context.Context,
+        operation: OperationElement[TInstance],
+        args: tuple[typing.Any, ...],
+    ) -> typing.Any:
+        operation_ctx = context.with_value(ctx, _BehaviorOwnerKey, operation.owner())
+        if operation.method is not None:
+            return operation.method(operation_ctx, self._instance, *args)
+        method = getattr(self._instance, operation.name(), None)
+        if not callable(method):
+            raise ErrorValidatingModel(
+                operation.location,
+                f'missing operation "{operation.name()}"',
+            )
+        return method(*args)
+
+    def call(
+        self,
+        ctx: context.Context,
+        name: str,
+        *args: typing.Any,
+    ) -> collections.abc.Awaitable[typing.Any]:
+        if self._state == self.model and not self._processing.locked():
+            return _error(
+                ErrorValidatingModel(
+                    Location.capture(), "operation requires a started HSM"
+                )
+            )
+        if name == "":
+            return _error(
+                ErrorValidatingModel(
+                    Location.capture(), "operation name cannot be empty"
+                )
+            )
+        operation = self._resolve_operation(ctx, name)
+        if operation is None:
+            return _error(
+                ErrorValidatingModel(Location.capture(), f'missing operation "{name}"')
+            )
+        event = Event(
+            name=f"@call:{operation.name()}",
+            kind=CallEventKind,
+            source=operation.qualified_name,
+            data=CallData(name=operation.qualified_name, args=args),
+        )
+        in_behavior = isinstance(ctx.value(_BehaviorOwnerKey), str)
+        if in_behavior or self._processing.locked():
+            try:
+                result = self._invoke_operation(ctx, operation, args)
+            except BaseException as error:
+                return _error(error)
+            if isinstance(result, collections.abc.Awaitable):
+                awaitable = typing.cast(
+                    collections.abc.Awaitable[typing.Any], result
+                )
+
+                async def invoke_then_dispatch() -> typing.Any:
+                    value = await awaitable
+                    _ = self.dispatch(ctx, event)
+                    return value
+
+                task = asyncio.Task(
+                    invoke_then_dispatch(),
+                    loop=asyncio.get_running_loop(),
+                    eager_start=True,
+                )
+                task.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
+                return task
+            _ = self.dispatch(ctx, event)
+            return _result(result)
+
+        async def dispatch_then_invoke() -> typing.Any:
+            await self.dispatch(ctx, event)
+            result = self._invoke_operation(ctx, operation, args)
+            if isinstance(result, collections.abc.Awaitable):
+                return await typing.cast(collections.abc.Awaitable[typing.Any], result)
+            return result
+
+        task = asyncio.Task(
+            dispatch_then_invoke(),
+            loop=asyncio.get_running_loop(),
+            eager_start=True,
+        )
+        task.add_done_callback(
+            lambda done: None if done.cancelled() else done.exception()
+        )
+        return task
 
     async def _start(self, ctx: context.Context, data: TData = None) -> typing.Self:
         if self._state != self.model or self._processing.locked():
@@ -3402,7 +3779,12 @@ class HSM(BehaviorElement[TInstance]):
     ) -> VertexElement | None:
         if isinstance(vertex, StateElement):
             state = vertex
-            for behavior_name in (*state.entry, *state.activity):
+            for behavior_name in state.entry:
+                behavior = typing.cast(
+                    BehaviorElement[TInstance], self.model.members[behavior_name]
+                )
+                self._execute(ctx, behavior, event)
+            for behavior_name in state.activity:
                 behavior = typing.cast(
                     BehaviorElement[TInstance], self.model.members[behavior_name]
                 )
@@ -3504,8 +3886,6 @@ class HSM(BehaviorElement[TInstance]):
             target="",
             schema=event.schema,
         )
-        original_state = self._state
-        self._state = boundary
         if vertex.transitions:
             outgoing = typing.cast(
                 TransitionElement, self.model.members[vertex.transitions[0]]
@@ -3513,7 +3893,6 @@ class HSM(BehaviorElement[TInstance]):
             _ = await self._transition(ctx, vertex, outgoing, exit_event)
         exit_transition = self._select_transition(ctx, boundary, exit_event)
         if exit_transition is None:
-            self._state = original_state
             raise RuntimeError(f'unhandled exit point "{vertex.name()}"')
         return await self._transition(ctx, boundary, exit_transition, exit_event)
 
@@ -3539,13 +3918,17 @@ class HSM(BehaviorElement[TInstance]):
     def _evaluate(
         self, ctx: context.Context, guard: ConstraintElement[TInstance], event: Event
     ) -> bool:
-        guard_ctx = context.with_value(ctx, _BehaviorOwnerKey, guard.owner())
+        guard_ctx = context.with_value(
+            ctx, _BehaviorOwnerKey, _behavior_scope(self.model, guard.owner())
+        )
         return guard.expression(guard_ctx, self._instance, event)
 
     def _execute(
         self, ctx: context.Context, behavior: BehaviorElement[TInstance], event: Event
     ) -> None:
-        behavior_ctx = context.with_value(ctx, _BehaviorOwnerKey, behavior.owner())
+        behavior_ctx = context.with_value(
+            ctx, _BehaviorOwnerKey, _behavior_scope(self.model, behavior.owner())
+        )
         if isinstance(behavior, ConcurrentBehaviorElement):
             activity_ctx = context.Context(behavior_ctx)
 
@@ -3688,9 +4071,9 @@ class HSM(BehaviorElement[TInstance]):
                             )
                         ):
                             continue
-                        path = self.model.transition_paths[
-                            transition.qualified_name
-                        ][current_qualified_name]
+                        path = self.model.transition_paths[transition.qualified_name][
+                            current_qualified_name
+                        ]
                         state = await self._transition(
                             ctx, current_state, transition, event
                         )
@@ -3885,9 +4268,7 @@ class HSM(BehaviorElement[TInstance]):
             while queued := self._queue.pop(ctx):
                 queued_event, ok, error = queued
                 if error is not None:
-                    if queue_error := self._queue.push(
-                        ctx, ErrorEvent.WithData(error)
-                    ):
+                    if queue_error := self._queue.push(ctx, ErrorEvent.WithData(error)):
                         self._processing.release()
                         raise queue_error
                     continue
@@ -4199,6 +4580,16 @@ def Attribute(
     )
 
 
+def Operation(
+    name: str,
+    method: OperationMethod | None = None,
+) -> RedefinableOperation[typing.Any]:
+    payload: OperationElement[typing.Any] = OperationElement(
+        qualified_name=name, method=method
+    )
+    return RedefinableOperation(qualified_name=name, owned_elements=[payload])
+
+
 def Initial(name_or_element: str | Element, *elements: Element) -> RedefinableInitial:
     name = ".initial"
     owned_elements = list(elements)
@@ -4299,6 +4690,10 @@ def OnSet(name: str) -> RedefinableTransition.OnSetEvent:
     return RedefinableTransition.OnSetEvent(qualified_name=name)
 
 
+def OnCall(name: str) -> RedefinableTransition.OnCallEvent:
+    return RedefinableTransition.OnCallEvent(qualified_name=name)
+
+
 def After(
     duration: TimeExpression[TInstance],
 ) -> RedefinableTransition.AfterEvent[TInstance]:
@@ -4328,7 +4723,9 @@ def Every(
 
 def When(
     expression: str | Expression[TInstance, typing.Any],
-) -> RedefinableTransition.WhenAttribute | RedefinableTransition.WhenPredicate[TInstance]:
+) -> (
+    RedefinableTransition.WhenAttribute | RedefinableTransition.WhenPredicate[TInstance]
+):
     if isinstance(expression, str):
         return RedefinableTransition.WhenAttribute(qualified_name=expression)
     return RedefinableTransition.WhenPredicate(
@@ -4412,7 +4809,7 @@ def Start(
     data: TData = None,
 ) -> collections.abc.Awaitable[HSM[TInstance]]:
     return asyncio.Task(
-        sm._start(ctx or sm.context(), data),
+        sm._start(ctx or sm.context(), data),  # pyright: ignore[reportPrivateUsage]
         loop=asyncio.get_running_loop(),
         eager_start=True,
     )
@@ -4555,6 +4952,28 @@ def Set(
     )
 
 
+def Call(
+    ctx: context.Context | None,
+    sm: HSM[TInstance] | Instance | None,
+    name: str,
+    *args: typing.Any,
+) -> collections.abc.Awaitable[typing.Any]:
+    if sm is not None:
+        if isinstance(sm, HSM):
+            return sm.call(ctx or sm.context(), name, *args)
+        machine = getattr(sm, "_Instance__hsm", None)
+        if isinstance(machine, HSM):
+            return machine.call(ctx or sm.context(), name, *args)
+        return sm.call(name, *args)
+    if ctx is not None:
+        maybe_hsm = ctx.value(Keys.HSM)
+        if isinstance(maybe_hsm, HSM):
+            return maybe_hsm.call(ctx, name, *args)
+    return _error(
+        ErrorValidatingModel(Location.capture(), "operation requires a started HSM")
+    )
+
+
 def DispatchAll(
     ctx: context.Context | None,
     event: Event[TData],
@@ -4630,6 +5049,7 @@ define = Define
 state = State
 submachine_state = SubmachineState
 attribute = Attribute
+operation = Operation
 initial = Initial
 transition = Transition
 source = Source
@@ -4642,6 +5062,7 @@ observe = Observe
 guard = Guard
 on = On
 on_set = OnSet
+on_call = OnCall
 after = After
 at = At
 every = Every
@@ -4666,6 +5087,7 @@ name = Name
 new_group = NewGroup
 make_group = MakeGroup
 dispatch = Dispatch
+call = Call
 dispatch_all = DispatchAll
 dispatch_to = DispatchTo
 dispatchable = Dispatchable
@@ -4683,6 +5105,7 @@ __all__ = [
     "AttributeKind",
     "BehaviorElement",
     "BehaviorKind",
+    "Call",
     "CallData",
     "CallEventKind",
     "Choice",
@@ -4769,7 +5192,9 @@ __all__ = [
     "NamespaceKind",
     "NullKind",
     "On",
+    "OnCall",
     "OnSet",
+    "Operation",
     "OperationElement",
     "OperationKind",
     "ObservationElement",
@@ -4844,7 +5269,9 @@ __all__ = [
     "new_group",
     "observe",
     "on",
+    "on_call",
     "on_set",
+    "operation",
     "qualified_name",
     "queue",
     "restart",

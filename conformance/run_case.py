@@ -78,6 +78,8 @@ SUPPORTED_FEATURES = {
     "on_set",
     "when",
     "behavior_attr",
+    "operation",
+    "on_call",
 }
 
 
@@ -289,8 +291,12 @@ class Runner:
         model_name = self._require_string(model_ir, "name")
         parts: list[Any] = []
 
-        if self._optional_object(model_ir, "operations"):
-            raise ConformanceSkip("operations are unsupported by hsm.py")
+        for name, spec in self._optional_object(model_ir, "operations").items():
+            if not isinstance(spec, dict):
+                raise ConformanceError(f"operation {name!r} must be an object")
+            behavior_id = self._require_string(spec, "behavior")
+            self.mark_behavior_role(behavior_id, "operation")
+            parts.append(hsm.Operation(name, self.operation_callback(name, behavior_id)))
 
         for name, spec in self._optional_object(model_ir, "attributes").items():
             if not isinstance(spec, dict):
@@ -437,15 +443,33 @@ class Runner:
         )
         for child in state.get("states", []):
             parts.append(self.build_state(child, state_path))
-        for transition in state.get("transitions", []):
+        transitions = state.get("transitions", [])
+        if kind in {"shallow_history", "deep_history"} and len(transitions) > 1:
+            choice_name = f"{name}_default"
+            parts.append(hsm.Transition(hsm.Target(choice_name)))
             parts.append(
-                self.build_transition(
-                    transition,
-                    transition_owner_path,
-                    bare_relative_targets=kind
-                    in {"choice", "shallow_history", "deep_history"},
+                hsm.Choice(
+                    choice_name,
+                    *[
+                        self.build_transition(
+                            transition,
+                            transition_owner_path,
+                            bare_relative_targets=True,
+                        )
+                        for transition in transitions
+                    ],
                 )
             )
+        else:
+            for transition in transitions:
+                parts.append(
+                    self.build_transition(
+                        transition,
+                        transition_owner_path,
+                        bare_relative_targets=kind
+                        in {"choice", "shallow_history", "deep_history"},
+                    )
+                )
 
         if kind == "state":
             return hsm.State(name, *parts)
@@ -544,7 +568,7 @@ class Runner:
         if kind == "on_set":
             return hsm.OnSet(self._require_string(trigger, "attribute"))
         if kind == "on_call":
-            raise ConformanceSkip("OnCall is unsupported by hsm.py")
+            return hsm.OnCall(self._require_string(trigger, "operation"))
         if kind == "when":
             if "attribute" in trigger:
                 return hsm.When(self._require_string(trigger, "attribute"))
@@ -1573,13 +1597,28 @@ class Runner:
         walk(model_ir.get("states", []))
 
     def operation_callback(self, name: str, behavior_id: str) -> Callable[..., Any]:
-        del name, behavior_id
+        program = self._optional_object(self.case, "behaviors").get(behavior_id)
+        if not isinstance(program, list) or not program:
+            raise ConformanceError(f"missing behavior program {behavior_id!r}")
 
-        async def callback(ctx: hsm.Context, instance: hsm.Instance, *args: Any) -> Any:
-            del ctx, instance, args
-            raise ConformanceSkip("operations are unsupported by hsm.py")
+        def callback(ctx: hsm.Context, instance: hsm.Instance, *args: Any) -> Any:
+            event = hsm.Event(
+                name=name,
+                kind=hsm.CallEventKind,
+                data=hsm.CallData(name=name, args=args),
+            )
+            result: Any = None
+            for op in program:
+                result = self.execute_behavior_op_sync(
+                    ctx, instance, event, op, behavior_id, "operation"
+                )
+                if op.get("op", "").startswith("return_"):
+                    self.trace_activity_done(behavior_id)
+                    return result
+            self.trace_activity_done(behavior_id)
+            return result
 
-        callback.__name__ = "operation"
+        callback.__name__ = behavior_id
         return callback
 
     def execute_behavior_op_sync(
@@ -1656,7 +1695,21 @@ class Runner:
                 event, self._require_string(op, "name")
             ) == op.get("value")
         if kind == "call":
-            raise ConformanceSkip("operation behavior ops are unsupported by hsm.py")
+            name = self._require_string(op, "name")
+            try:
+                called = hsm.Call(ctx, instance, name)
+                done = getattr(called, "done", None)
+                result = getattr(called, "result", None)
+                if callable(done) and callable(result) and done():
+                    _ = result()
+            except Exception:
+                self.trace_expected_error_once()
+                raise
+            if self.trace_contract_includes("call") and self.behavior_call_op_is_traceable(
+                behavior_role
+            ):
+                self.trace.append({"type": "call", "operation": name})
+            return None
         if kind == "dispatch":
             nested_event = self.event_from_value(op.get("event"))
             if op.get("target") == "all":
@@ -1797,7 +1850,19 @@ class Runner:
                 event, self._require_string(op, "name")
             ) == op.get("value")
         if kind == "call":
-            raise ConformanceSkip("operation behavior ops are unsupported by hsm.py")
+            name = self._require_string(op, "name")
+            try:
+                _ = await hsm.Call(ctx, instance, name)
+            except Exception:
+                self.trace_expected_error_once()
+                raise
+            if self.trace_contract_includes("call") and self.behavior_call_op_is_traceable(
+                behavior_role
+            ):
+                self.trace.append({"type": "call", "operation": name})
+            if behavior_role in {"activity", "operation"}:
+                await self.settle_ready_tasks(turns=7)
+            return None
         if kind == "dispatch":
             nested_event = self.event_from_value(op.get("event"))
             wait_for_dispatch = behavior_role in {"activity", "operation"}
@@ -2002,7 +2067,23 @@ class Runner:
             self.last_stable_label = None
             return
         if op == "call":
-            raise ConformanceSkip("operation script ops are unsupported by hsm.py")
+            instance = self.instance_for_step(step)
+            operation = self._require_string(step, "operation")
+            self.flush_timer_scheduled()
+            self.trace.append({"type": "call", "operation": operation})
+            self.started_machine_for_instance(instance)
+            args: list[Any] = []
+            if "data" in step:
+                args.append(step.get("data"))
+            try:
+                _ = await hsm.Call(self.ctx, instance, operation, *args)
+            except Exception:
+                self.trace_expected_error_once()
+                raise
+            await self.settle_ready_tasks(turns=7)
+            self.trace_new_runtime_deferred([instance])
+            self.last_stable_label = None
+            return
         if op in {"sleep", "tick"}:
             if op == "tick":
                 await self.logical_clock.advance(int(step.get("millis", 0)))

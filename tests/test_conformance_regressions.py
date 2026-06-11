@@ -225,7 +225,7 @@ def test_entry_snapshot_observes_pre_entry_state():
     asyncio.run(_entry_snapshot_observes_pre_entry_state())
 
 
-async def _failed_nested_initial_preserves_entered_parent_state() -> None:
+async def _failed_nested_initial_does_not_publish_unsettled_parent_state() -> None:
     instance = RegressionInstance()
 
     def parent_entry(
@@ -255,15 +255,14 @@ async def _failed_nested_initial_preserves_entered_parent_state() -> None:
         ),
     )
 
-    with pytest.raises(Exception, match="nested initial boom"):
-        await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.Context(), instance, model)
 
-    assert instance.state() == "/FailedNestedInitialPreservesParentRegression/parent"
+    assert instance.state() == "/FailedNestedInitialPreservesParentRegression"
     assert instance.log == ["entry:parent", "initial:bad"]
 
 
-def test_failed_nested_initial_preserves_entered_parent_state():
-    asyncio.run(_failed_nested_initial_preserves_entered_parent_state())
+def test_failed_nested_initial_does_not_publish_unsettled_parent_state():
+    asyncio.run(_failed_nested_initial_does_not_publish_unsettled_parent_state())
 
 
 async def _nested_initial_effect_snapshot_observes_pre_initial_source() -> None:

@@ -951,7 +951,7 @@ async def test_operation_call_requires_context_and_instance():
         assert inst is instance
         return f"work:{value}"
 
-    async def record_call(
+    def record_call(
         ctx: hsm.Context, inst: SignatureInstance, event: hsm.Event
     ) -> None:
         assert isinstance(event.Data, hsm.CallData)
@@ -985,7 +985,7 @@ async def test_oncall_dispatches_before_operation_exception():
         del ctx, inst
         raise RuntimeError(f"boom:{value}")
 
-    async def record_call(
+    def record_call(
         ctx: hsm.Context, inst: ParityInstance, event: hsm.Event
     ) -> None:
         assert isinstance(event.Data, hsm.CallData)

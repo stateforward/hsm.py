@@ -25,7 +25,7 @@ class Counter(hsm.Instance):
         super().__init__()
         self.value = 0
 
-async def increment(ctx: hsm.Context, inst: Counter, event: hsm.Event) -> None:
+def increment(ctx: hsm.Context, inst: Counter, event: hsm.Event) -> None:
     inst.value += event.Data or 1
 
 model = hsm.Define(
@@ -47,7 +47,7 @@ async def main() -> None:
     instance = Counter()
 
     sm = await hsm.Started(ctx, instance, model, hsm.Config(ID="counter-1"))
-    await hsm.Dispatch(ctx, instance, hsm.Event("inc").WithData(2))
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="inc").WithData(2))
 
     assert instance.State() == "/Counter/idle"
     assert instance.value == 2
@@ -121,13 +121,13 @@ hsm.Transition(
 )
 ```
 
-Behavior callbacks receive `(ctx, instance, event)`. They may be sync or async unless a specific API documents otherwise.
+Behavior callbacks receive `(ctx, instance, event)`. `Guard`, `Entry`, `Exit`, and `Effect` callbacks are synchronous. `Activity` callbacks are the concurrent behavior surface and must be async.
 
 ```python
-async def can_submit(ctx, inst, event) -> bool:
+def can_submit(ctx, inst, event) -> bool:
     return inst.ready
 
-async def record_submit(ctx, inst, event) -> None:
+def record_submit(ctx, inst, event) -> None:
     inst.submitted = True
 ```
 
@@ -168,11 +168,11 @@ hsm.Define(
 
 ## Events
 
-Create events with `Event(name, data=None)`. `Event` is generic for static analysis: `Event("update", {"message": "hello"})` is inferred as `Event[dict[str, str]]`, and `event.Data` has that payload type. `WithData` and `WithDataAndID` mirror the Go API and return a new event with the new payload type.
+Create events with `Event(name=..., data=None)`. `Event` is generic for static analysis: `Event(name="update", data={"message": "hello"})` is inferred as `Event[dict[str, str]]`, and `event.Data` has that payload type. `WithData` and `WithDataAndID` mirror the Go API and return a new event with the new payload type.
 
 ```python
-event = hsm.Event("update").WithData({"message": "hello"})
-event_with_id = hsm.Event("update").WithDataAndID({"message": "hello"}, "evt-1")
+event = hsm.Event(name="update").WithData({"message": "hello"})
+event_with_id = hsm.Event(name="update").WithDataAndID({"message": "hello"}, "evt-1")
 
 await hsm.Dispatch(ctx, instance, event)
 ```
@@ -186,7 +186,7 @@ Common built-ins:
 | `ErrorEvent` | Error event dispatched when behavior raises |
 | `AnyEvent` | Wildcard fallback event |
 
-Dispatch uses an immutable event envelope (`name`, `source`, `target`, `id`, and `kind`) for routing. `Event.Data` and `Event.schema` are intentionally shared by reference; payload and metadata ownership belong to the caller/application. Use immutable values or make an application-level copy when handlers must not share mutable objects.
+Dispatch uses an immutable event envelope (`name`, `source`, `target`, `id`, and `kind`) for routing. `Event.Data`, `Event.schema`, and `Event.metadata` are intentionally shared by reference; payload and metadata ownership belong to the caller/application. Use immutable values or make an application-level copy when handlers must not share mutable objects.
 
 ## Attributes
 
@@ -318,7 +318,7 @@ sm = await hsm.Started(ctx, instance, model, config)
 Lifecycle calls:
 
 ```python
-await hsm.Dispatch(ctx, instance, hsm.Event("go"))
+await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
 await hsm.Restart(instance, {"reason": "reset"})
 await hsm.Stop(instance)
 ```
@@ -332,7 +332,7 @@ await hsm.Stop(instance)
 ```python
 group = hsm.MakeGroup(first, hsm.MakeGroup(second))
 
-await hsm.Dispatch(ctx, group, hsm.Event("refresh"))
+await hsm.Dispatch(ctx, group, hsm.Event(name="refresh"))
 await hsm.Stop(group)
 ```
 
@@ -376,12 +376,12 @@ These helpers are for deterministic tests and instrumentation:
 
 ```python
 entered = hsm.AfterEntry(ctx, instance, "/Machine/ready")
-processed = hsm.AfterProcess(ctx, instance, hsm.Event("go"))
-dispatched = hsm.AfterDispatch(ctx, instance, hsm.Event("go"))
+processed = hsm.AfterProcess(ctx, instance, hsm.Event(name="go"))
+dispatched = hsm.AfterDispatch(ctx, instance, hsm.Event(name="go"))
 exited = hsm.AfterExit(ctx, instance, "/Machine/idle")
 executed = hsm.AfterExecuted(ctx, instance, "/Machine/running")
 
-await hsm.Dispatch(ctx, instance, hsm.Event("go"))
+await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
 await entered
 ```
 
@@ -400,13 +400,13 @@ hsm.Transition(
 
 <!-- Python aliases and runtime value exports from hsm/hsm.py -->
 
-Implemented PascalCase DSL and runtime functions, except the acronym class `HSM`, expose direct Python snake_case aliases. Current builder and runtime aliases include `define`, `state`, `submachine_state`, `entry_point`, `exit_point`, `initial`, `transition`, `source`, `target`, `entry`, `exit`, `activity`, `effect`, `guard`, `on`, `after`, `at`, `every`, `when`, `defer`, `choice`, `shallow_history`, `deep_history`, `final`, `validator`, `finalizer`, `start`, `started`, `stop`, `restart`, `take_snapshot`, `id`, `qualified_name`, `name`, `new_group`, `make_group`, `dispatch`, `dispatch_all`, and `dispatch_to`. The `hsm.kind` helper module exposes `Make`, `MakeKind`, `IsKind`, `List`, and `Bases` plus Python aliases `make`, `make_kind`, `is_kind`, `list`, and `bases`.
+Implemented PascalCase DSL and runtime functions, except the acronym class `HSM`, expose direct Python snake_case aliases. Current builder and runtime aliases include `define`, `state`, `submachine_state`, `entry_point`, `exit_point`, `attribute`, `operation`, `initial`, `transition`, `source`, `target`, `entry`, `exit`, `activity`, `effect`, `guard`, `on`, `on_set`, `on_call`, `after`, `at`, `every`, `when`, `defer`, `choice`, `shallow_history`, `deep_history`, `final`, `validator`, `finalizer`, `start`, `started`, `stop`, `restart`, `take_snapshot`, `id`, `qualified_name`, `name`, `new_group`, `make_group`, `dispatch`, `call`, `dispatch_all`, and `dispatch_to`. The `hsm.kind` helper module exposes `Make`, `MakeKind`, `IsKind`, `List`, and `Bases` plus Python aliases `make`, `make_kind`, `is_kind`, `list`, and `bases`.
 
 Runtime values and types exported from the top-level package include `Event`, `CompletionEvent`, `Snapshot`, `Model`, `FinalizedModel`, `ModelValidator`, `DefaultModelValidator`, `ValidatorElement`, `ModelFinalizer`, `DefaultModelFinalizer`, `FinalizerElement`, `Clock`, `DefaultClock`, `Fifo`, `Queue`, `MultiQueue`, queue result tuples such as `QueuePushResult`, `Config`, `Context`, `ContextKey`, `Keys`, `Instance`, `Group`, `Dispatchable`, lifecycle events such as `InitialEvent`, `ErrorEvent`, `AnyEvent`, and `FinalEvent`, and kind constants such as `StateKind`, `TransitionKind`, `EventKind`, `FinalStateKind`, `SubmachineStateKind`, and `ExitPointKind`. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; `Config` accepts and exposes `id`, `name`, `data`, `clock`, and `queue` alongside `ID`, `Name`, `Data`, `Clock`, and `Queue`; snapshots expose both PascalCase fields such as `QueueLen` and `Transitions` and snake_case properties such as `queue_len` and `transitions`. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
 
 ## Current Python Notes
 
-`After`, `At`, `Every`, `When`, `SubmachineState`, `EntryPoint`, and `ExitPoint` are implemented. The Python runtime passes the shared HSM conformance suite.
+`After`, `At`, `Every`, `When`, `SubmachineState`, `EntryPoint`, `ExitPoint`, `Operation`, `OnCall`, `DispatchAll`, and `DispatchTo` are implemented. The Python runtime passes the shared HSM conformance suite.
 
 This package requires Python 3.13 or newer.
 
@@ -430,7 +430,7 @@ Run shared conformance cases from the monorepo root with the Python runner:
 PYTHONPATH=hsm.py python3 hsm.py/conformance/run_case.py conformance/cases/basic_transition.json
 ```
 
-The v1.0 release candidate passes all 1,392 shared conformance cases. The runner exits `77` when every selected failure is an explicit unsupported-feature skip.
+The v1.1 release candidate passes all 1,392 shared conformance cases. The runner exits `77` when every selected failure is an explicit unsupported-feature skip.
 
 The suite includes deterministic Hypothesis fuzz tests for generated state
 machines, guarded transition order, runtime attribute updates, and invalid timer

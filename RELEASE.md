@@ -75,8 +75,8 @@ async def main():
     )
     instance = Instance()
     ctx = hsm.Context()
-    await hsm.Start(ctx, instance, model)
-    await hsm.Dispatch(ctx, instance, hsm.Event("go"))
+    await hsm.Started(ctx, instance, model)
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
     assert instance.state() == "/Smoke/done"
     assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     await hsm.Stop(instance)
