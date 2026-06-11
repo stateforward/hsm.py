@@ -74,6 +74,10 @@ SUPPORTED_FEATURES = {
     "multi_target",
     "timer_behavior",
     "observation",
+    "attribute",
+    "on_set",
+    "when",
+    "behavior_attr",
 }
 
 
@@ -285,11 +289,28 @@ class Runner:
         model_name = self._require_string(model_ir, "name")
         parts: list[Any] = []
 
-        if self._optional_object(model_ir, "attributes"):
-            raise ConformanceSkip("attributes are unsupported by hsm.py")
-
         if self._optional_object(model_ir, "operations"):
             raise ConformanceSkip("operations are unsupported by hsm.py")
+
+        for name, spec in self._optional_object(model_ir, "attributes").items():
+            if not isinstance(spec, dict):
+                raise ConformanceError(f"attribute {name!r} must be an object")
+            if "type" not in spec and "default" not in spec:
+                raise ConformanceError(f"attribute {name!r} requires type or default")
+            value_type = (
+                self.attribute_type_from_ir(name, spec) if "type" in spec else None
+            )
+            if "default" in spec:
+                default = spec.get("default")
+                self.validate_attribute_default(name, value_type, default)
+                if "type" in spec:
+                    parts.append(hsm.Attribute(name, value_type, default))
+                else:
+                    parts.append(hsm.Attribute(name, default))
+            elif value_type is None:
+                parts.append(hsm.Attribute(name))
+            else:
+                parts.append(hsm.Attribute(name, value_type))
 
         for entry_point in model_ir.get("entry_points", []):
             entry_parts: list[Any] = [
@@ -521,11 +542,17 @@ class Runner:
                 events = [trigger.get("event")]
             return hsm.On(*(self.event_name_from_ref(event) for event in events))
         if kind == "on_set":
-            raise ConformanceSkip("OnSet is unsupported by hsm.py")
+            return hsm.OnSet(self._require_string(trigger, "attribute"))
         if kind == "on_call":
             raise ConformanceSkip("OnCall is unsupported by hsm.py")
         if kind == "when":
-            raise ConformanceSkip("When is unsupported by hsm.py")
+            if "attribute" in trigger:
+                return hsm.When(self._require_string(trigger, "attribute"))
+            if "behavior" in trigger:
+                behavior_id = self._require_string(trigger, "behavior")
+                self.mark_behavior_role(behavior_id, "guard")
+                return hsm.When(self.behavior_callback(behavior_id, role="guard"))
+            raise ConformanceError("when trigger requires attribute or behavior")
         if kind == "completion":
             return hsm.On(hsm.FinalEvent)
         if kind == "exit_point":
@@ -584,13 +611,26 @@ class Runner:
         return timedelta(milliseconds=millis)
 
     def timer_attribute_source(self, name: str, *, timepoint: bool) -> BehaviorElement:
-        del name, timepoint
-
         def callback(
             ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
         ) -> Any:
-            del ctx, instance, event
-            raise ConformanceSkip("attribute timer sources are unsupported by hsm.py")
+            del event
+            value, ok = hsm.Get(ctx, instance, name)
+            if not ok:
+                raise ConformanceError(f"missing timer attribute {name!r}")
+            try:
+                if timepoint:
+                    remaining = float(value) - self.logical_clock.now_ms
+                    result = datetime.now() + self.timepoint_duration_from_millis(
+                        remaining
+                    )
+                else:
+                    result = self.duration_from_millis(value)
+            except Exception as error:
+                self.trace_expected_error_once()
+                raise RuntimeError("invalid interval") from error
+            self.note_timer_scheduled()
+            return result
 
         callback.__name__ = "attribute_timer_source"
         return callback
@@ -1566,8 +1606,36 @@ class Runner:
         if kind == "trace":
             self.trace.append({"type": "trace", "value": op.get("value")})
             return None
-        if kind in {"set_attr", "set_attr_from_event_data", "get_attr", "return_attr", "return_equals"}:
-            raise ConformanceSkip("attribute behavior ops are unsupported by hsm.py")
+        if kind == "set_attr":
+            try:
+                _ = hsm.Set(
+                    ctx, instance, self._require_string(op, "name"), op.get("value")
+                )
+            except Exception:
+                self.trace_expected_error_once()
+                raise
+            return None
+        if kind == "set_attr_from_event_data":
+            try:
+                _ = hsm.Set(
+                    ctx,
+                    instance,
+                    self._require_string(op, "name"),
+                    self.read_path(event.data, op.get("path")),
+                )
+            except Exception:
+                self.trace_expected_error_once()
+                raise
+            return None
+        if kind == "get_attr":
+            value, ok = hsm.Get(ctx, instance, self._require_string(op, "name"))
+            return value if ok else None
+        if kind == "return_attr":
+            value, ok = hsm.Get(ctx, instance, self._require_string(op, "name"))
+            return value if ok else None
+        if kind == "return_equals":
+            value, ok = hsm.Get(ctx, instance, self._require_string(op, "name"))
+            return ok and value == op.get("value")
         if kind == "return_value":
             return op.get("value")
         if kind == "event_name_equals":
@@ -1680,17 +1748,37 @@ class Runner:
             self.trace.append({"type": "trace", "value": op.get("value")})
             return None
         if kind == "set_attr":
-            raise ConformanceSkip("attribute behavior ops are unsupported by hsm.py")
+            try:
+                _ = hsm.Set(
+                    ctx, instance, self._require_string(op, "name"), op.get("value")
+                )
+            except Exception:
+                self.trace_expected_error_once()
+                raise
+            return None
         if kind == "set_attr_from_event_data":
-            raise ConformanceSkip("attribute behavior ops are unsupported by hsm.py")
+            try:
+                _ = hsm.Set(
+                    ctx,
+                    instance,
+                    self._require_string(op, "name"),
+                    self.read_path(event.data, op.get("path")),
+                )
+            except Exception:
+                self.trace_expected_error_once()
+                raise
+            return None
         if kind == "get_attr":
-            raise ConformanceSkip("attribute behavior ops are unsupported by hsm.py")
+            value, ok = hsm.Get(ctx, instance, self._require_string(op, "name"))
+            return value if ok else None
         if kind == "return_attr":
-            raise ConformanceSkip("attribute behavior ops are unsupported by hsm.py")
+            value, ok = hsm.Get(ctx, instance, self._require_string(op, "name"))
+            return value if ok else None
         if kind == "return_value":
             return op.get("value")
         if kind == "return_equals":
-            raise ConformanceSkip("attribute behavior ops are unsupported by hsm.py")
+            value, ok = hsm.Get(ctx, instance, self._require_string(op, "name"))
+            return ok and value == op.get("value")
         if kind == "event_name_equals":
             return event.name == op.get("value")
         if kind == "event_data_equals":
@@ -1900,7 +1988,19 @@ class Runner:
             self.last_stable_label = "group:" + group_id
             return
         if op == "set":
-            raise ConformanceSkip("attribute script ops are unsupported by hsm.py")
+            instance = self.instance_for_step(step)
+            attribute = self._require_string(step, "attribute")
+            value = step.get("value")
+            self.flush_timer_scheduled()
+            if self.trace_contract_includes("set"):
+                self.trace.append(
+                    {"type": "set", "attribute": attribute, "value": value}
+                )
+            await hsm.Set(self.ctx, instance, attribute, value)
+            await self.settle_ready_tasks(turns=7)
+            self.trace_new_runtime_deferred([instance])
+            self.last_stable_label = None
+            return
         if op == "call":
             raise ConformanceSkip("operation script ops are unsupported by hsm.py")
         if op in {"sleep", "tick"}:
@@ -1951,7 +2051,7 @@ class Runner:
             self.trace_lifecycle(step, "restart")
             if self.trace_contract_includes("timer_cancelled"):
                 self.trace.append({"type": "timer_cancelled"})
-            await instance.restart(self.ctx)
+            await instance.restart(self.ctx, self.initial_data_for_instance(instance))
             self.clear_deferred_events_for_instance(instance)
             self.last_stable_label = None
             return
@@ -2177,12 +2277,7 @@ class Runner:
         config_ir = instance_ir.get("config", {}) if instance_ir is not None else {}
         if not isinstance(config_ir, dict):
             raise ConformanceError("instance.config must be an object")
-        data = config_ir.get(
-            "Data",
-            config_ir.get(
-                "data", instance_ir.get("data") if instance_ir is not None else None
-            ),
-        )
+        data = self.initial_data_for_instance_id(instance_id)
         name = config_ir.get("Name", config_ir.get("name", ""))
         clock = self.clock_from_config(config_ir)
         if clock is None:
@@ -2204,6 +2299,24 @@ class Runner:
             hsm.Config(ID=instance_id, Name=name, Data=data, Clock=clock, Queue=queue),
         )
         self.last_stable_label = None
+
+    def initial_data_for_instance(self, instance: ConformanceInstance) -> Any:
+        for instance_id, candidate in self.instances.items():
+            if candidate is instance:
+                return self.initial_data_for_instance_id(instance_id)
+        return None
+
+    def initial_data_for_instance_id(self, instance_id: str) -> Any:
+        instance_ir = self.instance_ir(instance_id)
+        config_ir = instance_ir.get("config", {}) if instance_ir is not None else {}
+        if not isinstance(config_ir, dict):
+            raise ConformanceError("instance.config must be an object")
+        return config_ir.get(
+            "Data",
+            config_ir.get(
+                "data", instance_ir.get("data") if instance_ir is not None else None
+            ),
+        )
 
     def clock_from_config(self, config_ir: dict[str, Any]) -> hsm.Clock | None:
         clock_id = config_ir.get("Clock", config_ir.get("clock"))
