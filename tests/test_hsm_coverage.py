@@ -327,8 +327,23 @@ async def test_not_started_instance_and_top_level_error_contracts():
     assert instance.get("missing") == (None, False)
     assert instance.take_snapshot() == core.Snapshot()
 
-    with pytest.raises(core.ErrorValidatingModel, match="dispatch requires"):
-        await instance.dispatch(ctx, core.Event(name="go"))
+    dispatch = instance.dispatch(ctx, core.Event(name="go"))
+    with pytest.raises(RuntimeError, match="dispatch requires"):
+        await dispatch
+
+    started = CoverageInstance()
+    core.New(
+        started,
+        core.Define(
+            "NotStartedDispatchCoverage",
+            core.Initial(core.Target("idle")),
+            core.State("idle"),
+        ),
+    )
+    dispatch = core.Dispatch(ctx, started, core.Event(name="go"))
+    with pytest.raises(RuntimeError, match="started HSM"):
+        await dispatch
+
     with pytest.raises(core.ErrorValidatingModel, match="initialized instance"):
         await instance.start(ctx)
     with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
@@ -358,6 +373,46 @@ async def test_not_started_instance_and_top_level_error_contracts():
     await empty.restart(empty.context())
     with pytest.raises(TypeError, match="expected hsm.Instance"):
         core.Group(object())
+
+
+@pytest.mark.asyncio
+async def test_dispatch_queue_push_failure_returns_failed_awaitable():
+    push_error = RuntimeError("push failed")
+    pushed: list[str] = []
+
+    class RejectingFifo:
+        def push(self, event: core.Event) -> core.QueuePushResult:
+            pushed.append(event.name)
+            return (push_error,)
+
+        def pop(self) -> core.QueuePopResult:
+            return core.Event(), False, None
+
+        def len(self) -> core.QueueLenResult:
+            return 0, None
+
+        def clear(self) -> None:
+            pushed.clear()
+
+    model = core.Define(
+        "DispatchPushFailure",
+        core.Initial(core.Target("idle")),
+        core.State("idle"),
+    )
+    instance = await core.Started(
+        core.Context(),
+        CoverageInstance(),
+        model,
+        core.Config(Queue=core.MultiQueue(RejectingFifo())),
+    )
+
+    completion = instance.dispatch(instance.context(), core.Event(name="go"))
+    assert pushed == ["go"]
+    with pytest.raises(RuntimeError, match="push failed") as caught:
+        await completion
+    assert caught.value is push_error
+
+    await core.Stop(instance)
 
 
 @pytest.mark.asyncio

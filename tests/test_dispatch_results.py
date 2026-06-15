@@ -121,12 +121,33 @@ async def test_top_level_dispatch_returns_machine_completion_handle():
 
 
 @pytest.mark.asyncio
+async def test_top_level_dispatch_to_unstarted_instance_returns_error_awaitable():
+    instance = ResultInstance()
+
+    completion = hsm.Dispatch(None, instance, hsm.Event(name="go"))
+
+    assert inspect.isawaitable(completion)
+    with pytest.raises(RuntimeError, match="dispatch requires a started HSM"):
+        await completion
+
+
+@pytest.mark.asyncio
+async def test_top_level_dispatch_without_target_returns_error_awaitable():
+    completion = hsm.Dispatch(None, None, hsm.Event(name="go"))
+
+    assert inspect.isawaitable(completion)
+    with pytest.raises(RuntimeError, match="dispatch requires a started HSM"):
+        await completion
+
+
+@pytest.mark.asyncio
 async def test_cancelling_dispatch_completion_does_not_cancel_submitted_event():
     instance = ResultInstance()
     ctx = hsm.Context()
     await hsm.Started(ctx, instance, _async_result_model())
 
     completion = instance.dispatch(instance.context(), hsm.Event(name="go"))
+    assert isinstance(completion, asyncio.Future)
     completion.cancel()
     try:
         await completion

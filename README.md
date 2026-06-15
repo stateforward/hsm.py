@@ -327,6 +327,8 @@ await hsm.Stop(instance)
 
 `Dispatch`, `Set`, `Call`, `Restart`, and `Stop` are awaitable in Python. Await them before asserting post-transition state.
 
+Dispatching directly to an unstarted or stopped instance returns a failed awaitable instead of throwing synchronously. Group, `DispatchAll`, and `DispatchTo` calls skip inactive recipients and complete normally when no active recipients are selected.
+
 ## Groups And Broadcast
 
 `NewGroup` flattens nested groups for broadcast dispatch and lifecycle operations. `MakeGroup` is also exported for DSL parity with TypeScript and `dsl.md`; `new_group` and `make_group` are the Python snake_case aliases.

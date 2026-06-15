@@ -3333,11 +3333,7 @@ class Instance:
         self, ctx: context.Context, event: Event
     ) -> collections.abc.Awaitable[None]:
         if self.__hsm is None:
-            return _error(
-                ErrorValidatingModel(
-                    Location.capture(), "dispatch requires a started HSM"
-                )
-            )
+            return _error(RuntimeError("dispatch requires a started HSM"))
         return self.__hsm.dispatch(ctx, event)
 
     def state(self) -> str:
@@ -4074,11 +4070,7 @@ class HSM(BehaviorElement[TInstance]):
         event: Event[TData],
     ) -> collections.abc.Awaitable[None]:
         if self._state == self.model and not self._processing.locked():
-            return _error(
-                ErrorValidatingModel(
-                    Location.capture(), "operation requires a started HSM"
-                )
-            )
+            return _error(RuntimeError("dispatch requires a started HSM"))
         if not event.id:
             event = Event(
                 name=event.name,
@@ -4091,8 +4083,7 @@ class HSM(BehaviorElement[TInstance]):
                 metadata=event.metadata,
             )
         if error := self._queue.push(ctx, event):
-            if queue_error := self._queue.push(ctx, ErrorEvent.WithData(error)):
-                return _error(queue_error)
+            return _error(error)
         if self._processing.try_lock():
             task = asyncio.Task(
                 self._process(ctx, event.id),
@@ -4713,10 +4704,16 @@ MakeGroup = NewGroup
 
 def Dispatch(
     ctx: context.Context | None,
-    hsm: Dispatchable,
+    hsm: Dispatchable | None,
     event: Event,
 ) -> collections.abc.Awaitable[None]:
-    return hsm.dispatch(ctx or hsm.context(), event)
+    if hsm is not None:
+        return hsm.dispatch(ctx or hsm.context(), event)
+    if ctx is not None:
+        maybe_hsm = ctx.value(Keys.HSM)
+        if isinstance(maybe_hsm, HSM):
+            return maybe_hsm.dispatch(ctx, event)
+    return _error(RuntimeError("dispatch requires a started HSM"))
 
 
 def Get(
