@@ -98,6 +98,7 @@ def test_snake_case_dsl_aliases_are_available():
         "on_set": hsm.OnSet,
         "operation": hsm.Operation,
         "qualified_name": hsm.QualifiedName,
+        "redefine": hsm.Redefine,
         "restart": hsm.Restart,
         "shallow_history": hsm.ShallowHistory,
         "source": hsm.Source,

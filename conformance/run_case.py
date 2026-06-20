@@ -864,7 +864,7 @@ class Runner:
             return "'initial'" in message or "missing initial" in message
         checks = {
             "invalid_name": "cannot contain",
-            "missing_target": "not found",
+            "missing_target": ("not found", "target or effect is required"),
             "invalid_final_transition": "cannot",
             "choice_missing_fallback": "last transition",
             "missing_submachine_model": "unknown submachine model",
@@ -915,6 +915,8 @@ class Runner:
             "invalid_timer_behavior_return": "invalid timer behavior return",
         }
         needle = checks.get(code, code)
+        if isinstance(needle, tuple):
+            return any(item in message for item in needle)
         return needle in message
 
     def validate_ir_shape(self, model_ir: dict[str, Any]) -> None:
@@ -1725,7 +1727,7 @@ class Runner:
                     {"type": "dispatch", "event": nested_event.name, "target": "all"}
                 )
                 self.trace_deferred_dispatch(nested_event.name, self.instances.values())
-                _ = hsm.DispatchAll(ctx, nested_event)
+                dispatched = hsm.DispatchAll(ctx, nested_event)
             elif "target" in op:
                 target_id = self._require_string(op, "target")
                 self.trace.append(
@@ -1739,7 +1741,7 @@ class Runner:
                     self.trace_deferred_dispatch(
                         nested_event.name, [self.instances[target_id]]
                     )
-                _ = hsm.DispatchTo(ctx, nested_event, target_id)
+                dispatched = hsm.DispatchTo(ctx, nested_event, target_id)
             elif "group" in op:
                 group_id = self._require_string(op, "group")
                 self.trace.append(
@@ -1750,10 +1752,18 @@ class Runner:
                 )
                 if group_id not in self.groups:
                     raise ConformanceError(f"unknown group {group_id!r}")
-                _ = hsm.Dispatch(ctx, self.groups[group_id], nested_event)
+                dispatched = hsm.Dispatch(ctx, self.groups[group_id], nested_event)
             else:
                 self.trace.append({"type": "dispatch", "event": nested_event.name})
-                _ = instance.dispatch(ctx, nested_event)
+                dispatched = instance.dispatch(ctx, nested_event)
+
+            async def drain() -> None:
+                try:
+                    await dispatched
+                except Exception:
+                    pass
+
+            _ = asyncio.Task(drain(), loop=asyncio.get_running_loop(), eager_start=True)
             return None
         if kind == "snapshot":
             self.flush_timer_scheduled()
@@ -1780,7 +1790,14 @@ class Runner:
                 self.note_deferred_event(instance, raised_event.name)
                 if self.trace_contract_includes("defer"):
                     self.trace_defer_event(raised_event.name)
-            _ = instance.dispatch(ctx, raised_event)
+
+            async def drain() -> None:
+                try:
+                    await instance.dispatch(ctx, raised_event)
+                except Exception:
+                    pass
+
+            _ = asyncio.Task(drain(), loop=asyncio.get_running_loop(), eager_start=True)
             return None
         raise ConformanceError(f"unsupported behavior op {kind!r}")
 
@@ -2148,7 +2165,6 @@ class Runner:
             instance = self.instance_for_step(step)
             self.flush_timer_scheduled()
             self.trace_lifecycle(step, "stop")
-            self.started_machine_for_instance(instance)
             await instance.stop(self.ctx)
             self.clear_deferred_events_for_instance(instance)
             if self.trace_contract_includes("timer_cancelled"):
@@ -2500,7 +2516,7 @@ class Runner:
                     runner.trace.append(
                         {"type": "trace", "value": f"queue:push-error:{event.name}"}
                     )
-                    return (RuntimeError("queue push boom"),)
+                    return (RuntimeError("push error"),)
 
                 def pop(self) -> hsm.QueuePopResult:
                     return (hsm.Event(), False, None)

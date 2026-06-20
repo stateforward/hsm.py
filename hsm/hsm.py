@@ -170,9 +170,7 @@ class Element:
 
 @dataclasses.dataclass(kw_only=True)
 class NamespaceElement(Element, kind=NamespaceKind):
-    members: dict[str, Element] = dataclasses.field(
-        default_factory=dict[str, Element]
-    )
+    members: dict[str, Element] = dataclasses.field(default_factory=dict[str, Element])
 
 
 @typing.runtime_checkable
@@ -793,6 +791,11 @@ class DefaultModelValidator(ModelValidator):
             raise ErrorValidatingModel(
                 transition.location,
                 f"target is required for transition '{transition.qualified_name}'",
+            )
+        if transition.target == "" and not transition.effect:
+            raise ErrorValidatingModel(
+                transition.location,
+                f"target or effect is required for transition '{transition.qualified_name}'",
             )
         if isinstance(source, InitialElement):
             extra_events = [
@@ -2306,7 +2309,9 @@ class RedefinableTransition(RedefinableElement[TransitionElement]):
                 self.location,
                 f"source '{source}' not found for transition '{qualified_name}'",
             )
-        if transition.guard is not None and isinstance(source_element, ExitPointElement):
+        if transition.guard is not None and isinstance(
+            source_element, ExitPointElement
+        ):
             index = len(source_element.transitions)
             for current_index, transition_name in enumerate(source_element.transitions):
                 existing = get(model, transition_name, TransitionElement)
@@ -2480,8 +2485,9 @@ class RedefinableBehaviors(RedefinableElement[BehaviorElement[TInstance]]):
                         location=self.location,
                     )
                 else:
-                    if operation_element.method is not None and inspect.iscoroutinefunction(
-                        operation_element.method
+                    if (
+                        operation_element.method is not None
+                        and inspect.iscoroutinefunction(operation_element.method)
                     ):
 
                         async def operation(
@@ -2624,9 +2630,7 @@ class RedefinableConstraint(RedefinableElement[ConstraintElement[TInstance]]):
                 expression=typing.cast(Expression[TInstance, bool], operation_guard),
             )
         elif isinstance(expression, ConstraintElement):
-            constraint_element = typing.cast(
-                ConstraintElement[TInstance], expression
-            )
+            constraint_element = typing.cast(ConstraintElement[TInstance], expression)
             constraint = ConstraintElement(
                 qualified_name=join(
                     transition.qualified_name, constraint_element.name()
@@ -3178,9 +3182,7 @@ class RedefinableOperation(RedefinableElement[OperationElement[TInstance]]):
         operation = OperationElement[TInstance](
             qualified_name=qualified_name,
             method=method,
-            operation=typing.cast(
-                OperationExpression[TInstance], operation_method
-            ),
+            operation=typing.cast(OperationExpression[TInstance], operation_method),
             location=self.location,
         )
         model.members[qualified_name] = operation
@@ -3191,19 +3193,21 @@ class RedefinableOperation(RedefinableElement[OperationElement[TInstance]]):
 class Mutex:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._signal_lock = threading.Lock()
         self._signal: generic.Awaitable[None] | None = None
 
     def wait(self) -> generic.Awaitable[None]:
-        if self._signal is None:
-            self._signal = generic.Awaitable[None]()
-            self._signal.set_result()
-        return self._signal
+        with self._signal_lock:
+            if not self._lock.locked():
+                return _done()
+            signal = self._signal
+            if signal is None or signal.done():
+                signal = generic.Awaitable[None]()
+                self._signal = signal
+            return signal
 
     def try_lock(self) -> bool:
-        acquired = self._lock.acquire(blocking=False)
-        if acquired:
-            self._signal = generic.Awaitable[None]()
-        return acquired
+        return self._lock.acquire(blocking=False)
 
     def locked(self) -> bool:
         return self._lock.locked()
@@ -3213,9 +3217,10 @@ class Mutex:
             await self.wait()
 
     def release(self) -> None:
-        self._lock.release()
-        if self._signal is not None and not self._signal.done():
-            self._signal.set_result(None)
+        with self._signal_lock:
+            self._lock.release()
+            if self._signal is not None and not self._signal.done():
+                self._signal.set_result(None)
 
     async def __aenter__(self) -> None:
         await self.lock()
@@ -3609,12 +3614,6 @@ class HSM(BehaviorElement[TInstance]):
             result = self._execute(ctx, operation, event)
         except BaseException as error:
             return _error(error)
-
-        def dispatch_when_done(done: asyncio.Future[typing.Any]) -> None:
-            if done.cancelled() or done.exception() is not None:
-                return
-            _ = self.dispatch(ctx, event)
-
         if isinstance(result, collections.abc.Awaitable):
             future = asyncio.ensure_future(
                 typing.cast(collections.abc.Awaitable[typing.Any], result)
@@ -3622,6 +3621,14 @@ class HSM(BehaviorElement[TInstance]):
         else:
             future = asyncio.get_running_loop().create_future()
             future.set_result(result)
+
+        def dispatch_when_done(done: asyncio.Future[typing.Any]) -> None:
+            if done.cancelled() or done.exception() is not None:
+                return
+            asyncio.ensure_future(self.dispatch(ctx, event)).add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
+
         future.add_done_callback(dispatch_when_done)
         return future
 
@@ -4090,6 +4097,9 @@ class HSM(BehaviorElement[TInstance]):
                 loop=asyncio.get_running_loop(),
                 eager_start=True,
             )
+            task.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
             return asyncio.shield(task)
         return self._processing.wait()
 
@@ -4299,6 +4309,32 @@ def Define(name: str, *elements: Element) -> Model:
         )
 
     return model
+
+
+def Redefine(
+    model: Model,
+    name_or_element: str | Element | None = None,
+    *elements: Element,
+) -> Model:
+    if isinstance(name_or_element, str):
+        qualified_name = join("/", name_or_element)
+        owned_elements = [*model.owned_elements, *elements]
+        redefined = RedefinableModel(
+            qualified_name=qualified_name,
+            owned_elements=owned_elements,
+            location=model.location,
+        ).redefine(model, [])
+    else:
+        owned_elements = (
+            elements if name_or_element is None else (name_or_element, *elements)
+        )
+        redefined = model.redefine(model, typing.cast(list[Element], owned_elements))
+    if redefined is None:
+        raise ErrorValidatingModel(
+            Location.capture(),
+            "failed to redefine model",
+        )
+    return redefined
 
 
 def State(name: str, *elements: Element) -> RedefinableState:
@@ -4657,9 +4693,7 @@ def TakeSnapshot(ctx: context.Context | None, sm: Group) -> list[Snapshot]: ...
 
 
 @typing.overload
-def TakeSnapshot(
-    ctx: context.Context | None, sm: Instance
-) -> Snapshot: ...
+def TakeSnapshot(ctx: context.Context | None, sm: Instance) -> Snapshot: ...
 
 
 def TakeSnapshot(
@@ -4837,6 +4871,7 @@ Context = context.Context
 ContextKey = context.ContextKey
 
 define = Define
+redefine = Redefine
 state = State
 submachine_state = SubmachineState
 attribute = Attribute
@@ -4996,6 +5031,7 @@ __all__ = [
     "PseudostateElement",
     "PseudostateKind",
     "RedefinableElement",
+    "Redefine",
     "QualifiedName",
     "Queue",
     "QueueLenResult",
@@ -5068,6 +5104,7 @@ __all__ = [
     "operation",
     "qualified_name",
     "queue",
+    "redefine",
     "restart",
     "shallow_history",
     "source",

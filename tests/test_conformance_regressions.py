@@ -682,6 +682,12 @@ def test_conformance_runner_reports_unknown_group_with_group_context():
 
 async def _snapshot_transitions_include_ancestor_and_targetless_transitions() -> None:
     instance = RegressionInstance()
+
+    def ping_effect(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
+        return None
+
     model = hsm.Define(
         "SnapshotEventDetailsRegression",
         hsm.Initial(hsm.Target("parent")),
@@ -691,7 +697,7 @@ async def _snapshot_transitions_include_ancestor_and_targetless_transitions() ->
             hsm.Transition(hsm.On("parent_go"), hsm.Target("../done")),
             hsm.State(
                 "child",
-                hsm.Transition(hsm.On("ping")),
+                hsm.Transition(hsm.On("ping"), hsm.Effect(ping_effect)),
             ),
         ),
         hsm.State("done"),

@@ -65,6 +65,46 @@ def test_redefine_replays_validator_and_accepts_override() -> None:
     assert override.seen == ["/LateValidator"]
 
 
+def test_package_redefine_adds_elements_to_existing_model() -> None:
+    model = hsm.Define(
+        "PackageRedefine",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+
+    redefined = hsm.Redefine(
+        model,
+        hsm.State("done"),
+        hsm.Transition(hsm.On("go"), hsm.Source("idle"), hsm.Target("done")),
+    )
+
+    assert isinstance(redefined, hsm.FinalizedModel)
+    assert redefined.qualified_name == "/PackageRedefine"
+    assert "/PackageRedefine/done" in redefined.members
+    assert "go" in redefined.transition_map["/PackageRedefine/idle"]
+
+
+def test_package_redefine_can_change_name_and_add_elements() -> None:
+    model = hsm.Define(
+        "OriginalName",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+
+    redefined = hsm.redefine(
+        model,
+        "RenamedModel",
+        hsm.State("done"),
+        hsm.Transition(hsm.On("go"), hsm.Source("idle"), hsm.Target("done")),
+    )
+
+    assert isinstance(redefined, hsm.FinalizedModel)
+    assert redefined.qualified_name == "/RenamedModel"
+    assert "/RenamedModel/idle" in redefined.members
+    assert "/RenamedModel/done" in redefined.members
+    assert "go" in redefined.transition_map["/RenamedModel/idle"]
+
+
 def test_define_accepts_finalizer_element_override() -> None:
     finalizer = RecordingFinalizer()
 
@@ -247,11 +287,16 @@ def test_define_rejects_missing_transition_target() -> None:
         )
 
 
-def test_define_allows_targetless_event_transition() -> None:
+def test_define_allows_targetless_event_transition_with_effect() -> None:
+    def tick_effect(
+        ctx: hsm.Context, inst: hsm.Instance, event: hsm.Event
+    ) -> None:
+        return None
+
     model = hsm.Define(
         "InternalTransition",
         hsm.Initial(hsm.Target("idle")),
-        hsm.State("idle", hsm.Transition(hsm.On("tick"))),
+        hsm.State("idle", hsm.Transition(hsm.On("tick"), hsm.Effect(tick_effect))),
     )
 
     transitions = [
@@ -263,6 +308,16 @@ def test_define_allows_targetless_event_transition() -> None:
 
     assert len(transitions) == 1
     assert transitions[0].target == ""
+    assert len(transitions[0].effect) == 1
+
+
+def test_define_rejects_targetless_event_transition_without_effect() -> None:
+    with pytest.raises(hsm.ErrorValidatingModel, match="target or effect is required"):
+        hsm.Define(
+            "InvalidInternalTransition",
+            hsm.Initial(hsm.Target("idle")),
+            hsm.State("idle", hsm.Transition(hsm.On("tick"))),
+        )
 
 
 def test_define_rejects_choice_without_transitions() -> None:
