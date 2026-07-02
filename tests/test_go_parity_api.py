@@ -252,7 +252,7 @@ async def test_snake_case_dsl_aliases_build_and_run_model():
         hsm.final("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     assert instance.state() == "/SnakeDslMachine/idle"
@@ -289,7 +289,7 @@ async def test_pascal_case_aliases_and_snapshot():
     assert hsm.state is hsm.State
     assert hsm.transition is hsm.Transition
 
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, model)
 
     snapshot = instance.take_snapshot()
@@ -325,7 +325,7 @@ async def test_model_paths_use_posix_semantics_for_absolute_targets():
         hsm.State("inactive"),
     )
 
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="stop"))
 
@@ -354,7 +354,7 @@ async def test_attribute_onset_get_set_and_snapshot():
         hsm.State("changed"),
     )
 
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, model)
 
     initial_value, ok = hsm.Get(ctx, instance, "count")
@@ -392,7 +392,7 @@ async def test_snapshot_mapping_is_read_only_and_values_remain_user_mutable():
         hsm.State("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
 
     runtime_payload = {"items": [{"nested": ["initial"]}]}
@@ -440,7 +440,7 @@ async def test_when_string_is_onset_attribute_trigger():
         hsm.State("changed"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
 
     await hsm.Set(ctx, instance, "flag", True)
@@ -468,7 +468,7 @@ async def test_snapshot_identity_config_and_event_data_helpers():
         hsm.State("idle", hsm.Entry(idle_entry)),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     sm = await hsm.Started(
         ctx,
         instance,
@@ -507,7 +507,7 @@ async def test_context_carries_current_machine_and_all_started_machines():
         hsm.State("idle"),
     )
 
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     alpha = await hsm.Started(ctx, ParityInstance(), model, hsm.Config(id="alpha"))
     bravo = await hsm.Started(
         alpha.context(), ParityInstance(), model, hsm.Config(id="bravo")
@@ -548,7 +548,7 @@ async def test_cross_machine_dispatch_stamps_source_and_target_from_context():
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     alpha_instance = ParityInstance()
     bravo_instance = ParityInstance()
     alpha = await hsm.Started(ctx, alpha_instance, model, hsm.Config(id="alpha"))
@@ -561,7 +561,7 @@ async def test_cross_machine_dispatch_stamps_source_and_target_from_context():
         await asyncio.sleep(0)
 
     assert alpha_instance.log == []
-    assert bravo_instance.log == ["->bravo"]
+    assert bravo_instance.log == ["alpha->bravo"]
 
 
 @pytest.mark.asyncio
@@ -590,7 +590,7 @@ async def test_config_clock_drives_after_transition():
         hsm.State("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(
         ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
     )
@@ -642,7 +642,7 @@ async def test_config_clock_drives_at_transition():
         hsm.State("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(
         ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
     )
@@ -704,7 +704,7 @@ async def test_attribute_duration_drives_after_and_every_transitions(
         hsm.State("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(
         ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
     )
@@ -759,7 +759,7 @@ async def test_attribute_timepoint_drives_at_transition():
         hsm.State("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(
         ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep))
     )
@@ -805,7 +805,7 @@ async def test_operation_oncall_and_call():
         hsm.State("called"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
 
     result = await hsm.Call(ctx, instance, "do", 7)
@@ -870,7 +870,7 @@ async def test_snake_case_named_operation_dsl_builds_and_runs_model():
         hsm.state("done", hsm.entry("enter_done")),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
     await hsm.dispatch(ctx, instance, hsm.Event(name="go"))
 
@@ -1008,7 +1008,7 @@ async def test_operation_call_requires_context_and_instance():
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
 
     assert await hsm.Call(ctx, instance, "work", 1) == "work:1"
@@ -1047,7 +1047,7 @@ async def test_oncall_does_not_dispatch_after_operation_exception():
         hsm.State("called"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
 
     with pytest.raises(RuntimeError, match="boom:7"):
@@ -1084,7 +1084,7 @@ async def test_observers_restart_and_shallow_history():
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     assert instance.state() == "/ObserverHistoryMachine/parent/a"
 
@@ -1119,7 +1119,7 @@ async def test_group_dispatch_all_and_dispatch_to():
         hsm.State("done"),
     )
 
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, first, model)
     await hsm.Started(ctx, second, model)
 
@@ -1179,7 +1179,7 @@ async def test_group_can_be_used_as_behavior():
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     member = Member()
     await hsm.Started(ctx, member, member_model)
 

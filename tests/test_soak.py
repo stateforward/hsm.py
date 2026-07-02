@@ -19,7 +19,7 @@ class SoakInstance(hsm.Instance):
 
 async def _dispatch_soak(iterations: int) -> None:
     instance = SoakInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     model = hsm.Define(
         "DispatchSoak",
         hsm.Initial(hsm.Target("a")),
@@ -70,7 +70,7 @@ async def _timer_restart_soak(iterations: int) -> None:
         hsm.State("done"),
     )
     instance = TimerInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model, hsm.Config(Clock=hsm.Clock(sleep=manual_sleep)))
 
     for _ in range(iterations):

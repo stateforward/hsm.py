@@ -81,7 +81,7 @@ async def test_basic_choice_pseudostate_with_guards():
         hsm.state('high', hsm.entry(high_entry))
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Trigger choice evaluation
@@ -151,7 +151,7 @@ async def test_choice_pseudostate_with_different_guard_outcomes():
             hsm.state('high')
         )
 
-        ctx = Context()
+        ctx = hsm.context.new_context()
         sm = await hsm.started(ctx, instance, model)
 
         assert test_case['expected_effect'] in instance.log
@@ -216,7 +216,7 @@ async def test_choice_in_hierarchical_state():
         )
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     assert instance.log == [
@@ -291,7 +291,7 @@ async def test_choice_with_complex_guard_conditions():
         hsm.state('default')
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Should choose automatic mode
@@ -350,7 +350,7 @@ async def test_choice_with_event_data_evaluation():
         hsm.state('fallback')
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Send event with urgent data
@@ -451,7 +451,7 @@ async def test_nested_choice_pseudostates():
         hsm.state('result_other')
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Should follow level1 choice then level2 choice
@@ -505,7 +505,7 @@ async def test_choice_guard_evaluation_order():
         hsm.state('path3')
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Should evaluate guards in order until first true

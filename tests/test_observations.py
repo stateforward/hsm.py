@@ -45,7 +45,7 @@ async def test_observe_wraps_targeted_behavior_member() -> None:
     )
     instance = ObservationInstance()
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     await hsm.Dispatch(instance.context(), instance, hsm.Event(name="go"))
     await instance.stop(instance.context())
 
@@ -74,7 +74,7 @@ async def test_observe_can_target_event_name() -> None:
     )
     instance = ObservationInstance()
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     await hsm.Dispatch(instance.context(), instance, hsm.Event(name="go"))
     await instance.stop(instance.context())
 
@@ -95,7 +95,7 @@ async def test_observe_can_redefine_finalized_model() -> None:
     observed_model = model.redefine(model, (hsm.Observe(observe, "go"),))
 
     original = ObservationInstance()
-    await hsm.Started(hsm.Context(), original, model)
+    await hsm.Started(hsm.hsm.context.new_context(), original, model)
     await hsm.Dispatch(original.context(), original, hsm.Event(name="go"))
     await original.stop(original.context())
 
@@ -103,7 +103,7 @@ async def test_observe_can_redefine_finalized_model() -> None:
 
     instance = ObservationInstance()
     assert isinstance(observed_model, hsm.Model)
-    await hsm.Started(hsm.Context(), instance, observed_model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, observed_model)
     await hsm.Dispatch(instance.context(), instance, hsm.Event(name="go"))
     await instance.stop(instance.context())
 

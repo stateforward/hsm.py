@@ -70,7 +70,7 @@ async def test_basic_activity_starts_on_entry_stops_on_exit():
         hsm.state("inactive"),
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx=ctx, instance=instance, model=model)
 
     await asyncio.wait_for(started.wait(), timeout=1)
@@ -140,7 +140,7 @@ async def test_multiple_concurrent_activities():
         hsm.state("done"),
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(activity1_started.wait(), timeout=1)
@@ -198,7 +198,7 @@ async def test_activity_error_handling():
         hsm.state("error"),
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(error_handled.wait(), timeout=1)
@@ -266,7 +266,7 @@ async def test_activities_in_hierarchical_states():
         hsm.state("outside"),
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(parent_started.wait(), timeout=1)
@@ -316,7 +316,7 @@ async def test_activity_with_event_data_access():
         hsm.state("processing", hsm.activity(event_data_activity)),
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(activity_started.wait(), timeout=1)
@@ -359,7 +359,7 @@ async def test_long_running_activity_completion():
         hsm.state("working", hsm.activity(long_running_activity)),
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(completed.wait(), timeout=1)
@@ -406,7 +406,7 @@ async def test_activity_reentry_behavior():
         ),
     )
 
-    ctx = Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await wait_for_activity_count(1)

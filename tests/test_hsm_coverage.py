@@ -46,7 +46,7 @@ def test_model_indexes_and_public_helpers():
 
 
 def test_context_config_and_queue_public_contracts():
-    parent = core.Context().WithValue("request", "root")
+    parent = core.context.new_context().WithValue("request", "root")
     child, cancel = parent.WithCancel()
     assert child.Value("request") == "root"
     assert child.Deadline() == (None, False)
@@ -280,7 +280,7 @@ async def test_lifecycle_set_call_and_snapshot_contracts():
         core.State("called"),
     )
 
-    ctx = core.Context().WithValue(core.Keys.Instances, {})
+    ctx = core.context.new_context().WithValue(core.Keys.Instances, {})
     await core.Started(ctx, instance, model, core.Config(ID="runtime", Data="boot"))
     assert instance.state() == "/RuntimeCoverage/idle"
     assert instance.log == ["entry:boot"]
@@ -319,7 +319,7 @@ async def test_lifecycle_set_call_and_snapshot_contracts():
 @pytest.mark.asyncio
 async def test_not_started_instance_and_top_level_error_contracts():
     instance = CoverageInstance()
-    ctx = core.Context()
+    ctx = core.context.new_context()
 
     assert instance.state() == ""
     assert isinstance(instance.context(), core.Context)
@@ -400,7 +400,7 @@ async def test_dispatch_queue_push_failure_returns_failed_awaitable():
         core.State("idle"),
     )
     instance = await core.Started(
-        core.Context(),
+        core.context.new_context(),
         CoverageInstance(),
         model,
         core.Config(Queue=core.MultiQueue(RejectingFifo())),
@@ -423,7 +423,7 @@ async def test_dispatch_all_dispatch_to_group_and_restart():
         core.State("idle", core.Transition(core.On("go"), core.Target("../done"))),
         core.State("done"),
     )
-    ctx = core.Context().WithValue(core.Keys.Instances, {})
+    ctx = core.context.new_context().WithValue(core.Keys.Instances, {})
     first = await core.Started(ctx, CoverageInstance(), model, core.Config(ID="first"))
     second = await core.Started(ctx, CoverageInstance(), model, core.Config(ID="second"))
 
@@ -471,7 +471,7 @@ async def test_config_clock_drives_time_event_activity():
 
     instance = CoverageInstance()
     await core.Started(
-        core.Context(),
+        core.context.new_context(),
         instance,
         model,
         core.Config(Clock=core.Clock(sleep=sleep)),

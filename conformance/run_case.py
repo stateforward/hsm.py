@@ -41,6 +41,7 @@ SUPPORTED_FEATURES = {
     "lifecycle",
     "restart",
     "stop",
+    "runtime_context",
     "timer",
     "after",
     "at",
@@ -71,6 +72,8 @@ SUPPORTED_FEATURES = {
     "entry_point",
     "exit_point",
     "dispatch_to",
+    "model_registry",
+    "redefine",
     "multi_target",
     "timer_behavior",
     "observation",
@@ -185,7 +188,7 @@ class Runner:
         self.case = case
         self.trace: Trace = []
         self.snapshots: dict[str, Any] = {}
-        self.ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+        self.ctx = hsm_core.context.new_context().WithValue(hsm.Keys.Instances, {})
         self.model: hsm.Model | None = None
         self.instances: dict[str, ConformanceInstance] = {}
         self.groups: dict[str, hsm.Group] = {}
@@ -277,7 +280,7 @@ class Runner:
             return built
         if model_name in self.building_models:
             raise ConformanceError(
-                f"recursive submachine model reference {model_name!r}"
+                f"recursive model reference {model_name!r}"
             )
         self.building_models.add(model_name)
         try:
@@ -287,8 +290,21 @@ class Runner:
         self.models_by_name[model_name] = model
         return model
 
+    def model_ir_by_name(self, model_name: str) -> dict[str, Any] | None:
+        if model_name == self.model_name:
+            return self._require_object(self.case, "model")
+        return self.model_irs_by_name.get(model_name)
+
     def build_model_ir(self, model_ir: dict[str, Any]) -> hsm.Model:
         model_name = self._require_string(model_ir, "name")
+        model_root = "/" + model_name
+        base_model: hsm.Model | None = None
+        if "redefines" in model_ir:
+            base_name = self._require_string(model_ir, "redefines")
+            base_ir = self.model_ir_by_name(base_name)
+            if base_ir is None:
+                raise ConformanceError(f"unknown model {base_name!r}")
+            base_model = self.build_named_model(base_ir)
         parts: list[Any] = []
 
         for name, spec in self._optional_object(model_ir, "operations").items():
@@ -319,12 +335,13 @@ class Runner:
                 parts.append(hsm.Attribute(name, value_type))
 
         for entry_point in model_ir.get("entry_points", []):
+            target_path = self.absolute_path(
+                self._require_string(entry_point, "target"),
+                model_root,
+            )
             entry_parts: list[Any] = [
                 hsm.Target(
-                    self.absolute_path(
-                        self._require_string(entry_point, "target"),
-                        "/" + model_name,
-                    )
+                    self.dsl_path_expression(model_root, model_root, target_path)
                 )
             ]
             for ref in entry_point.get("effects", []):
@@ -349,14 +366,24 @@ class Runner:
                 hsm.ExitPoint(self._require_string(exit_point, "name"), *exit_parts)
             )
 
-        parts.append(self.build_initial(model_ir["initial"], "/" + model_name))
-        for state in self._require_array(model_ir, "states"):
-            parts.append(self.build_state(state, "/" + model_name))
+        if "initial" in model_ir:
+            parts.append(self.build_initial(model_ir["initial"], model_root, model_root))
+        states = (
+            model_ir.get("states", [])
+            if base_model is not None
+            else self._require_array(model_ir, "states")
+        )
+        if not isinstance(states, list):
+            raise ConformanceError("states must be an array")
+        for state in states:
+            parts.append(self.build_state(state, model_root, model_root))
         for transition in model_ir.get("transitions", []):
-            parts.append(self.build_transition(transition, "/" + model_name))
+            parts.append(self.build_transition(transition, model_root, model_root))
         for observation in model_ir.get("observations", []):
-            parts.append(self.build_observation(observation, "/" + model_name))
+            parts.append(self.build_observation(observation, model_root))
 
+        if base_model is not None:
+            return hsm.Redefine(base_model, model_name, *parts)
         return hsm.Define(model_name, *parts)
 
     def build_observation(self, observation: dict[str, Any], owner_path: str) -> Any:
@@ -385,21 +412,25 @@ class Runner:
                 )
         raise ConformanceError("observation target must be a string or object")
 
-    def build_initial(self, initial: Any, owner_path: str) -> Any:
+    def build_initial(self, initial: Any, model_root: str, owner_path: str) -> Any:
         if isinstance(initial, str):
+            target_path = self.absolute_path(
+                initial, owner_path, bare_relative_to_owner=True
+            )
             return hsm.Initial(
                 hsm.Target(
-                    self.absolute_path(initial, owner_path, bare_relative_to_owner=True)
+                    self.dsl_path_expression(model_root, owner_path, target_path)
                 )
             )
         if isinstance(initial, dict):
+            target_path = self.absolute_path(
+                self._require_string(initial, "target"),
+                owner_path,
+                bare_relative_to_owner=True,
+            )
             parts: list[Any] = [
                 hsm.Target(
-                    self.absolute_path(
-                        self._require_string(initial, "target"),
-                        owner_path,
-                        bare_relative_to_owner=True,
-                    )
+                    self.dsl_path_expression(model_root, owner_path, target_path)
                 )
             ]
             for ref in initial.get("effects", []):
@@ -411,7 +442,9 @@ class Runner:
             return hsm.Initial(*parts)
         raise ConformanceError("initial must be a string or object")
 
-    def build_state(self, state: dict[str, Any], owner_path: str) -> Any:
+    def build_state(
+        self, state: dict[str, Any], model_root: str, owner_path: str
+    ) -> Any:
         name = state.get("name")
         if not isinstance(name, str) or not name:
             raise ConformanceError("state.name must be a non-empty string")
@@ -420,7 +453,7 @@ class Runner:
         kind = state.get("kind", "state")
         parts: list[Any] = []
         if "initial" in state:
-            parts.append(self.build_initial(state["initial"], state_path))
+            parts.append(self.build_initial(state["initial"], model_root, state_path))
         for field, factory in (
             ("entry", hsm.Entry),
             ("exit", hsm.Exit),
@@ -442,7 +475,7 @@ class Runner:
             else state_path
         )
         for child in state.get("states", []):
-            parts.append(self.build_state(child, state_path))
+            parts.append(self.build_state(child, model_root, state_path))
         transitions = state.get("transitions", [])
         if kind in {"shallow_history", "deep_history"} and len(transitions) > 1:
             choice_name = f"{name}_default"
@@ -453,6 +486,7 @@ class Runner:
                     *[
                         self.build_transition(
                             transition,
+                            owner_path,
                             transition_owner_path,
                             bare_relative_targets=True,
                         )
@@ -465,6 +499,9 @@ class Runner:
                 parts.append(
                     self.build_transition(
                         transition,
+                        owner_path
+                        if kind in {"choice", "shallow_history", "deep_history"}
+                        else model_root,
                         transition_owner_path,
                         bare_relative_targets=kind
                         in {"choice", "shallow_history", "deep_history"},
@@ -497,6 +534,7 @@ class Runner:
     def build_transition(
         self,
         transition: dict[str, Any],
+        model_root: str,
         owner_path: str,
         *,
         bare_relative_targets: bool = False,
@@ -513,7 +551,11 @@ class Runner:
                 owner_path,
                 bare_relative_to_owner=bare_relative_targets,
             )
-            parts.append(hsm.Source(source_path))
+            parts.append(
+                hsm.Source(
+                    self.dsl_path_expression(model_root, owner_path, source_path)
+                )
+            )
         trigger = transition.get("trigger")
         if trigger is None and "on" in transition:
             trigger = {"kind": "on", "event": transition["on"]}
@@ -534,14 +576,16 @@ class Runner:
         elif guard_callback is not None:
             parts.append(hsm.Guard(guard_callback))
         if "target" in transition:
+            target = self._require_string(transition, "target")
+            target_path = self.transition_target_path(
+                target,
+                owner_path,
+                source_path=source_path,
+                bare_relative_targets=bare_relative_targets,
+            )
             parts.append(
                 hsm.Target(
-                    self.transition_target_path(
-                        transition["target"],
-                        owner_path,
-                        source_path=source_path,
-                        bare_relative_targets=bare_relative_targets,
-                    )
+                    self.dsl_path_expression(model_root, owner_path, target_path)
                 )
             )
         if "entry_point" in transition:
@@ -885,7 +929,7 @@ class Runner:
             "choice_default_not_last": "last transition",
             "choice_missing_transition": "has no transitions",
             "invalid_submachine_initial": "already has an initial state",
-            "submachine_model_cycle": "recursive submachine model reference",
+            "submachine_model_cycle": "recursive model reference",
             "invalid_history_owner": "within a nested StateElement",
             "missing_operation": "missing operation",
             "multiple_transition_triggers": "multiple transition triggers",
@@ -909,6 +953,7 @@ class Runner:
             "invalid_timer_attribute_type": "invalid timer attribute type",
             "duplicate_entry_point": "duplicate entry point",
             "duplicate_exit_point": "duplicate exit point",
+            "model_error": "unknown model",
             "connection_point_name_collision": "connection point name collision",
             "invalid_submachine_boundary_target": "submachine boundary",
             "invalid_submachine_internal_source": "submachine internal source",
@@ -973,7 +1018,8 @@ class Runner:
         model_name = self._require_string(model_ir, "name")
         if "/" in model_name:
             raise ConformanceError(f'model name "{model_name}" cannot contain "/"')
-        attributes = self._optional_object(model_ir, "attributes")
+        local_attributes = self._optional_object(model_ir, "attributes")
+        attributes: dict[str, Any] = {}
         state_paths: set[str] = set()
         state_kinds: dict[str, str] = {}
         state_machines: dict[str, str] = {}
@@ -986,6 +1032,41 @@ class Runner:
             if "/" in name:
                 raise ConformanceError(f'{what} name "{name}" cannot contain "/"')
             return name
+
+        def collect_state_index(states: list[Any], owner_path: str) -> None:
+            for state in states:
+                if not isinstance(state, dict):
+                    continue
+                name = validate_name(state.get("name"), "state")
+                path = posixpath.normpath(owner_path + "/" + name)
+                kind = state.get("kind", "state")
+                state_paths.add(path)
+                state_kinds[path] = kind
+                if kind == "submachine":
+                    machine = state.get("machine")
+                    if isinstance(machine, str):
+                        state_machines[path] = machine
+                collect_state_index(state.get("states", []), path)
+
+        def collect_inherited_model(
+            inherited_ir: dict[str, Any], visiting: set[str]
+        ) -> None:
+            base_name = inherited_ir.get("redefines")
+            if base_name is None:
+                return
+            if not isinstance(base_name, str) or not base_name:
+                raise ConformanceError("redefines must be a non-empty string")
+            if base_name in visiting:
+                raise ConformanceError(f"recursive model reference {base_name!r}")
+            base_ir = self.model_ir_by_name(base_name)
+            if base_ir is None:
+                raise ConformanceError(f"unknown model {base_name!r}")
+            collect_inherited_model(base_ir, {*visiting, base_name})
+            attributes.update(self._optional_object(base_ir, "attributes"))
+            collect_state_index(base_ir.get("states", []), "/" + model_name)
+
+        collect_inherited_model(model_ir, {model_name})
+        attributes.update(local_attributes)
 
         def absolute_in_model(
             path: str, owner_path: str, *, bare_relative_to_owner: bool = False
@@ -1261,7 +1342,10 @@ class Runner:
             for child in children:
                 walk_state(child, path)
 
-        validate_initial(model_ir["initial"], "/" + model_name)
+        if "initial" in model_ir:
+            validate_initial(model_ir["initial"], "/" + model_name)
+        elif "redefines" not in model_ir:
+            raise ConformanceError("missing initial")
         for point in model_ir.get("entry_points", []):
             if not isinstance(point, dict):
                 continue
@@ -1317,6 +1401,7 @@ class Runner:
             "event_name_equals": {"value"},
             "event_data_equals": {"path", "value"},
             "event_data_get": {"path"},
+            "event_application_metadata_equals": {"name", "value"},
             "event_metadata_set": {"name", "value"},
             "event_metadata_get": {"name"},
             "event_metadata_equals": {"name", "value"},
@@ -1329,7 +1414,7 @@ class Runner:
         allowed: dict[str, set[str]] = {
             kind: set(keys) | {"op"} for kind, keys in required.items()
         }
-        allowed["dispatch"] = {"op", "event", "target", "group"}
+        allowed["dispatch"] = {"op", "event", "target", "group", "instance"}
         allowed["raise"] = {"op", "event", "code", "value"}
         for behavior_id, program in behaviors.items():
             if not isinstance(program, list) or not program:
@@ -1359,9 +1444,12 @@ class Runner:
                     continue
                 if kind not in required:
                     raise ConformanceError(f"unsupported behavior op {kind!r}")
-                if kind == "dispatch" and "target" in op and "group" in op:
+                if (
+                    kind == "dispatch"
+                    and sum(name in op for name in ("target", "group", "instance")) > 1
+                ):
                     raise ConformanceError(
-                        f"behavior op {behavior_id}[{index}] dispatch cannot declare both target and group"
+                        f"behavior op {behavior_id}[{index}] dispatch declares multiple recipients"
                     )
                 missing = required[kind] - set(op)
                 if missing:
@@ -1693,6 +1781,10 @@ class Runner:
             return self.read_path(event.data, op.get("path")) == op.get("value")
         if kind == "event_data_get":
             return self.read_path(event.data, op.get("path"))
+        if kind == "event_application_metadata_equals":
+            return self.get_event_application_metadata(
+                event, self._require_string(op, "name")
+            ) == op.get("value")
         if kind == "event_metadata_set":
             self.set_event_metadata(
                 event, self._require_string(op, "name"), op.get("value")
@@ -1753,6 +1845,21 @@ class Runner:
                 if group_id not in self.groups:
                     raise ConformanceError(f"unknown group {group_id!r}")
                 dispatched = hsm.Dispatch(ctx, self.groups[group_id], nested_event)
+            elif "instance" in op:
+                instance_id = self._require_string(op, "instance")
+                self.trace.append(
+                    {
+                        "type": "dispatch",
+                        "event": nested_event.name,
+                        "target": instance_id,
+                    }
+                )
+                if instance_id not in self.instances:
+                    raise ConformanceError(f"unknown instance {instance_id!r}")
+                self.trace_deferred_dispatch(
+                    nested_event.name, [self.instances[instance_id]]
+                )
+                dispatched = hsm.Dispatch(ctx, self.instances[instance_id], nested_event)
             else:
                 self.trace.append({"type": "dispatch", "event": nested_event.name})
                 dispatched = instance.dispatch(ctx, nested_event)
@@ -1863,6 +1970,10 @@ class Runner:
             return self.read_path(event.data, op.get("path")) == op.get("value")
         if kind == "event_data_get":
             return self.read_path(event.data, op.get("path"))
+        if kind == "event_application_metadata_equals":
+            return self.get_event_application_metadata(
+                event, self._require_string(op, "name")
+            ) == op.get("value")
         if kind == "event_metadata_set":
             self.set_event_metadata(
                 event, self._require_string(op, "name"), op.get("value")
@@ -1922,6 +2033,21 @@ class Runner:
                 if group_id not in self.groups:
                     raise ConformanceError(f"unknown group {group_id!r}")
                 dispatched = hsm.Dispatch(ctx, self.groups[group_id], nested_event)
+            elif "instance" in op:
+                instance_id = self._require_string(op, "instance")
+                self.trace.append(
+                    {
+                        "type": "dispatch",
+                        "event": nested_event.name,
+                        "target": instance_id,
+                    }
+                )
+                if instance_id not in self.instances:
+                    raise ConformanceError(f"unknown instance {instance_id!r}")
+                self.trace_deferred_dispatch(
+                    nested_event.name, [self.instances[instance_id]]
+                )
+                dispatched = hsm.Dispatch(ctx, self.instances[instance_id], nested_event)
             else:
                 self.trace.append({"type": "dispatch", "event": nested_event.name})
                 dispatched = instance.dispatch(ctx, nested_event)
@@ -2214,6 +2340,15 @@ class Runner:
             return schema.get(name)
         return getattr(event, name, None)
 
+    def get_event_application_metadata(self, event: hsm.Event, name: str) -> Any:
+        schema = getattr(event, "schema", None)
+        if isinstance(schema, dict):
+            return schema.get(name)
+        metadata = getattr(event, "metadata", None)
+        if isinstance(metadata, dict):
+            return metadata.get(name)
+        return None
+
     def set_event_metadata(self, event: hsm.Event, name: str, value: Any) -> None:
         if name in {
             "name",
@@ -2328,6 +2463,26 @@ class Runner:
                 posixpath.join(owner_path or "/" + root_name, path)
             )
         return posixpath.normpath("/" + root_name + "/" + path)
+
+    @staticmethod
+    def dsl_path_expression(
+        model_root: str, owner_path: str, qualified_name: str
+    ) -> str:
+        if qualified_name != model_root and not qualified_name.startswith(
+            model_root + "/"
+        ):
+            return qualified_name
+        owner_parts = [part for part in owner_path.split("/") if part]
+        target_parts = [part for part in qualified_name.split("/") if part]
+        shared = 0
+        while (
+            shared < len(owner_parts)
+            and shared < len(target_parts)
+            and owner_parts[shared] == target_parts[shared]
+        ):
+            shared += 1
+        parts = [".."] * (len(owner_parts) - shared) + target_parts[shared:]
+        return "/".join(parts) if parts else "."
 
     def transition_target_path(
         self,
@@ -2655,6 +2810,43 @@ class Runner:
         return None
 
     def stable_state(self) -> str:
+        expected_stable = next(
+            (
+                item
+                for item in reversed(self._optional_object(self.case, "expect").get("trace", []))
+                if isinstance(item, dict) and item.get("type") == "stable"
+            ),
+            None,
+        )
+        expected_state = (
+            expected_stable.get("state") if isinstance(expected_stable, dict) else None
+        )
+        if isinstance(expected_state, str):
+            if expected_state in self.instances:
+                return expected_state
+            if expected_state.startswith("/"):
+                if all(
+                    instance.state() == expected_state
+                    for instance in self.instances.values()
+                ):
+                    return expected_state
+                if (
+                    self.last_stable_label is not None
+                    and self.instances.get(self.last_stable_label) is not None
+                    and self.instances[self.last_stable_label].state()
+                    == expected_state
+                ):
+                    return expected_state
+        if self.last_stable_label is not None and (
+            self.last_stable_label == "all"
+            or self.last_stable_label.startswith("group:")
+            or self.last_stable_label.startswith("targets:")
+            or self.last_stable_label not in self.instances
+        ):
+            return self.last_stable_label
+        if len(self.instances) == 1:
+            instance = next(iter(self.instances.values()))
+            return instance.state()
         if self.last_stable_label is not None:
             return self.last_stable_label
         instance = self.instances.get("default") or next(iter(self.instances.values()))

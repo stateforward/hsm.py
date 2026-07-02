@@ -69,7 +69,7 @@ async def test_external_transitions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
     instance.log.clear()  # Clear initial entry logs
 
@@ -124,7 +124,7 @@ async def test_self_transitions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Initial entry
@@ -179,7 +179,7 @@ async def test_internal_transitions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Initial entry
@@ -227,7 +227,7 @@ async def test_transition_with_multiple_effects():
         hsm.state('state2')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='multiEffect'))
@@ -272,7 +272,7 @@ async def test_transition_priority():
         hsm.state('target2')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='sameEvent'))
@@ -328,7 +328,7 @@ async def test_transitions_between_different_levels():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     assert instance.state() == '/CrossLevelTransitionMachine/parent/child/grandchild'
@@ -388,7 +388,7 @@ async def test_transition_to_initial_state():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     assert instance.state() == '/InitialTargetMachine/start'
@@ -484,7 +484,7 @@ async def test_compound_transition_paths():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     assert instance.state() == '/CompoundTransitionMachine/a'

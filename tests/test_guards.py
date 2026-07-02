@@ -54,7 +54,7 @@ async def test_guard_functions_are_called():
         hsm.state('state2')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='test'))
@@ -106,7 +106,7 @@ async def test_guard_evaluation_order():
         hsm.state('target2')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='test'))
@@ -145,7 +145,7 @@ async def test_guards_with_event_access():
         hsm.state('done')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='testEvent'))
@@ -222,7 +222,7 @@ async def test_guards_in_hierarchical_states():
         hsm.state('sibling')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Child guard should be evaluated first (deeper state has priority)
@@ -254,7 +254,7 @@ async def test_transition_without_guard():
         hsm.state('b')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Transition without guard should always execute
@@ -297,7 +297,7 @@ async def test_guard_with_complex_logic():
         hsm.state('success')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Set up conditions for guard

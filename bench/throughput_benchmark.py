@@ -120,7 +120,7 @@ async def benchmark_case(
 
     for _ in range(rounds):
         instance = BenchInstance()
-        ctx = hsm.Context()
+        ctx = hsm.hsm.context.new_context()
 
         start_ns = time.perf_counter_ns()
         machine = await hsm.Started(ctx, instance, model)

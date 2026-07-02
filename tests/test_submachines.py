@@ -79,7 +79,7 @@ async def test_submachine_entry_point_bottom_up_event_and_exit_point():
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, controller)
 
     await hsm.Dispatch(ctx, instance, hsm.Event(name="enable"))
@@ -119,7 +119,7 @@ async def test_submachine_unhandled_exit_point_restores_child_leaf_before_error(
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent)
 
     with pytest.raises(RuntimeError, match='unhandled exit point "done"'):
@@ -155,7 +155,7 @@ async def test_submachine_exit_point_effect_error_short_circuits_at_boundary():
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent)
 
     with pytest.raises(RuntimeError, match="exit boom"):
@@ -196,7 +196,7 @@ async def test_submachine_entry_point_effect_error_preserves_source_state():
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent)
 
     with pytest.raises(RuntimeError, match="entry point boom"):
@@ -274,7 +274,7 @@ async def test_nested_submachine_exit_point_falls_through_to_ancestor_handler():
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="finish"))
 
@@ -322,7 +322,7 @@ async def test_source_qualified_exit_point_handler_precedes_local_fallthrough_ha
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="finish"))
 
@@ -374,7 +374,7 @@ async def test_child_deferred_event_replays_after_exit_point_handler_target_entr
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent)
 
     await hsm.Dispatch(ctx, instance, hsm.Event(name="noise"))
@@ -409,7 +409,7 @@ async def test_submachine_final_completion_bubbles_to_containing_state():
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, controller)
     assert instance.state() == "/ControllerDone/drive/off"
 
@@ -464,7 +464,7 @@ async def test_submachine_child_on_call_precedes_containing_transition():
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent)
     result = await hsm.Call(ctx, instance, "approve")
 
@@ -501,7 +501,7 @@ async def test_submachine_timer_uses_remapped_event_and_parent_clock():
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent, hsm.Config(Clock=SleepClock(sleep)))
     await asyncio.sleep(0.01)
 
@@ -548,7 +548,7 @@ async def test_submachine_stale_timer_event_is_dropped_after_parent_exit():
     )
 
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, parent, hsm.Config(Clock=SleepClock(sleep)))
     await asyncio.wait_for(slept.wait(), timeout=1)
     release_sleep.set()
@@ -588,7 +588,7 @@ def _submachine_toggle_model() -> hsm.Model:
 
 async def _time_dispatches(model: hsm.Model, iterations: int) -> float:
     instance = SubmachineInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     event = hsm.Event(name="flip")
     started = time.perf_counter()

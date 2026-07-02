@@ -44,7 +44,7 @@ async def test_state_machine_can_run_as_entry_behavior():
         hsm.State("active", hsm.Entry(child_machine)),
     )
 
-    await hsm.Started(hsm.Context(), hsm.Instance(), parent_model)
+    await hsm.Started(hsm.hsm.context.new_context(), hsm.Instance(), parent_model)
 
     assert child_machine.state() == "/ChildEntryBehavior/idle"
     assert child_instance.log == ["child.entry"]
@@ -286,7 +286,7 @@ async def test_complex_hsm():
 
     # Pass hsm_data as the initial data object
     # Assuming hsm.start returns an awaitable or the instance directly
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, sm, model)
     # If start is async or involves async setup, await it
     # await sm.wait_for_ready() # Or similar, if needed
@@ -628,7 +628,7 @@ async def test_simple_hsm():
         hsm.state("s2"),
         hsm.state("s3"),
     )
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     sm = await hsm.started(ctx, THSM(), model)
     assert sm.state() == "/SimpleHSM/s1"
     await sm.dispatch(ctx, hsm.Event(name="A"))
@@ -636,7 +636,7 @@ async def test_simple_hsm():
     await hsm.stop(sm)
     
     # Test the B transition
-    ctx2 = hsm.Context()
+    ctx2 = hsm.hsm.context.new_context()
     sm2 = await hsm.started(ctx2, THSM(), model)
     assert sm2.state() == "/SimpleHSM/s1"
     await sm2.dispatch(ctx, hsm.Event(name="B"))

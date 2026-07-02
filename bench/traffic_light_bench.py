@@ -58,6 +58,10 @@ class TrafficLight(hsm.Instance):
     def set_timer_standard(ctx, inst, event):
         inst.timer = 40
 
+    @staticmethod
+    def toggle_timer(ctx, inst, event):
+        inst.timer = 1 if inst.timer == 0 else 0
+
     model = hsm.define("TrafficLight",
         hsm.initial(hsm.target("operational")),
         
@@ -112,8 +116,7 @@ class TrafficLight(hsm.Instance):
             hsm.entry(reset_cars),
             hsm.transition(
                 hsm.on(Tick),
-                # Effect lambda in Python needs to be async or we can just ignore effect here 
-                # since we mainly want to test throughput. But let's add a sync effect if possible or async wrapper.
+                hsm.effect(toggle_timer)
             ),
             hsm.transition(
                 hsm.on(MaintenanceSwitch),
@@ -133,7 +136,7 @@ def assert_traffic_light(light, state, cars_waiting, timer, step):
         raise AssertionError(f"{step}: timer {light.timer}, expected {timer}")
 
 async def validate_traffic_light():
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     light = TrafficLight()
     machine = await hsm.Started(ctx, light, TrafficLight.model)
     assert_traffic_light(light, "/TrafficLight/operational/red", 0, 0, "initial")
@@ -186,14 +189,14 @@ async def run_benchmark():
     if VALIDATE:
         await validate_traffic_light()
 
-    warmup_ctx = hsm.Context()
+    warmup_ctx = hsm.hsm.context.new_context()
     warmup_light = TrafficLight()
     warmup_machine = await hsm.Started(warmup_ctx, warmup_light, TrafficLight.model)
     batch_cycles = await calibrate_batch(warmup_ctx, warmup_light)
     await run_for(warmup_ctx, warmup_light, WARMUP_MS, batch_cycles)
     await hsm.Stop(warmup_machine)
 
-    bench_ctx = hsm.Context()
+    bench_ctx = hsm.hsm.context.new_context()
     light_bench = TrafficLight()
     bench_machine = await hsm.Started(bench_ctx, light_bench, TrafficLight.model)
     completed_cycles, duration_ms = await run_for(

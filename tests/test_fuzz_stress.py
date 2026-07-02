@@ -10,7 +10,7 @@ import hsm
 
 
 def _runtime_context() -> hsm.Context:
-    return hsm.Context().WithValue(hsm.Keys.Instances, {})
+    return hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
 
 
 async def _wait_for(predicate: Callable[[], bool], message: str) -> None:
@@ -472,7 +472,7 @@ async def _activity_cancellation_stress() -> None:
         hsm.State("active", hsm.Activity(activity)),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     await asyncio.wait_for(started.wait(), timeout=1)
     await instance.stop(instance.context())
     await asyncio.wait_for(cancelled.wait(), timeout=1)
@@ -502,7 +502,7 @@ async def _timer_restart_cancellation_stress() -> None:
     )
     instance = FuzzInstance()
     await hsm.Started(
-        hsm.Context(),
+        hsm.hsm.context.new_context(),
         instance,
         model,
         hsm.Config(Clock=hsm.Clock(sleep=sleep)),

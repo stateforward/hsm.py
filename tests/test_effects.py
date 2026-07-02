@@ -42,7 +42,7 @@ async def test_single_effect_execution():
         hsm.state('state2')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='trigger'))
@@ -82,7 +82,7 @@ async def test_multiple_effects_execution_order():
         hsm.state('state2')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='trigger'))
@@ -117,7 +117,7 @@ async def test_effect_with_event_access():
         hsm.state('done')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='testEvent'))
@@ -173,7 +173,7 @@ async def test_effects_on_internal_transitions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Internal transition should execute effect but not change state
@@ -223,7 +223,7 @@ async def test_effects_with_state_mutation():
         hsm.state('state3')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     await instance.dispatch(ctx, hsm.Event(name='modify'))
@@ -266,7 +266,7 @@ async def test_effects_execution_timing():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
     instance.log.clear()
 

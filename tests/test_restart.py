@@ -5,7 +5,7 @@ import hsm
 
 
 def _runtime_context() -> hsm.Context:
-    return hsm.Context().WithValue(hsm.Keys.Instances, {})
+    return hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
 
 
 def _machine() -> hsm.HSM[hsm.Instance]:

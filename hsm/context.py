@@ -26,8 +26,39 @@ class ContextKey:
     name: str
 
 
+@typing.runtime_checkable
+class Context(typing.Protocol):
+    def is_done(self) -> bool: ...
+
+    def Deadline(self) -> tuple[None, bool]: ...
+
+    def deadline(self) -> tuple[None, bool]: ...
+
+    def Err(self) -> BaseException | None: ...
+
+    def err(self) -> BaseException | None: ...
+
+    def cancel(self) -> None: ...
+
+    def Done(self) -> concurrent.futures.Future[None]: ...
+
+    def done(self) -> concurrent.futures.Future[None]: ...
+
+    def Value(self, key: typing.Hashable) -> object | None: ...
+
+    def value(self, key: typing.Hashable) -> object | None: ...
+
+    def WithValue(self, key: typing.Hashable, value: object) -> "Context": ...
+
+    def with_value(self, key: typing.Hashable, value: object) -> "Context": ...
+
+    def WithCancel(self) -> tuple["Context", typing.Callable[[], None]]: ...
+
+    def with_cancel(self) -> tuple["Context", typing.Callable[[], None]]: ...
+
+
 @typing.final
-class Context:
+class _Context:
     def __init__(
         self,
         parent: "Context | None" = None,
@@ -75,7 +106,7 @@ class Context:
     value = Value
 
     def WithValue(self, key: typing.Hashable, value: object) -> "Context":
-        return Context(
+        return _Context(
             self,
             values={key: value},
         )
@@ -89,15 +120,19 @@ class Context:
 
 
 def with_cancel(ctx: "Context") -> tuple["Context", typing.Callable[[], None]]:
-    new_ctx = Context(
-        parent=ctx,
-        values={},
-    )
+    new_ctx = _Context(parent=ctx)
     return new_ctx, new_ctx.cancel
 
 
 def with_value(ctx: "Context", key: typing.Hashable, value: object) -> "Context":
-    return Context(
+    return _Context(
         parent=ctx,
         values={key: value},
     )
+
+
+def new_context(
+    parent: "Context | None" = None,
+    values: collections.abc.Mapping[typing.Hashable, object] | None = None,
+) -> "Context":
+    return _Context(parent=parent, values=values)

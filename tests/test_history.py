@@ -40,7 +40,7 @@ async def test_shallow_history_restores_direct_child_default() -> None:
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="advance"))
     assert instance.state() == "/ShallowHistoryMachine/parent/b/two"
@@ -83,7 +83,7 @@ async def test_deep_history_restores_nested_leaf() -> None:
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="advance"))
     assert instance.state() == "/DeepHistoryMachine/parent/b/two"
@@ -129,7 +129,7 @@ async def test_history_uses_default_transition_when_empty() -> None:
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="enter"))
 
@@ -171,7 +171,7 @@ async def test_transition_to_deep_history_preserves_previous_snapshot() -> None:
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="to_b"))
     await hsm.Dispatch(ctx, instance, hsm.Event(name="to_a"))
@@ -202,7 +202,7 @@ async def test_history_default_transition_does_not_record_history_vertex() -> No
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="enter"))
     await hsm.Dispatch(ctx, instance, hsm.Event(name="again"))

@@ -94,7 +94,7 @@ def test_top_level_runtime_helpers_are_not_coroutine_functions():
 @pytest.mark.asyncio
 async def test_top_level_dispatch_resolves_none_on_success():
     instance = ResultInstance()
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, _result_model())
 
     result = await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
@@ -108,7 +108,7 @@ async def test_top_level_dispatch_resolves_none_on_success():
 @pytest.mark.asyncio
 async def test_top_level_dispatch_returns_machine_completion_handle():
     instance = ResultInstance()
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, _result_model())
 
     completion = hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
@@ -143,7 +143,7 @@ async def test_top_level_dispatch_without_target_returns_error_awaitable():
 @pytest.mark.asyncio
 async def test_cancelling_dispatch_completion_does_not_cancel_submitted_event():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _async_result_model())
 
     completion = instance.dispatch(instance.context(), hsm.Event(name="go"))
@@ -165,7 +165,7 @@ async def test_cancelling_dispatch_completion_does_not_cancel_submitted_event():
 @pytest.mark.asyncio
 async def test_top_level_dispatch_resolves_none_when_submitted_event_is_deferred():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _deferred_model())
 
     result = await hsm.Dispatch(ctx, instance, hsm.Event(name="work"))
@@ -180,7 +180,7 @@ async def test_top_level_dispatch_resolves_none_when_submitted_event_is_deferred
 @pytest.mark.asyncio
 async def test_defer_accepts_string_event_names():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _string_deferred_model())
 
     result = await hsm.Dispatch(ctx, instance, hsm.Event(name="work"))
@@ -200,7 +200,7 @@ async def test_defer_accepts_string_event_names():
 @pytest.mark.asyncio
 async def test_deferred_replay_dispatch_resolves_none_for_releasing_event():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _deferred_model())
 
     assert await hsm.Dispatch(ctx, instance, hsm.Event(name="work")) is None
@@ -216,7 +216,7 @@ async def test_deferred_replay_dispatch_resolves_none_for_releasing_event():
 @pytest.mark.asyncio
 async def test_instance_dispatch_awaitable_resolves_none_for_deferred_event():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _deferred_model())
 
     result = await instance.dispatch(instance.context(), hsm.Event(name="work"))
@@ -231,7 +231,7 @@ async def test_instance_dispatch_awaitable_resolves_none_for_deferred_event():
 async def test_group_dispatch_resolves_none_when_any_member_defers():
     deferred_instance = ResultInstance()
     processed_instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, deferred_instance, _deferred_model("DeferredGroupMember"))
     await hsm.Started(ctx, processed_instance, _result_model())
     group = hsm.Group(deferred_instance, processed_instance)
@@ -249,7 +249,7 @@ async def test_group_dispatch_resolves_none_when_any_member_defers():
 async def test_dispatch_all_resolves_none_for_all_members():
     deferred_instance = ResultInstance()
     processed_instance = ResultInstance()
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, deferred_instance, _deferred_model("DeferredBroadcastMember"))
     await hsm.Started(ctx, processed_instance, _result_model())
 
@@ -271,7 +271,7 @@ async def test_dispatch_all_resolves_none_for_all_members():
 async def test_dispatch_to_resolves_none_for_selected_ids():
     selected = ResultInstance()
     skipped = ResultInstance()
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, selected, _deferred_model("DeferredTargetMember"), hsm.Config(ID="target-1"))
     await hsm.Started(ctx, skipped, _result_model(), hsm.Config(ID="skip-1"))
 
@@ -292,7 +292,7 @@ async def test_dispatch_to_resolves_none_for_selected_ids():
 
 @pytest.mark.asyncio
 async def test_dispatch_broadcast_helpers_resolve_none_for_no_recipients():
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
 
     assert await hsm.DispatchAll(None, hsm.Event(name="noop")) is None
     assert await hsm.DispatchTo(None, hsm.Event(name="noop"), "missing-*") is None
@@ -308,7 +308,7 @@ async def test_dispatch_broadcast_helpers_resolve_none_for_no_recipients():
 @pytest.mark.asyncio
 async def test_top_level_set_resolves_none_on_success():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _result_model())
 
     result = await hsm.Set(ctx, instance, "flag", True)
@@ -322,7 +322,7 @@ async def test_top_level_set_resolves_none_on_success():
 @pytest.mark.asyncio
 async def test_top_level_set_raises_validation_error_for_unknown_attribute():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _result_model())
 
     with pytest.raises(RuntimeError, match='missing attribute "missing"'):
@@ -336,7 +336,7 @@ async def test_top_level_set_raises_validation_error_for_unknown_attribute():
 @pytest.mark.asyncio
 async def test_set_raises_validation_error_for_exact_default_type_mismatch():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _result_model())
 
     with pytest.raises(
@@ -353,7 +353,7 @@ async def test_set_raises_validation_error_for_exact_default_type_mismatch():
 @pytest.mark.asyncio
 async def test_instance_set_resolves_none_for_unchanged_attribute():
     instance = ResultInstance()
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _result_model())
 
     result = await instance.Set("flag", False)
@@ -373,7 +373,7 @@ async def test_set_uses_explicit_attribute_type_metadata():
         hsm.Initial(hsm.Target("idle")),
         hsm.State("idle"),
     )
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
 
     assert await hsm.Set(ctx, instance, "count", 1) is None
@@ -401,7 +401,7 @@ async def test_set_resolves_after_on_set_reaction_completes():
         ),
         hsm.State("changed"),
     )
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
 
     result = await hsm.Set(ctx, instance, "flag", True)

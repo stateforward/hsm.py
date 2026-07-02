@@ -43,7 +43,7 @@ async def test_basic_final_state_terminal_state():
         hsm.final('done')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
     assert instance.log == ['working-entry']
     assert sm.state() == '/BasicFinalMachine/working'
@@ -113,7 +113,7 @@ async def test_final_state_in_hierarchical_structure():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
     assert instance.log == [
         'container-entry',
@@ -171,7 +171,7 @@ async def test_multiple_final_states_in_same_container():
     )
 
     # Test success path
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
     await sm.dispatch(ctx, Event(name='success'))
     assert sm.state() == '/MultipleFinalMachine/process/success'
@@ -179,7 +179,7 @@ async def test_multiple_final_states_in_same_container():
 
     # Test error path
     instance.log = []
-    ctx2 = hsm.Context()
+    ctx2 = hsm.context.new_context()
     sm2 = await hsm.started(ctx2, instance, model)
     await sm2.dispatch(ctx, Event(name='error'))
     assert sm2.state() == '/MultipleFinalMachine/process/error'
@@ -187,7 +187,7 @@ async def test_multiple_final_states_in_same_container():
 
     # Test cancel path
     instance.log = []
-    ctx3 = hsm.Context()
+    ctx3 = hsm.context.new_context()
     sm3 = await hsm.started(ctx3, instance, model)
     await sm3.dispatch(ctx, Event(name='cancel'))
     assert sm3.state() == '/MultipleFinalMachine/process/cancelled'
@@ -218,7 +218,7 @@ async def test_transition_to_final_state_with_effect():
         hsm.final('finished')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Transition to final state
@@ -252,7 +252,7 @@ async def test_final_state_behavior_during_stop():
         hsm.final('terminal')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Move to final state
@@ -283,7 +283,7 @@ async def test_transition_from_final_state_should_not_be_possible():
         hsm.final('final')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Go to final state
@@ -349,7 +349,7 @@ async def test_complex_final_state_scenario_with_cleanup():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     # Execute workflow

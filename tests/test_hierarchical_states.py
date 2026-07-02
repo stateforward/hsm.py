@@ -35,7 +35,7 @@ async def test_nested_states():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Should reach the deepest level
@@ -88,7 +88,7 @@ async def test_hierarchical_entry_exit_order():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Initial entry order: parent first, then child1
@@ -145,7 +145,7 @@ async def test_event_bubbling():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Child should handle its own event
@@ -222,7 +222,7 @@ async def test_transition_between_hierarchical_states():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Should start in grandchild1
@@ -309,7 +309,7 @@ async def test_deep_nested_relative_and_absolute_transitions():
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
     assert instance.state() == "/DeepNestedMachine/l1/l2/l3/l4/l5"
 
@@ -356,7 +356,7 @@ async def test_multiple_initial_states():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Should follow initial chain to deepest level
@@ -422,7 +422,7 @@ async def test_hierarchical_self_transitions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     assert instance.state() == '/HierarchicalSelfTransitionMachine/parent/child'
@@ -482,7 +482,7 @@ async def test_event_priority_in_hierarchy():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Child should handle the event, not parent

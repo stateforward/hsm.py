@@ -112,7 +112,7 @@ async def test_basic_after_timer_fires_once_after_delay():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
     assert instance.log == ['waiting-entry']
     assert sm.state() == '/BasicAfterMachine/waiting'
@@ -164,7 +164,7 @@ async def test_after_timer_aborted_on_state_exit():
         hsm.state('cancelled')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep()
@@ -218,7 +218,7 @@ async def test_basic_every_timer_fires_repeatedly_at_intervals():
         hsm.state('stopped')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
     assert instance.log == ['counting-entry']
 
@@ -285,7 +285,7 @@ async def test_multiple_timers_in_same_state():
         hsm.state('path2')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep(2)
@@ -335,7 +335,7 @@ async def test_timer_with_dynamic_duration_based_on_instance_data():
         hsm.state('finished')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
     assert instance.log == ['waiting-with-delay-60']
 
@@ -372,7 +372,7 @@ async def test_timer_with_event_data_access():
         hsm.state('triggered')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep()
@@ -411,7 +411,7 @@ async def test_zero_or_negative_timer_duration():
         hsm.state('done')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep()
@@ -448,7 +448,7 @@ async def test_timer_in_hierarchical_state():
         hsm.state('done')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
     assert sm.state() == '/HierarchicalTimerMachine/parent/child'
 
@@ -502,7 +502,7 @@ async def test_every_timer_with_abort_signal_handling():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.Started(ctx, instance, model, hsm.Config(Clock=clock))
 
     await clock.wait_for_sleep()

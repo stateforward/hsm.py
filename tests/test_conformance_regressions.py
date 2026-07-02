@@ -43,9 +43,9 @@ async def _guard_error_preserves_source_state_and_does_not_take_fallback() -> No
         hsm.State("fallback"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     with pytest.raises(RuntimeError, match="boom"):
-        await hsm.Dispatch(hsm.Context(), instance, hsm.Event(name="go"))
+        await hsm.Dispatch(hsm.hsm.context.new_context(), instance, hsm.Event(name="go"))
 
     assert instance.state() == "/GuardErrorPreservesSourceRegression/idle"
     assert instance.log == ["guard:bad"]
@@ -90,9 +90,9 @@ async def _async_effect_error_stops_before_target_entry() -> None:
         hsm.State("target", hsm.Entry(entry_target)),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     with pytest.raises(RuntimeError, match="effect boom"):
-        await hsm.Dispatch(hsm.Context(), instance, hsm.Event(name="go"))
+        await hsm.Dispatch(hsm.hsm.context.new_context(), instance, hsm.Event(name="go"))
 
     assert instance.state() == "/AsyncEffectErrorStopsBeforeEntryRegression/idle"
     assert instance.log == ["effect:before-yield", "effect:after-yield"]
@@ -138,7 +138,7 @@ async def _behavior_context_dispatch_all_sees_root_context_machines() -> None:
         hsm.State("done"),
     )
 
-    ctx = hsm.Context().WithValue(hsm.Keys.Instances, {})
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     producer = Producer()
     started = Worker()
     stopped = Worker()
@@ -194,7 +194,7 @@ async def _activity_explicit_dispatch_is_not_deferred_as_generated_change_event(
         hsm.State("done"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     await asyncio.sleep(0.01)
 
     assert instance.state() == "/ActivityExplicitDispatchRegression/done"
@@ -219,7 +219,7 @@ async def _entry_snapshot_observes_pre_entry_state() -> None:
         hsm.State("idle", hsm.Entry(snapshot_entry)),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
 
     assert instance.log == ["/EntrySnapshotRegression"]
     assert instance.state() == "/EntrySnapshotRegression/idle"
@@ -259,7 +259,7 @@ async def _failed_nested_initial_does_not_publish_unsettled_parent_state() -> No
         ),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
 
     assert instance.state() == "/FailedNestedInitialPreservesParentRegression"
     assert instance.log == ["entry:parent", "initial:bad"]
@@ -298,7 +298,7 @@ async def _nested_initial_effect_snapshot_observes_pre_initial_source() -> None:
         ),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
 
     assert instance.state() == "/NestedInitialSnapshotRegression/parent/child"
     assert instance.log == [
@@ -371,7 +371,7 @@ async def _duplicate_timer_trigger_fallback_replays_guard_events_after_entry() -
         hsm.State("wrong"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     await asyncio.sleep(0.05)
 
     assert instance.state() == "/DuplicateTimerTriggerFallbackRegression/done"
@@ -429,9 +429,9 @@ async def _deferred_event_precedes_false_guard_and_replays_after_release() -> No
         hsm.State("wrong"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
-    await hsm.Dispatch(hsm.Context(), instance, hsm.Event(name="maybe"))
-    await hsm.Dispatch(hsm.Context(), instance, hsm.Event(name="release"))
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
+    await hsm.Dispatch(hsm.hsm.context.new_context(), instance, hsm.Event(name="maybe"))
+    await hsm.Dispatch(hsm.hsm.context.new_context(), instance, hsm.Event(name="release"))
 
     assert instance.state() == "/FalseGuardDeferredReplayRegression/done"
     assert instance.log == ["guard:false", "effect:release", "effect:maybe"]
@@ -473,7 +473,7 @@ async def _transition_to_deep_history_preserves_previous_history_snapshot() -> N
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="to_b"))
     await hsm.Dispatch(ctx, instance, hsm.Event(name="to_a"))
@@ -497,7 +497,7 @@ async def _restart_after_stop_requires_started_machine() -> None:
         hsm.State("idle"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     await instance.stop(instance.context())
 
     with pytest.raises(hsm.ValidationError, match="started"):
@@ -518,9 +518,9 @@ async def _lifecycle_errors_are_normalized_for_started_and_stopped_machines() ->
         hsm.State("idle"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     with pytest.raises(hsm.ValidationError, match="already"):
-        await hsm.Started(hsm.Context(), instance, model)
+        await hsm.Started(hsm.hsm.context.new_context(), instance, model)
 
     await instance.stop(instance.context())
     await instance.stop(instance.context())
@@ -557,8 +557,8 @@ async def _async_when_predicate_uses_async_dispatch_path() -> None:
         hsm.State("done"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
-    await hsm.Set(hsm.Context(), instance, "ready", True)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
+    await hsm.Set(hsm.hsm.context.new_context(), instance, "ready", True)
 
     assert instance.state() == "/AsyncWhenPredicateRegression/done"
     assert instance.log == ["when", "effect"]
@@ -623,7 +623,7 @@ async def _history_default_guard_reentrant_events_replay_after_default_entry() -
         ),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model)
     await hsm.Dispatch(ctx, instance, hsm.Event(name="enter"))
 
@@ -648,8 +648,8 @@ async def _explicit_dynamic_attribute_accepts_none_after_default_value() -> None
         hsm.State("idle"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
-    await hsm.Set(hsm.Context(), instance, "value", None)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
+    await hsm.Set(hsm.hsm.context.new_context(), instance, "value", None)
 
     assert instance.take_snapshot().Attributes == {
         "/ExplicitDynamicAttributeRegression/value": None,
@@ -703,7 +703,7 @@ async def _snapshot_transitions_include_ancestor_and_targetless_transitions() ->
         hsm.State("done"),
     )
 
-    await hsm.Started(hsm.Context(), instance, model)
+    await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     snapshot = instance.take_snapshot()
 
     transition_details = {
@@ -759,7 +759,7 @@ async def _deferred_queue_replay_does_not_require_event_identity() -> None:
         hsm.State("done"),
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, model, hsm.Config(Queue=hsm.MultiQueue(CloneFifo())))
     await hsm.Dispatch(ctx, instance, hsm.Event(name="work"))
     await hsm.Dispatch(ctx, instance, hsm.Event(name="work"))
@@ -814,7 +814,7 @@ async def _every_timer_reschedules_after_dispatch_processing() -> None:
     )
 
     await hsm.Started(
-        hsm.Context(),
+        hsm.hsm.context.new_context(),
         instance,
         model,
         hsm.Config(Clock=hsm.Clock(sleep=sleep)),
@@ -834,7 +834,7 @@ async def _every_timer_reschedules_after_dispatch_processing() -> None:
     assert instance.log == ["effect:tick"]
     assert sleeps == [10, 50]
 
-    await hsm.Dispatch(hsm.Context(), instance, hsm.Event(name="stop"))
+    await hsm.Dispatch(hsm.hsm.context.new_context(), instance, hsm.Event(name="stop"))
 
 
 def test_every_timer_reschedules_after_dispatch_processing():
@@ -868,7 +868,7 @@ async def _same_source_same_callback_timers_do_not_collapse() -> None:
     )
 
     await hsm.Started(
-        hsm.Context(),
+        hsm.hsm.context.new_context(),
         instance,
         model,
         hsm.Config(Clock=hsm.Clock(sleep=sleep)),

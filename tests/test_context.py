@@ -21,10 +21,12 @@ class _Context(typing.Protocol):
 
     def Done(self) -> concurrent.futures.Future[None]: ...
 
+    def done(self) -> concurrent.futures.Future[None]: ...
+
     def Value(self, key: typing.Hashable) -> object | None: ...
 
 
-Context = typing.cast(type[_Context], context.Context)
+Context = typing.cast(typing.Callable[[], _Context], context.new_context)
 with_cancel = typing.cast(
     typing.Callable[[_Context], tuple[_Context, typing.Callable[[], None]]],
     context.with_cancel,

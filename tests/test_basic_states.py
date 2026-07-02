@@ -43,7 +43,7 @@ async def test_basic_state_machine_with_simple_transitions():
     )
 
     # Start the state machine
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Should start in idle state
@@ -81,7 +81,7 @@ async def test_state_machine_lifecycle_start_and_stop():
     )
 
     # Start the state machine
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Should have executed entry action
@@ -129,7 +129,7 @@ async def test_multiple_transitions_from_same_state():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Test first transition
@@ -175,7 +175,7 @@ async def test_self_transitions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Initial entry
@@ -222,7 +222,7 @@ async def test_internal_transitions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Initial entry
@@ -255,7 +255,7 @@ async def test_event_dispatching_during_lifecycle():
     )
 
     # Start the state machine
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
     assert instance.state() == '/EventLifecycleMachine/a'
 
@@ -283,7 +283,7 @@ async def test_unknown_events_ignored():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
     assert instance.state() == '/UnknownEventMachine/stable'
 
@@ -323,7 +323,7 @@ async def test_event_object_dispatching():
         hsm.state('done')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Test Event object dispatching
@@ -337,7 +337,7 @@ async def test_event_object_dispatching():
     await instance.stop(ctx)
     instance.log = []
     instance.data = {}
-    ctx = hsm.Context()
+    ctx = hsm.hsm.context.new_context()
     await hsm.started(ctx, instance, model)
 
     # Test different event with explicit kind

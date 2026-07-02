@@ -53,7 +53,7 @@ async def test_error_event_from_activity_exception():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(error_entered.wait(), timeout=1)
@@ -116,7 +116,7 @@ async def test_error_event_handled_at_different_hierarchy_levels():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(child_error_entered.wait(), timeout=1)
@@ -152,7 +152,7 @@ async def test_unhandled_error_events():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(activity_failed.wait(), timeout=1)
@@ -199,7 +199,7 @@ async def test_error_in_entry_actions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     with pytest.raises(Exception, match='Entry action failed!'):
@@ -243,7 +243,7 @@ async def test_error_in_exit_actions():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     with pytest.raises(Exception, match='Exit action failed!'):
@@ -287,7 +287,7 @@ async def test_error_in_transition_effects():
         )
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     with pytest.raises(Exception, match='Effect failed!'):
@@ -340,7 +340,7 @@ async def test_multiple_error_events_in_sequence():
         hsm.state('final')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(final_reached.wait(), timeout=1)
@@ -408,7 +408,7 @@ async def test_error_event_with_guard_conditions():
         hsm.state('general')
     )
 
-    ctx = hsm.Context()
+    ctx = hsm.context.new_context()
     sm = await hsm.started(ctx, instance, model)
 
     await asyncio.wait_for(critical_handled.wait(), timeout=1)

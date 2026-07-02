@@ -3348,7 +3348,7 @@ class Instance:
 
     def context(self) -> context.Context:
         if self.__hsm is None:
-            return context.Context()
+            return context.new_context()
         return self.__hsm.context()
 
     def clock(self) -> Clock:
@@ -3515,7 +3515,7 @@ class HSM(BehaviorElement[TInstance]):
         self._cancel = lambda: None
         self._attributes = generic.Map[str, typing.Any]()
         self._history: dict[str, str] = {}
-        self._context = ctx or context.Context()
+        self._context = ctx or context.new_context()
         self._clock = config.Clock or DefaultClock()
         setattr(self._instance, "_Instance__hsm", self)
 
@@ -3826,7 +3826,7 @@ class HSM(BehaviorElement[TInstance]):
         self, ctx: context.Context, behavior: BehaviorElement[TInstance], event: Event
     ) -> collections.abc.Awaitable[typing.Any] | typing.Any:
         if isinstance(behavior, ConcurrentBehaviorElement):
-            activity_ctx = context.Context(ctx)
+            activity_ctx = context.new_context(ctx)
 
             async def activity() -> None:
                 try:
@@ -4078,6 +4078,7 @@ class HSM(BehaviorElement[TInstance]):
     ) -> collections.abc.Awaitable[None]:
         if self._state == self.model and not self._processing.locked():
             return _error(RuntimeError("dispatch requires a started HSM"))
+        process_ctx = self._context
         if not event.id:
             event = Event(
                 name=event.name,
@@ -4093,7 +4094,7 @@ class HSM(BehaviorElement[TInstance]):
             return _error(error)
         if self._processing.try_lock():
             task = asyncio.Task(
-                self._process(ctx, event.id),
+                self._process(process_ctx, event.id),
                 loop=asyncio.get_running_loop(),
                 eager_start=True,
             )
@@ -4181,7 +4182,7 @@ class HSM(BehaviorElement[TInstance]):
                 values[Keys.Instances] = instances
             if owner is not None:
                 values[Keys.HSM] = owner
-            ctx = context.Context(values=values)
+            ctx = context.new_context(values=values)
         return asyncio.Task(
             self._restart(ctx, data),
             loop=asyncio.get_running_loop(),
@@ -4231,7 +4232,7 @@ class Group(BehaviorElement[Instance]):
         elif self._instances:
             self._context = self._instances[0].context()
         else:
-            self._context = context.Context()
+            self._context = context.new_context()
 
     def state(self) -> list[str]:
         if not self._instances:
@@ -4248,6 +4249,7 @@ class Group(BehaviorElement[Instance]):
     ) -> collections.abc.Awaitable[None]:
         async def dispatch_all():
             completions: list[collections.abc.Awaitable[None]] = []
+            source = event.source or _dispatch_source_from_context(ctx)
             for instance in self._instances:
                 machine = getattr(instance, "_Instance__hsm", None)
                 if (
@@ -4255,7 +4257,21 @@ class Group(BehaviorElement[Instance]):
                     or machine.state() == machine.model.qualified_name
                 ):
                     continue
-                completions.append(instance.dispatch(ctx, event))
+                completions.append(
+                    instance.dispatch(
+                        ctx,
+                        Event(
+                            name=event.name,
+                            data=event.data,
+                            kind=event.kind,
+                            id=event.id,
+                            source=source,
+                            target=event.target or machine.id,
+                            schema=event.schema,
+                            metadata=event.metadata,
+                        ),
+                    )
+                )
             if not completions:
                 return
             _ = await asyncio.gather(
@@ -4280,7 +4296,7 @@ class Group(BehaviorElement[Instance]):
             instances = ctx.value(Keys.Instances)
             if instances is not None:
                 values[Keys.Instances] = instances
-            ctx = context.Context(values=values)
+            ctx = context.new_context(values=values)
 
         async def restart_all():
             _ = await asyncio.gather(
@@ -4742,7 +4758,20 @@ def Dispatch(
     event: Event,
 ) -> collections.abc.Awaitable[None]:
     if hsm is not None:
-        return hsm.dispatch(ctx or hsm.context(), event)
+        dispatch_ctx = ctx or hsm.context()
+        target = _dispatch_target_for_dispatchable(hsm)
+        if ctx is not None and target:
+            event = Event(
+                name=event.name,
+                data=event.data,
+                kind=event.kind,
+                id=event.id,
+                source=event.source or _dispatch_source_from_context(ctx),
+                target=event.target or target,
+                schema=event.schema,
+                metadata=event.metadata,
+            )
+        return hsm.dispatch(dispatch_ctx, event)
     if ctx is not None:
         maybe_hsm = ctx.value(Keys.HSM)
         if isinstance(maybe_hsm, HSM):
@@ -4805,6 +4834,27 @@ def DispatchAll(
     return DispatchTo(ctx, event)
 
 
+def _dispatch_source_from_context(ctx: context.Context | None) -> str:
+    if ctx is None:
+        return ""
+    current = ctx.value(Keys.HSM)
+    if isinstance(current, HSM):
+        return current.id
+    if isinstance(current, Group):
+        return current.id
+    return ""
+
+
+def _dispatch_target_for_dispatchable(dispatchable: Dispatchable) -> str:
+    if isinstance(dispatchable, HSM):
+        return dispatchable.id
+    if isinstance(dispatchable, Instance):
+        machine = getattr(dispatchable, "_Instance__hsm", None)
+        if isinstance(machine, HSM):
+            return machine.id
+    return ""
+
+
 def DispatchTo(
     ctx: context.Context | None,
     event: Event[TData],
@@ -4821,6 +4871,7 @@ def DispatchTo(
     else:
         return _done()
     completions: list[collections.abc.Awaitable[None]] = []
+    source = event.source or _dispatch_source_from_context(ctx)
     seen: set[str] = set()
     for candidate in candidates:
         if not isinstance(candidate, Instance):
@@ -4845,7 +4896,7 @@ def DispatchTo(
                     data=event.data,
                     kind=event.kind,
                     id=event.id,
-                    source=event.source,
+                    source=source,
                     target=event.target or snapshot.ID,
                     schema=event.schema,
                     metadata=event.metadata,

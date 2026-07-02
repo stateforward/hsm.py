@@ -43,11 +43,10 @@ model = hsm.Define(
 )
 
 async def main() -> None:
-    ctx = hsm.Context()
     instance = Counter()
 
-    sm = await hsm.Started(ctx, instance, model, hsm.Config(ID="counter-1"))
-    await hsm.Dispatch(ctx, instance, hsm.Event(name="inc").WithData(2))
+    sm = await hsm.Started(None, instance, model, hsm.Config(ID="counter-1"))
+    await hsm.Dispatch(None, instance, hsm.Event(name="inc").WithData(2))
 
     assert instance.State() == "/Counter/idle"
     assert instance.value == 2
@@ -73,6 +72,7 @@ The canonical API is PascalCase: `Define`, `State`, `Transition`, `Start`, `Star
 | Runtime lifecycle | `New`, `Start`, `Started`, `Stop`, `Restart` |
 | Runtime event flow | `Event`, `Dispatch`, `DispatchAll`, `DispatchTo` |
 | Runtime queue | `Fifo`, `Queue`, `MultiQueue`, `Config(Queue=...)` |
+| Runtime context | `Context`, `ContextKey`, `Keys` |
 | Runtime data | `Get`, `Set`, `Call` |
 | Runtime identity | `Config`, `ID`, `Name`, `QualifiedName` |
 | Timers | `Clock`, `DefaultClock`, `Config(Clock=...)` |
@@ -406,7 +406,7 @@ hsm.Transition(
 
 Implemented PascalCase DSL and runtime functions, except the acronym class `HSM`, expose direct Python snake_case aliases. Current builder and runtime aliases include `define`, `redefine`, `state`, `submachine_state`, `entry_point`, `exit_point`, `attribute`, `operation`, `initial`, `transition`, `source`, `target`, `entry`, `exit`, `activity`, `effect`, `guard`, `on`, `on_set`, `on_call`, `after`, `at`, `every`, `when`, `defer`, `choice`, `shallow_history`, `deep_history`, `final`, `validator`, `finalizer`, `new`, `start`, `started`, `stop`, `restart`, `take_snapshot`, `id`, `qualified_name`, `name`, `new_group`, `make_group`, `dispatch`, `call`, `dispatch_all`, and `dispatch_to`. The `hsm.kind` helper module exposes `Make`, `MakeKind`, `IsKind`, `List`, and `Bases` plus Python aliases `make`, `make_kind`, `is_kind`, `list`, and `bases`.
 
-Runtime values and types exported from the top-level package include `Event`, `CompletionEvent`, `Snapshot`, `Model`, `FinalizedModel`, `ModelValidator`, `DefaultModelValidator`, `ValidatorElement`, `ModelFinalizer`, `DefaultModelFinalizer`, `FinalizerElement`, `Clock`, `DefaultClock`, `Fifo`, `Queue`, `MultiQueue`, queue result tuples such as `QueuePushResult`, `Config`, `Context`, `ContextKey`, `Keys`, `Instance`, `Group`, `Dispatchable`, lifecycle events such as `InitialEvent`, `ErrorEvent`, `AnyEvent`, and `FinalEvent`, and kind constants such as `StateKind`, `TransitionKind`, `EventKind`, `FinalStateKind`, `SubmachineStateKind`, and `ExitPointKind`. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; `Config` accepts and exposes `id`, `name`, `data`, `clock`, and `queue` alongside `ID`, `Name`, `Data`, `Clock`, and `Queue`; snapshots expose both PascalCase fields such as `QueueLen` and `Transitions` and snake_case properties such as `queue_len` and `transitions`. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
+Runtime values and types exported from the top-level package include `Event`, `CompletionEvent`, `Snapshot`, `Model`, `FinalizedModel`, `ModelValidator`, `DefaultModelValidator`, `ValidatorElement`, `ModelFinalizer`, `DefaultModelFinalizer`, `FinalizerElement`, `Clock`, `DefaultClock`, `Fifo`, `Queue`, `MultiQueue`, queue result tuples such as `QueuePushResult`, `Config`, `Context`, `ContextKey`, `Keys`, `Instance`, `Group`, `Dispatchable`, lifecycle events such as `InitialEvent`, `ErrorEvent`, `AnyEvent`, and `FinalEvent`, and kind constants such as `StateKind`, `TransitionKind`, `EventKind`, `FinalStateKind`, `SubmachineStateKind`, and `ExitPointKind`. `Context` is a runtime-checkable protocol; pass `None` to lifecycle and dispatch helpers for the default runtime context, or pass a custom object that implements the same context methods. Event helpers expose `with_data` and `with_data_and_id` alongside `WithData` and `WithDataAndID`; `Config` accepts and exposes `id`, `name`, `data`, `clock`, and `queue` alongside `ID`, `Name`, `Data`, `Clock`, and `Queue`; snapshots expose both PascalCase fields such as `QueueLen` and `Transitions` and snake_case properties such as `queue_len` and `transitions`. Prefer PascalCase in shared docs and generated code because it matches `dsl.md` and sibling implementations.
 
 ## Current Python Notes
 
