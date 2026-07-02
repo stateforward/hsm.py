@@ -74,10 +74,11 @@ async def main():
         hsm.State("done"),
     )
     instance = Instance()
-    await hsm.Started(None, instance, model)
-    await hsm.Dispatch(None, instance, hsm.Event(name="go"))
+    ctx = hsm.Context()
+    await hsm.Started(ctx, instance, model)
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
     assert instance.state() == "/Smoke/done"
-    assert hsm.TakeSnapshot(None, instance).QueueLen == 0
+    assert hsm.TakeSnapshot(ctx, instance).QueueLen == 0
     await hsm.Stop(instance)
 
 asyncio.run(main())

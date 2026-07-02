@@ -1,5 +1,4 @@
 import asyncio
-import concurrent.futures
 import importlib.util
 import pathlib
 import typing
@@ -14,25 +13,13 @@ context = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(context)
 
 
-class _Context(typing.Protocol):
-    def is_done(self) -> bool: ...
-
-    def cancel(self) -> None: ...
-
-    def Done(self) -> concurrent.futures.Future[None]: ...
-
-    def done(self) -> concurrent.futures.Future[None]: ...
-
-    def Value(self, key: typing.Hashable) -> object | None: ...
-
-
-Context = typing.cast(typing.Callable[[], _Context], context.new_context)
+Context = typing.cast(typing.Callable[[], typing.Any], context.Context)
 with_cancel = typing.cast(
-    typing.Callable[[_Context], tuple[_Context, typing.Callable[[], None]]],
+    typing.Callable[[typing.Any], tuple[typing.Any, typing.Callable[[], None]]],
     context.with_cancel,
 )
 with_value = typing.cast(
-    typing.Callable[[_Context, typing.Hashable, object], _Context],
+    typing.Callable[[typing.Any, typing.Hashable, object], typing.Any],
     context.with_value,
 )
 

@@ -17,21 +17,22 @@ def test_package_import_exports_public_api() -> None:
     assert hsm.Config is not None
 
 
-def test_context_export_is_protocol_not_default_implementation() -> None:
-    context_factory = typing.cast(typing.Callable[[], object], hsm.Context)
+def test_context_export_is_constructible_and_subclassable() -> None:
+    class CustomContext(hsm.Context):
+        pass
 
-    with pytest.raises(TypeError, match="Protocols cannot be instantiated"):
-        context_factory()
+    ctx = hsm.Context()
+    child = CustomContext(ctx)
 
-    ctx = core.context.new_context()
     assert isinstance(ctx, hsm.Context)
-    assert type(ctx).__name__ == "_Context"
+    assert isinstance(child, hsm.Context)
+    assert core.context.new_context().__class__ is hsm.Context
     assert "_Context" not in hsm.__all__
     assert not hasattr(hsm, "_Context")
 
 
-def test_custom_context_satisfies_public_protocol() -> None:
-    class CustomContext:
+def test_custom_context_subclass_can_override_context_behavior() -> None:
+    class CustomContext(hsm.Context):
         def __init__(
             self,
             parent: hsm.Context | None = None,
