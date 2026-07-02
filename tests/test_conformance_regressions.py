@@ -17,6 +17,25 @@ class RegressionInstance(hsm.Instance):
         self.log: list[str] = []
 
 
+def _run_external_conformance_case(case_name: str, timeout: float = 5) -> None:
+    root = Path(__file__).resolve().parents[1]
+    case_path = root.parent / "conformance" / "cases" / case_name
+    if not case_path.exists():
+        pytest.skip(f"external conformance case is not available: {case_name}")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root)
+    result = subprocess.run(
+        [sys.executable, "conformance/run_case.py", str(case_path)],
+        cwd=root,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 async def _guard_error_preserves_source_state_and_does_not_take_fallback() -> None:
     instance = RegressionInstance()
 
@@ -661,23 +680,7 @@ def test_explicit_dynamic_attribute_accepts_none_after_default_value():
 
 
 def test_conformance_runner_reports_unknown_group_with_group_context():
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "conformance/run_case.py",
-            "../conformance/cases/group_dispatch_unknown_group_error.json",
-        ],
-        cwd=root,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=5,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_external_conformance_case("group_dispatch_unknown_group_error.json")
 
 
 async def _snapshot_transitions_include_ancestor_and_targetless_transitions() -> None:
@@ -893,140 +896,34 @@ def test_same_source_same_callback_timers_do_not_collapse():
 
 
 def test_conformance_runner_places_timer_fired_after_true_guard_ops():
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "conformance/run_case.py",
-            "../conformance/cases/timer_guard_all_ops_reentrancy.json",
-        ],
-        cwd=root,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=5,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_external_conformance_case("timer_guard_all_ops_reentrancy.json")
 
 
 def test_timer_source_behavior_reentrant_ops_do_not_deadlock():
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "conformance/run_case.py",
-            "../conformance/cases/timer_behavior_source_all_ops_reentrancy.json",
-        ],
-        cwd=root,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=5,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_external_conformance_case("timer_behavior_source_all_ops_reentrancy.json")
 
 
 def test_conformance_runner_trace_yield_sleep_waits_for_logical_ticks():
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "conformance/run_case.py",
-            "../conformance/cases/config_clock_timer_every_attribute_reschedule_changed_interval.json",
-        ],
-        cwd=root,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=5,
+    _run_external_conformance_case(
+        "config_clock_timer_every_attribute_reschedule_changed_interval.json"
     )
-
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_conformance_runner_does_not_trace_nested_behavior_calls_as_script_calls():
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "conformance/run_case.py",
-            "../conformance/cases/operation_call_from_operation_body_reentrancy.json",
-        ],
-        cwd=root,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=5,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_external_conformance_case("operation_call_from_operation_body_reentrancy.json")
 
 
 def test_conformance_runner_traces_state_entry_behavior_calls():
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "conformance/run_case.py",
-            "../conformance/cases/submodel_operation_body_executes_in_child_context.json",
-        ],
-        cwd=root,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=5,
+    _run_external_conformance_case(
+        "submodel_operation_body_executes_in_child_context.json"
     )
-
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_conformance_runner_traces_defer_after_guard_fallthrough():
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "conformance/run_case.py",
-            "../conformance/cases/nested_child_false_guard_falls_through_to_parent_defer.json",
-        ],
-        cwd=root,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=5,
+    _run_external_conformance_case(
+        "nested_child_false_guard_falls_through_to_parent_defer.json"
     )
-
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_conformance_runner_pretraces_direct_defer_before_queue_hooks():
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "conformance/run_case.py",
-            "../conformance/cases/config_queue_deferred_replay_fifo.json",
-        ],
-        cwd=root,
-        env=env,
-        text=True,
-        capture_output=True,
-        timeout=5,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
+    _run_external_conformance_case("config_queue_deferred_replay_fifo.json")
