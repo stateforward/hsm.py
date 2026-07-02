@@ -76,9 +76,8 @@ jobs:
                   hsm.State("done"),
               )
               instance = Instance()
-              ctx = hsm.Context()
-              await hsm.Start(ctx, instance, model)
-              await hsm.Dispatch(ctx, instance, hsm.Event("go"))
+              await hsm.Started(None, instance, model)
+              await hsm.Dispatch(None, instance, hsm.Event(name="go"))
               assert instance.state() == "/Smoke/done"
               assert hsm.ValidationError is not None
               await hsm.Stop(instance)
