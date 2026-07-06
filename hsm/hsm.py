@@ -1805,9 +1805,9 @@ class DefaultModelFinalizer(ModelFinalizer):
     ) -> None:
         transitions = [
             element
-            for element in model.members.values()
+            for transition_name in vertex.transitions
+            for element in [model.members.get(transition_name)]
             if isinstance(element, TransitionElement)
-            and element.owner() == vertex.qualified_name
         ]
         transitions.sort(key=lambda transition: -transition.source.count("/"))
         for transition in transitions:
@@ -1816,11 +1816,36 @@ class DefaultModelFinalizer(ModelFinalizer):
             if current not in model.transition_paths.get(transition.qualified_name, {}):
                 continue
             for event_name in transition.events:
+                if (
+                    isinstance(vertex, StateElement)
+                    and event_name in vertex.deferred
+                    and transition.owner() != vertex.qualified_name
+                    and not self._transition_handles_at_or_below(
+                        transition, vertex.qualified_name, model.qualified_name
+                    )
+                ):
+                    continue
                 if event_name in shadowed_events:
                     continue
                 model.transition_map[current].setdefault(event_name, []).append(
                     transition
                 )
+
+    def _transition_declared_at_or_below(
+        self, transition: TransitionElement, owner: str
+    ) -> bool:
+        transition_owner = transition.owner()
+        return transition_owner == owner or IsAncestor(owner, transition_owner)
+
+    def _transition_handles_at_or_below(
+        self, transition: TransitionElement, owner: str, model_root: str
+    ) -> bool:
+        return (
+            transition.source == owner
+            and posixpath.dirname(owner) == model_root
+            or IsAncestor(owner, transition.source)
+            or self._transition_declared_at_or_below(transition, owner)
+        )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -4091,7 +4116,7 @@ class HSM(BehaviorElement[TInstance]):
                 metadata=event.metadata,
             )
         if error := self._queue.push(ctx, event):
-            return _error(error)
+            _ = self._queue.push(ctx, ErrorEvent.WithData(error))
         if self._processing.try_lock():
             task = asyncio.Task(
                 self._process(process_ctx, event.id),

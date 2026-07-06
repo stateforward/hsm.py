@@ -2671,6 +2671,7 @@ class Runner:
                     runner.trace.append(
                         {"type": "trace", "value": f"queue:push-error:{event.name}"}
                     )
+                    runner.trace_expected_error_once()
                     return (RuntimeError("push error"),)
 
                 def pop(self) -> hsm.QueuePopResult:

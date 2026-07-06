@@ -376,9 +376,13 @@ async def test_not_started_instance_and_top_level_error_contracts():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_queue_push_failure_returns_failed_awaitable():
+async def test_dispatch_queue_push_failure_dispatches_error_event():
     push_error = RuntimeError("push failed")
     pushed: list[str] = []
+    seen_errors: list[BaseException] = []
+
+    def capture_error(ctx: core.Context, inst: CoverageInstance, event: core.Event):
+        seen_errors.append(event.data)
 
     class RejectingFifo:
         def push(self, event: core.Event) -> core.QueuePushResult:
@@ -397,7 +401,15 @@ async def test_dispatch_queue_push_failure_returns_failed_awaitable():
     model = core.Define(
         "DispatchPushFailure",
         core.Initial(core.Target("idle")),
-        core.State("idle"),
+        core.State(
+            "idle",
+            core.Transition(
+                core.On("hsm/error"),
+                core.Target("../failed"),
+                core.Effect(capture_error),
+            ),
+        ),
+        core.State("failed"),
     )
     instance = await core.Started(
         core.context.new_context(),
@@ -408,9 +420,9 @@ async def test_dispatch_queue_push_failure_returns_failed_awaitable():
 
     completion = instance.dispatch(instance.context(), core.Event(name="go"))
     assert pushed == ["go"]
-    with pytest.raises(RuntimeError, match="push failed") as caught:
-        await completion
-    assert caught.value is push_error
+    await completion
+    assert instance.state() == "/DispatchPushFailure/failed"
+    assert seen_errors == [push_error]
 
     await core.Stop(instance)
 
