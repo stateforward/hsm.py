@@ -80,9 +80,12 @@ async def test_state_machine_lifecycle_start_and_stop():
         )
     )
 
+    hsm.new(instance, model)
+    assert instance.state() == ''
+
     # Start the state machine
     ctx = hsm.hsm.context.new_context()
-    await hsm.started(ctx, instance, model)
+    await hsm.start(ctx, instance)
 
     # Should have executed entry action
     assert 'active-entry' in instance.log
@@ -94,8 +97,7 @@ async def test_state_machine_lifecycle_start_and_stop():
     # Should have executed exit action
     assert 'active-exit' in instance.log
 
-    # State should be reset to model (root)
-    assert instance.state() == '/LifecycleMachine'
+    assert instance.state() == ''
 
 
 @pytest.mark.asyncio
@@ -265,7 +267,7 @@ async def test_event_dispatching_during_lifecycle():
 
     # Stop the state machine
     await hsm.stop(sm)
-    assert instance.state() == '/EventLifecycleMachine'  # Root state after stop
+    assert instance.state() == ''
 
 
 @pytest.mark.asyncio

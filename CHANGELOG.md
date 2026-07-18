@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 - 2026-07-18
+
+- Unified newly created and stopped machine state as the empty string (`""`).
+- Preserved inactive lifecycle guards for dispatch, operations, snapshots, restart, groups, and fanout.
+- Aligned the shared lifecycle conformance cases with the empty inactive-state contract.
+
 ## 1.1.1 - 2026-06-11
 
 - Fixed event metadata preservation when dispatch assigns event IDs and when `DispatchTo` fans out events.

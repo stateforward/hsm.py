@@ -476,7 +476,7 @@ async def _activity_cancellation_stress() -> None:
     await asyncio.wait_for(started.wait(), timeout=1)
     await instance.stop(instance.context())
     await asyncio.wait_for(cancelled.wait(), timeout=1)
-    assert instance.state() == "/ActivityCancelStress"
+    assert instance.state() == ""
 
 
 def test_timer_restart_cancellation_stress():

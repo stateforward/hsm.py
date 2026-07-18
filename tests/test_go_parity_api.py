@@ -1152,6 +1152,7 @@ async def test_group_dispatch_all_and_dispatch_to():
     assert all(snapshot.QueueLen == 0 for snapshot in group_snapshots)
 
     await group.stop(group.context())
+    assert group.state() == ["", ""]
 
 
 @pytest.mark.asyncio

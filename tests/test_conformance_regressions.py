@@ -174,7 +174,7 @@ async def _behavior_context_dispatch_all_sees_root_context_machines() -> None:
 
     assert producer.state() == "/BehaviorContextDispatchAllProducer/sent"
     assert started.state() == "/BehaviorContextDispatchAllWorker/done"
-    assert stopped.state() == "/BehaviorContextDispatchAllWorker"
+    assert stopped.state() == ""
     assert started.log == ["effect:audit"]
     assert stopped.log == []
 
@@ -522,7 +522,7 @@ async def _restart_after_stop_requires_started_machine() -> None:
     with pytest.raises(hsm.ValidationError, match="started"):
         await instance.restart(instance.context())
 
-    assert instance.state() == "/RestartAfterStopRequiresStartedRegression"
+    assert instance.state() == ""
 
 
 def test_restart_after_stop_requires_started_machine():

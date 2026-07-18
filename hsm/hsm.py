@@ -3482,7 +3482,7 @@ class HSM(BehaviorElement[TInstance]):
         existing = getattr(instance, "_Instance__hsm", None)
         processing = getattr(existing, "_processing", None)
         if isinstance(existing, HSM) and (
-            existing.state() != existing.model.qualified_name
+            existing._state != existing.model
             or (isinstance(processing, Mutex) and processing.locked())
         ):
             raise ErrorValidatingModel(
@@ -3545,6 +3545,10 @@ class HSM(BehaviorElement[TInstance]):
         setattr(self._instance, "_Instance__hsm", self)
 
     def state(self) -> str:
+        if self._state == self.model and not self._processing.locked() and (
+            self._context.value(Keys.HSM) is not self or self._context.is_done()
+        ):
+            return ""
         return self._state.qualified_name
 
     def context(self) -> context.Context:
@@ -3617,7 +3621,7 @@ class HSM(BehaviorElement[TInstance]):
         name: str,
         *args: typing.Any,
     ) -> collections.abc.Awaitable[typing.Any]:
-        if self._state == self.model and ctx is not self._context:
+        if self._state == self.model and not self._processing.locked():
             return _error(RuntimeError("operation requires a started HSM"))
         if name == "":
             return _error(RuntimeError("operation name cannot be empty"))
@@ -4158,6 +4162,10 @@ class HSM(BehaviorElement[TInstance]):
             await processing_wait
 
     def take_snapshot(self) -> Snapshot:
+        if self._state == self.model and not self._processing.locked():
+            raise ErrorValidatingModel(
+                Location.capture(), "take snapshot requires a started HSM"
+            )
         queue_len, error = self._queue.len(self._context)
         if error is not None:
             queue_len = 0
@@ -4262,7 +4270,7 @@ class Group(BehaviorElement[Instance]):
     def state(self) -> list[str]:
         if not self._instances:
             return []
-        return [instance.take_snapshot().State for instance in self._instances]
+        return [instance.state() for instance in self._instances]
 
     def context(self) -> context.Context:
         return self._context
@@ -4279,7 +4287,7 @@ class Group(BehaviorElement[Instance]):
                 machine = getattr(instance, "_Instance__hsm", None)
                 if (
                     not isinstance(machine, HSM)
-                    or machine.state() == machine.model.qualified_name
+                    or machine.state() in ("", machine.model.qualified_name)
                 ):
                     continue
                 completions.append(
@@ -4904,7 +4912,7 @@ def DispatchTo(
         machine = getattr(candidate, "_Instance__hsm", None)
         if (
             not isinstance(machine, HSM)
-            or machine.state() == machine.model.qualified_name
+            or machine.state() in ("", machine.model.qualified_name)
         ):
             continue
         snapshot = machine.take_snapshot()
