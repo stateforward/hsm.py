@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import re
 from datetime import datetime, timedelta
 
 import pytest
@@ -344,22 +345,26 @@ async def test_not_started_instance_and_top_level_error_contracts():
     with pytest.raises(RuntimeError, match="started HSM"):
         await dispatch
 
-    with pytest.raises(core.ErrorValidatingModel, match="initialized instance"):
+    with pytest.raises(RuntimeError, match="initialized instance"):
         await instance.start(ctx)
-    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+    with pytest.raises(RuntimeError) as raised:
         await instance.set("flag", True)
-    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+    assert re.fullmatch(
+        rf"{re.escape(__file__)}:\d+: operation requires a started HSM",
+        str(raised.value),
+    )
+    with pytest.raises(RuntimeError, match="started HSM"):
         await instance.call("work")
-    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+    with pytest.raises(RuntimeError, match="started HSM"):
         await instance.restart(ctx)
     assert await instance.stop(ctx) is None
-    with pytest.raises(core.ErrorValidatingModel, match="take snapshot requires"):
+    with pytest.raises(RuntimeError, match="take snapshot requires"):
         core.TakeSnapshot(ctx, instance)
 
     assert core.Get(None, None, "missing") == (None, False)
-    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+    with pytest.raises(RuntimeError, match="started HSM"):
         await core.Set(None, None, "missing", True)
-    with pytest.raises(core.ErrorValidatingModel, match="started HSM"):
+    with pytest.raises(RuntimeError, match="started HSM"):
         await core.Call(None, None, "missing")
 
     empty = core.Group("empty")

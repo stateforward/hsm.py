@@ -128,6 +128,11 @@ class Location:
         return cls(filename=frame.filename, lineno=frame.lineno or 0)
 
 
+def _runtime_error(message: str) -> RuntimeError:
+    location = Location.capture()
+    return RuntimeError(f"{location.filename}:{location.lineno}: {message}")
+
+
 @dataclasses.dataclass(kw_only=True)
 class Element:
     kind: kind.Kind = ElementKind
@@ -3388,9 +3393,7 @@ class Instance:
             return typing.cast(
                 collections.abc.Awaitable[typing.Self],
                 _error(
-                    ErrorValidatingModel(
-                        Location.capture(), "start requires an initialized instance"
-                    )
+                    _runtime_error("start requires an initialized instance")
                 ),
             )
         return typing.cast(
@@ -3409,9 +3412,7 @@ class Instance:
     def set(self, name: str, value: typing.Any) -> collections.abc.Awaitable[None]:
         if self.__hsm is None:
             return _error(
-                ErrorValidatingModel(
-                    Location.capture(), "operation requires a started HSM"
-                )
+                _runtime_error("operation requires a started HSM")
             )
         return self.__hsm.set(self.context(), name, value)
 
@@ -3423,9 +3424,7 @@ class Instance:
     ) -> collections.abc.Awaitable[typing.Any]:
         if self.__hsm is None:
             return _error(
-                ErrorValidatingModel(
-                    Location.capture(), "operation requires a started HSM"
-                )
+                _runtime_error("operation requires a started HSM")
             )
         return self.__hsm.call(self.context(), name, *args)
 
@@ -3446,9 +3445,7 @@ class Instance:
             return typing.cast(
                 collections.abc.Awaitable[typing.Self | None],
                 _error(
-                    ErrorValidatingModel(
-                        Location.capture(), "restart requires a started HSM"
-                    )
+                    _runtime_error("restart requires a started HSM")
                 ),
             )
         return self.__hsm.restart(ctx, data)
@@ -3485,9 +3482,7 @@ class HSM(BehaviorElement[TInstance]):
             existing._state != existing.model
             or (isinstance(processing, Mutex) and processing.locked())
         ):
-            raise ErrorValidatingModel(
-                Location.capture(), "instance already has a running HSM"
-            )
+            raise _runtime_error("instance already has a running HSM")
         config = config or Config()
 
         def operation(ctx: context.Context, instance: TInstance, event: Event) -> None:
@@ -3663,7 +3658,7 @@ class HSM(BehaviorElement[TInstance]):
 
     async def _start(self, ctx: context.Context, data: TData = None) -> TInstance:
         if self._state != self.model or self._processing.locked():
-            raise ErrorValidatingModel(Location.capture(), "already started HSM")
+            raise _runtime_error("already started HSM")
         maybe_instances = ctx.value(Keys.Instances)
         if isinstance(maybe_instances, collections.abc.MutableMapping):
             instances = typing.cast(
@@ -4163,9 +4158,7 @@ class HSM(BehaviorElement[TInstance]):
 
     def take_snapshot(self) -> Snapshot:
         if self._state == self.model and not self._processing.locked():
-            raise ErrorValidatingModel(
-                Location.capture(), "take snapshot requires a started HSM"
-            )
+            raise _runtime_error("take snapshot requires a started HSM")
         queue_len, error = self._queue.len(self._context)
         if error is not None:
             queue_len = 0
@@ -4202,9 +4195,7 @@ class HSM(BehaviorElement[TInstance]):
             return typing.cast(
                 collections.abc.Awaitable[TInstance | None],
                 _error(
-                    ErrorValidatingModel(
-                        Location.capture(), "restart requires a started HSM"
-                    )
+                    _runtime_error("restart requires a started HSM")
                 ),
             )
         if ctx is self._context:
@@ -4754,9 +4745,7 @@ def TakeSnapshot(
         return sm.take_snapshot()
     snapshot = sm.take_snapshot()
     if not snapshot.ID and not snapshot.QualifiedName and not snapshot.State:
-        raise ErrorValidatingModel(
-            Location.capture(), "take snapshot requires a started HSM"
-        )
+        raise _runtime_error("take snapshot requires a started HSM")
     return snapshot
 
 
@@ -4838,9 +4827,7 @@ def Set(
         maybe_hsm = ctx.value(Keys.HSM)
         if isinstance(maybe_hsm, HSM):
             return maybe_hsm.set(ctx, name, value)
-    return _error(
-        ErrorValidatingModel(Location.capture(), "operation requires a started HSM")
-    )
+    return _error(_runtime_error("operation requires a started HSM"))
 
 
 def Call(
@@ -4855,9 +4842,7 @@ def Call(
         maybe_hsm = ctx.value(Keys.HSM)
         if isinstance(maybe_hsm, HSM):
             return maybe_hsm.call(ctx, name, *args)
-    return _error(
-        ErrorValidatingModel(Location.capture(), "operation requires a started HSM")
-    )
+    return _error(_runtime_error("operation requires a started HSM"))
 
 
 def DispatchAll(

@@ -519,7 +519,7 @@ async def _restart_after_stop_requires_started_machine() -> None:
     await hsm.Started(hsm.hsm.context.new_context(), instance, model)
     await instance.stop(instance.context())
 
-    with pytest.raises(hsm.ValidationError, match="started"):
+    with pytest.raises(RuntimeError, match="started"):
         await instance.restart(instance.context())
 
     assert instance.state() == ""
@@ -538,7 +538,7 @@ async def _lifecycle_errors_are_normalized_for_started_and_stopped_machines() ->
     )
 
     await hsm.Started(hsm.hsm.context.new_context(), instance, model)
-    with pytest.raises(hsm.ValidationError, match="already"):
+    with pytest.raises(RuntimeError, match="already"):
         await hsm.Started(hsm.hsm.context.new_context(), instance, model)
 
     await instance.stop(instance.context())

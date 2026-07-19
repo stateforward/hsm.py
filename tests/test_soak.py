@@ -88,7 +88,7 @@ async def _timer_restart_soak(iterations: int) -> None:
     assert cancelled >= iterations
     await instance.stop(instance.context())
     await asyncio.sleep(0)
-    with pytest.raises(hsm.ErrorValidatingModel, match="started"):
+    with pytest.raises(RuntimeError, match="started"):
         instance.take_snapshot()
     assert all(future.done() for future in sleeps)
 
