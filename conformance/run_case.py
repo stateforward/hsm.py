@@ -42,7 +42,6 @@ SUPPORTED_FEATURES = {
     "restart",
     "stop",
     "runtime_context",
-    "subcontext",
     "timer",
     "after",
     "at",
@@ -190,7 +189,6 @@ class Runner:
         self.trace: Trace = []
         self.snapshots: dict[str, Any] = {}
         self.ctx = hsm_core.context.new_context().WithValue(hsm.Keys.Instances, {})
-        self.subcontexts: dict[str, hsm_core.context.Subcontext] = {}
         self.model: hsm.Model | None = None
         self.instances: dict[str, ConformanceInstance] = {}
         self.groups: dict[str, hsm.Group] = {}
@@ -2109,23 +2107,6 @@ class Runner:
         step: dict[str, Any],
     ) -> None:
         op = step.get("op")
-        if op == "context":
-            view_id = self._require_string(step, "id")
-            scope_path = step.get("path", "/")
-            values = step.get("values", {})
-            if not isinstance(scope_path, str) or not scope_path:
-                raise ConformanceError("context path must be a non-empty string")
-            if not isinstance(values, dict):
-                raise ConformanceError("context values must be an object")
-            view_context = hsm_core.context.new_context()
-            for path, value in values.items():
-                if not isinstance(path, str) or not path:
-                    raise ConformanceError(
-                        "context value paths must be non-empty strings"
-                    )
-                view_context = view_context.WithPathValue(path, value)
-            self.subcontexts[view_id] = view_context.Subcontext(scope_path)
-            return
         if op == "start":
             self.trace_lifecycle(step, "start")
             await self.start_instance(self.step_instance_id(step))
@@ -2436,25 +2417,6 @@ class Runner:
             raise AssertionError(
                 f"snapshot mismatch:\nactual:\n{actual}\nexpected:\n{wanted}"
             )
-        if "context" in expect:
-            context_expectation = expect["context"]
-            view = self.subcontexts.get(context_expectation["view"])
-            if view is None:
-                raise AssertionError(
-                    f"missing Subcontext {context_expectation['view']!r}"
-                )
-            if view.paths != tuple(context_expectation["paths"]):
-                raise AssertionError(
-                    f"context paths mismatch: got {view.paths!r}, "
-                    f"want {tuple(context_expectation['paths'])!r}"
-                )
-            for path, wanted in context_expectation["values"].items():
-                actual = view.Value(path)
-                if actual != wanted:
-                    raise AssertionError(
-                        f"context path {path!r} mismatch: got {actual!r}, "
-                        f"want {wanted!r}"
-                    )
 
     def value_contains(self, actual: Any, expected: Any) -> bool:
         if isinstance(expected, dict):

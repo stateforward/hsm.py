@@ -4140,12 +4140,6 @@ class HSM(BehaviorElement[TInstance]):
             self._queue.clear()
             self._cancel()
             self._state = self.model
-            registry = self._context.value(Keys.Instances)
-            if isinstance(registry, collections.abc.MutableMapping):
-                registry = typing.cast(
-                    collections.abc.MutableMapping[str, Instance], registry
-                )
-                registry.pop(self.id, None)
         ctx_done = asyncio.wrap_future(ctx.done())
         processing_wait = asyncio.ensure_future(self._processing.wait())
         done, pending = await asyncio.wait(
@@ -4780,28 +4774,6 @@ def NewGroup(*instances: str | Instance | Group | None) -> Group:
 MakeGroup = NewGroup
 
 
-def FromContext(
-    ctx: context.Context | None,
-) -> tuple[Dispatchable | None, bool]:
-    if ctx is None:
-        return None, False
-    current = ctx.value(Keys.HSM)
-    if isinstance(current, (HSM, Group)):
-        return typing.cast(Dispatchable, current), True
-    return None, False
-
-
-def InstancesFromContext(
-    ctx: context.Context | None,
-) -> tuple[collections.abc.MutableMapping[str, Instance], bool]:
-    if ctx is None:
-        return {}, False
-    value = ctx.value(Keys.Instances)
-    if isinstance(value, collections.abc.MutableMapping):
-        return typing.cast(collections.abc.MutableMapping[str, Instance], value), True
-    return {}, False
-
-
 def Dispatch(
     ctx: context.Context | None,
     hsm: Dispatchable | None,
@@ -4966,7 +4938,6 @@ def DispatchTo(
 
 Context = context.Context
 ContextKey = context.ContextKey
-Subcontext = context.Subcontext
 
 define = Define
 redefine = Redefine
@@ -5016,8 +4987,6 @@ call = Call
 dispatch_all = DispatchAll
 dispatch_to = DispatchTo
 dispatchable = Dispatchable
-from_context = FromContext
-instances_from_context = InstancesFromContext
 group = Group
 queue = Queue
 
@@ -5048,7 +5017,6 @@ __all__ = [
     "ConstraintKind",
     "Context",
     "ContextKey",
-    "Subcontext",
     "DeepHistory",
     "DeepHistoryElement",
     "DeepHistoryKind",
@@ -5092,7 +5060,6 @@ __all__ = [
     "FinalizedModel",
     "FinalStateElement",
     "FinalStateKind",
-    "FromContext",
     "Get",
     "Guard",
     "Group",
@@ -5104,7 +5071,6 @@ __all__ = [
     "InitialKind",
     "InfiniteDuration",
     "Instance",
-    "InstancesFromContext",
     "InternalKind",
     "IsAncestor",
     "Keys",
@@ -5192,12 +5158,10 @@ __all__ = [
     "exit_point",
     "final",
     "finalizer",
-    "from_context",
     "group",
     "guard",
     "id",
     "initial",
-    "instances_from_context",
     "make_group",
     "name",
     "new",

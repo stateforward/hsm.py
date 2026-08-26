@@ -1,21 +1,5 @@
 # Changelog
 
-## 1.4.1 - 2026-08-26
-
-- Corrected `Subcontext` path enumeration to expose only the direct descendants of its scope while preserving exact lookup of deeper paths.
-
-## 1.4.0 - 2026-08-25
-
-- Added flattened path-value context lookup and array-backed `Subcontext` views with hierarchical relative-path resolution.
-- Added shared conformance IR coverage for nested `Subcontext` path lookup.
-
-## 1.3.3 - 2026-08-23
-
-- Removed stopped machines from the shared `Keys.Instances` registry on stop, matching the `hsm.Stop` spec contract and `hsm.ts` stop semantics; restart re-registers the instance.
-- Removed the `HSM_SOAK` opt-in gate so deterministic soak tests run unconditionally in the default test suite and CI.
-- Unskipped the `OnCall`/`Call` submachine precedence test and aligned its assertion with the documented operation-body-before-`OnCall` dispatch order.
-- Added `FromContext`/`InstancesFromContext` runtime context accessors (with `from_context`/`instances_from_context` aliases) matching the dsl.md contracts. Deliberate, explicitly documented deviations from the hsm.ts reference: hsm.py's `FromContext` returns the `HSM` runtime object (hsm.ts returns the user-facing `Instance`) and has no `contextHSM` WeakMap or native `ctx.instances` fallback, so absent cases are `(None, False)` / `({}, False)`; `InstancesFromContext` returns the live shared registry mapping (a mutable alias whose entries may be held weakly), which dsl.md now states.
-
 ## 1.3.2 - 2026-07-18
 
 - Unified newly created and stopped machine state as the empty string (`""`).

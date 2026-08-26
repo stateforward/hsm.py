@@ -55,5 +55,5 @@ For changes that affect timers, cancellation, dispatch ordering, lifecycle, or
 resource cleanup, also run:
 
 ```bash
-uv run pytest tests/test_soak.py -q -W error
+HSM_SOAK=1 uv run pytest tests/test_soak.py -q -W error
 ```

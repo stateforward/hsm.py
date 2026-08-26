@@ -444,15 +444,14 @@ cleanup. CI runs the same tests, dependency vulnerability audit, package
 checks, wheel smoke test, typed-marker check, Pyright type check, and coverage
 threshold on pushes and pull requests.
 
-Deterministic soak tests run as part of the default suite:
+Longer deterministic soak tests are available when needed:
 
 ```bash
-uv run pytest tests/test_soak.py
+HSM_SOAK=1 uv run pytest tests/test_soak.py
 ```
 
-The CI workflow runs the same suite — soak tests included — on pushes to
-main, on pull requests, and on its nightly schedule, and supports manual
-`workflow_dispatch` runs without extra inputs.
+The CI workflow also runs soak tests on its nightly schedule, and supports a
+manual `workflow_dispatch` run with the `soak` input enabled.
 
 Use [RELEASE.md](RELEASE.md) for the full release checklist, including wheel
 smoke tests, PyPI publication, clean PyPI install verification, and CI
