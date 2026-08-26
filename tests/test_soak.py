@@ -1,16 +1,9 @@
 import asyncio
-import os
 from datetime import timedelta
 
 import pytest
 
 import hsm
-
-
-pytestmark = pytest.mark.skipif(
-    os.environ.get("HSM_SOAK") != "1",
-    reason="set HSM_SOAK=1 to run long deterministic soak tests",
-)
 
 
 class SoakInstance(hsm.Instance):

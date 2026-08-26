@@ -428,7 +428,6 @@ def test_submachine_aliases_are_exported():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="OnCall/Call API is not part of the current refactor")
 async def test_submachine_child_on_call_precedes_containing_transition():
     async def approve(ctx, inst: SubmachineInstance) -> str:
         inst.log.append("operation:approve")
@@ -470,7 +469,7 @@ async def test_submachine_child_on_call_precedes_containing_transition():
 
     assert result == "approved"
     assert instance.state() == "/OnCallParentPrecedence/drive/approved"
-    assert instance.log == ["effect:child", "entry:approved", "operation:approve"]
+    assert instance.log == ["operation:approve", "effect:child", "entry:approved"]
 
 
 @pytest.mark.asyncio

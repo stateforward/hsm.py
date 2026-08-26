@@ -75,3 +75,30 @@ def test_child_context_reads_and_shadows_parent_values():
     assert child.Value(child_key) == "child"
     assert shadowed.Value(parent_key) == "shadowed"
     assert shadowed.Value(object()) is None
+
+
+def test_subcontext_is_a_path_view_over_flattened_values():
+    root = Context().WithPathValue("/root/state", "ready")
+    root = root.WithPathValue("/root/child/count", 3)
+    root = root.WithPathValue("/root/child/grandchild/value", 4)
+
+    view = root.Subcontext("/root")
+    child = view.Subcontext("child")
+
+    assert view.paths == ("/root/state", "/root/child")
+    assert child.paths == ("/root/child/count", "/root/child/grandchild")
+    assert child.Value("count") == 3
+    assert view.Value("child/grandchild/value") == 4
+    assert child.Value("/root/state") == "ready"
+    assert child.Value("missing") is None
+
+
+def test_subcontext_with_value_preserves_view_paths_and_snapshot_semantics():
+    root = Context().WithPathValue("/root/child/value", "old")
+    view = root.Subcontext("/root").Subcontext("child")
+    updated = view.WithValue("value", "new")
+
+    assert view.Value("value") == "old"
+    assert updated.Value("value") == "new"
+    assert view.paths == ("/root/child/value",)
+    assert updated.paths == view.paths

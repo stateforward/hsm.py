@@ -1226,3 +1226,41 @@ async def test_group_can_be_used_as_behavior():
     assert member.log == [hsm.InitialEvent.name, "effect", "effect", "leave"]
 
     await hsm.Stop(hsm.MakeGroup(parent, member))
+
+
+@pytest.mark.asyncio
+async def test_from_context_and_instances_from_context_accessors():
+    model = hsm.Define(
+        "ContextAccessorMachine",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle"),
+    )
+    ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
+
+    # Absent on a missing context and a fresh root context
+    assert hsm.FromContext(None) == (None, False)
+    assert hsm.InstancesFromContext(None) == ({}, False)
+    assert hsm.FromContext(ctx) == (None, False)
+    assert hsm.InstancesFromContext(ctx) == ({}, True)
+
+    instance = ParityInstance()
+    await hsm.Started(ctx, instance, model, hsm.Config(id="acc-1"))
+
+    # The machine context reports the current machine
+    current, present = hsm.FromContext(instance.context())
+    assert present is True
+    assert isinstance(current, hsm.HSM)
+    assert current.id == "acc-1"
+
+    # The root context sees the shared started-machine registry
+    registry, registry_present = hsm.InstancesFromContext(ctx)
+    assert registry_present is True
+    assert registry == {"acc-1": instance}
+
+    # Snake-case aliases
+    assert hsm.from_context is hsm.FromContext
+    assert hsm.instances_from_context is hsm.InstancesFromContext
+
+    # Stop removes the machine from the registry again
+    await instance.stop(instance.context())
+    assert hsm.InstancesFromContext(ctx) == ({}, True)

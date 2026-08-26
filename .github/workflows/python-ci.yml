@@ -2,11 +2,6 @@ name: Python CI
 
 on:
   workflow_dispatch:
-    inputs:
-      soak:
-        description: "Run long soak tests"
-        required: false
-        default: "false"
   schedule:
     - cron: "17 8 * * *"
   pull_request:
@@ -123,8 +118,3 @@ jobs:
           missing = required - names
           assert not missing, sorted(missing)
           PY
-
-      - name: Run soak tests
-        env:
-          HSM_SOAK: "1"
-        run: uv run pytest tests/test_soak.py -q -W error
