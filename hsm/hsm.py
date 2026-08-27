@@ -4140,6 +4140,12 @@ class HSM(BehaviorElement[TInstance]):
             self._queue.clear()
             self._cancel()
             self._state = self.model
+            registry = self._context.value(Keys.Instances)
+            if isinstance(registry, collections.abc.MutableMapping):
+                registry = typing.cast(
+                    collections.abc.MutableMapping[str, Instance], registry
+                )
+                registry.pop(self.id, None)
         ctx_done = asyncio.wrap_future(ctx.done())
         processing_wait = asyncio.ensure_future(self._processing.wait())
         done, pending = await asyncio.wait(

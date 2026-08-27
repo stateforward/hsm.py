@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.4 - 2026-08-26
+
+- Remove stopped HSM instances from the shared instance registry.
+
 ## 1.3.2 - 2026-07-18
 
 - Unified newly created and stopped machine state as the empty string (`""`).
