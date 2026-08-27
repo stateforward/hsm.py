@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import typing
 from collections import deque
 from datetime import timedelta
 
@@ -264,6 +265,47 @@ async def _activity_dispatch_during_stop_does_not_deadlock() -> None:
 
 def test_activity_dispatch_during_stop_does_not_deadlock():
     asyncio.run(_activity_dispatch_during_stop_does_not_deadlock())
+
+
+async def _dispatch_during_activity_cancellation_is_not_dropped() -> None:
+    stop_window_open = asyncio.Event()
+    allow_activity_exit = asyncio.Event()
+    dispatch_completion: typing.Any = None
+
+    async def dispatch_on_cancel(
+        activity_ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
+        nonlocal dispatch_completion
+        del activity_ctx, event
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            dispatch_completion = inst.dispatch(ctx, hsm.Event(name="cleanup"))
+            stop_window_open.set()
+            await allow_activity_exit.wait()
+            raise
+
+    model = hsm.Define(
+        "DispatchDuringActivityCancellationRegression",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Activity(dispatch_on_cancel)),
+    )
+    ctx = hsm.hsm.context.new_context()
+    instance = RegressionInstance()
+    sm = await hsm.Started(ctx, instance, model)
+
+    stop_task = sm.stop(ctx)
+    await asyncio.wait_for(stop_window_open.wait(), timeout=1)
+    assert dispatch_completion is not None
+    assert not dispatch_completion.done()
+
+    allow_activity_exit.set()
+    await asyncio.wait_for(stop_task, timeout=1)
+    assert dispatch_completion.done()
+
+
+def test_dispatch_during_activity_cancellation_is_not_dropped():
+    asyncio.run(_dispatch_during_activity_cancellation_is_not_dropped())
 
 
 async def _entry_snapshot_observes_pre_entry_state() -> None:

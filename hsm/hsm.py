@@ -4100,7 +4100,7 @@ class HSM(BehaviorElement[TInstance]):
         ctx: context.Context,
         event: Event[TData],
     ) -> collections.abc.Awaitable[None]:
-        if ctx.is_done() or self._context.is_done():
+        if ctx.is_done():
             return _done()
         if self._state == self.model and not self._processing.locked():
             return _error(RuntimeError("dispatch requires a started HSM"))

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.6 - 2026-08-27
+
+- Preserve dispatch delivery during the machine stop window while avoiding activity cancellation deadlocks.
+
 ## 1.3.5 - 2026-08-27
 
 - Prevent activity dispatch during machine shutdown from deadlocking stop.
