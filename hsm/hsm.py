@@ -4100,8 +4100,6 @@ class HSM(BehaviorElement[TInstance]):
         ctx: context.Context,
         event: Event[TData],
     ) -> collections.abc.Awaitable[None]:
-        if ctx.is_done():
-            return _done()
         if self._state == self.model and not self._processing.locked():
             return _error(RuntimeError("dispatch requires a started HSM"))
         process_ctx = self._context
@@ -4118,6 +4116,8 @@ class HSM(BehaviorElement[TInstance]):
             )
         if error := self._queue.push(ctx, event):
             _ = self._queue.push(ctx, ErrorEvent.WithData(error))
+        if self._context.is_done() and self._processing.locked():
+            return _done()
         if self._processing.try_lock():
             task = asyncio.Task(
                 self._process(process_ctx, event.id),

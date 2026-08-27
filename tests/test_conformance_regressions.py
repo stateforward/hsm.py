@@ -267,7 +267,7 @@ def test_activity_dispatch_during_stop_does_not_deadlock():
     asyncio.run(_activity_dispatch_during_stop_does_not_deadlock())
 
 
-async def _dispatch_during_activity_cancellation_is_not_dropped() -> None:
+async def _dispatch_during_activity_cancellation_is_admitted() -> None:
     stop_window_open = asyncio.Event()
     allow_activity_exit = asyncio.Event()
     dispatch_completion: typing.Any = None
@@ -297,15 +297,39 @@ async def _dispatch_during_activity_cancellation_is_not_dropped() -> None:
     stop_task = sm.stop(ctx)
     await asyncio.wait_for(stop_window_open.wait(), timeout=1)
     assert dispatch_completion is not None
-    assert not dispatch_completion.done()
+    assert dispatch_completion.done()
 
     allow_activity_exit.set()
     await asyncio.wait_for(stop_task, timeout=1)
-    assert dispatch_completion.done()
 
 
-def test_dispatch_during_activity_cancellation_is_not_dropped():
-    asyncio.run(_dispatch_during_activity_cancellation_is_not_dropped())
+def test_dispatch_during_activity_cancellation_is_admitted():
+    asyncio.run(_dispatch_during_activity_cancellation_is_admitted())
+
+
+async def _dispatch_from_done_caller_context_is_delivered() -> None:
+    instance = RegressionInstance()
+    model = hsm.Define(
+        "DispatchFromDoneCallerContextRegression",
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State(
+            "idle",
+            hsm.Transition(hsm.On("go"), hsm.Target("../done")),
+        ),
+        hsm.State("done"),
+    )
+    machine_ctx = hsm.hsm.context.new_context()
+    await hsm.Started(machine_ctx, instance, model)
+
+    caller_ctx = hsm.hsm.context.new_context()
+    caller_ctx.cancel()
+    await instance.dispatch(caller_ctx, hsm.Event(name="go"))
+
+    assert instance.state() == "/DispatchFromDoneCallerContextRegression/done"
+
+
+def test_dispatch_from_done_caller_context_is_delivered():
+    asyncio.run(_dispatch_from_done_caller_context_is_delivered())
 
 
 async def _entry_snapshot_observes_pre_entry_state() -> None:

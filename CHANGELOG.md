@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.7 - 2026-08-27
+
+- Deliver events from completed caller contexts and avoid deadlocks when events
+  are submitted during machine stop teardown.
+
 ## 1.3.6 - 2026-08-27
 
 - Preserve dispatch delivery during the machine stop window while avoiding activity cancellation deadlocks.
