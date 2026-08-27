@@ -224,6 +224,48 @@ def test_activity_explicit_dispatch_is_not_deferred_as_generated_change_event():
     asyncio.run(_activity_explicit_dispatch_is_not_deferred_as_generated_change_event())
 
 
+async def _activity_dispatch_during_stop_does_not_deadlock() -> None:
+    cleanup_dispatch_started = asyncio.Event()
+
+    async def cleanup_dispatch_activity(
+        ctx: hsm.Context, inst: RegressionInstance, event: hsm.Event
+    ) -> None:
+        del ctx, event
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleanup_dispatch_started.set()
+            await inst.dispatch(inst.context(), hsm.Event(name="cleanup"))
+            raise
+
+    model = hsm.Define(
+        "ActivityDispatchDuringStopRegression",
+        hsm.Initial(hsm.Target("active")),
+        hsm.State("active", hsm.Activity(cleanup_dispatch_activity)),
+    )
+    ctx = hsm.hsm.context.new_context()
+    instance = RegressionInstance()
+    sm = await hsm.Started(ctx, instance, model)
+
+    stop_task = sm.stop(ctx)
+    await asyncio.wait_for(cleanup_dispatch_started.wait(), timeout=1)
+    try:
+        await asyncio.wait_for(asyncio.shield(stop_task), timeout=1)
+    except asyncio.TimeoutError:
+        stop_task.cancel()
+        try:
+            await stop_task
+        except asyncio.CancelledError:
+            pass
+        pytest.fail("stopping deadlocked on activity dispatch")
+
+    assert instance.state() == ""
+
+
+def test_activity_dispatch_during_stop_does_not_deadlock():
+    asyncio.run(_activity_dispatch_during_stop_does_not_deadlock())
+
+
 async def _entry_snapshot_observes_pre_entry_state() -> None:
     instance = RegressionInstance()
 

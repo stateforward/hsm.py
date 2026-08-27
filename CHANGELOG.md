@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.5 - 2026-08-27
+
+- Prevent activity dispatch during machine shutdown from deadlocking stop.
+
 ## 1.3.4 - 2026-08-26
 
 - Remove stopped HSM instances from the shared instance registry.

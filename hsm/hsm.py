@@ -4100,6 +4100,8 @@ class HSM(BehaviorElement[TInstance]):
         ctx: context.Context,
         event: Event[TData],
     ) -> collections.abc.Awaitable[None]:
+        if ctx.is_done() or self._context.is_done():
+            return _done()
         if self._state == self.model and not self._processing.locked():
             return _error(RuntimeError("dispatch requires a started HSM"))
         process_ctx = self._context
@@ -4130,6 +4132,7 @@ class HSM(BehaviorElement[TInstance]):
 
     async def _stop(self, ctx: context.Context) -> None:
         async with self._processing:
+            self._cancel()
             event = Event(name="stop", source=self._state.qualified_name)
             exiting = self._state.qualified_name
             while exiting not in (self.model.qualified_name, "", "."):
@@ -4138,7 +4141,6 @@ class HSM(BehaviorElement[TInstance]):
                     _ = await self._exit(ctx, vertex, event)
                 exiting = posixpath.dirname(exiting)
             self._queue.clear()
-            self._cancel()
             self._state = self.model
             registry = self._context.value(Keys.Instances)
             if isinstance(registry, collections.abc.MutableMapping):
