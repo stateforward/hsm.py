@@ -83,6 +83,7 @@ SUPPORTED_FEATURES = {
     "behavior_attr",
     "operation",
     "on_call",
+    "dispatch_result",
 }
 
 
@@ -195,6 +196,7 @@ class Runner:
         self.logical_clock = LogicalClock(self)
         self.pending_timer_scheduled = 0
         self.last_stable_label: str | None = None
+        self.last_dispatch_queued: bool | None = None
         self.deferred_events: list[tuple[str, str, bool]] = []
         self.defer_replay_barrier = False
         self.features = set(case.get("features", []))
@@ -2139,7 +2141,7 @@ class Runner:
                 if event_name is not None:
                     self.trace.append({"type": "undefer", "event": event_name})
                     self.defer_replay_barrier = True
-            await instance.dispatch(self.ctx, event)
+            self.last_dispatch_queued = await instance.dispatch(self.ctx, event)
             await self.settle_ready_tasks()
             self.trace_new_runtime_deferred([instance])
             self.last_stable_label = None
@@ -2151,7 +2153,7 @@ class Runner:
                 {"type": "dispatch", "event": event.name, "target": "all"}
             )
             self.trace_deferred_dispatch(event.name, self.instances.values())
-            await hsm.DispatchAll(self.ctx, event)
+            self.last_dispatch_queued = await hsm.DispatchAll(self.ctx, event)
             await self.settle_ready_tasks(turns=7)
             self.trace_new_runtime_deferred(self.instances.values())
             self.last_stable_label = "all"
@@ -2179,7 +2181,7 @@ class Runner:
                     if target in self.instances
                 ),
             )
-            await hsm.DispatchTo(self.ctx, event, *targets)
+            self.last_dispatch_queued = await hsm.DispatchTo(self.ctx, event, *targets)
             await self.settle_ready_tasks(turns=7)
             self.trace_new_runtime_deferred(
                 self.instances[target] for target in targets
@@ -2198,7 +2200,9 @@ class Runner:
             if group_id not in self.groups:
                 raise ConformanceError(f"unknown group {group_id!r}")
             self.trace_deferred_dispatch(event.name, self.instances_for_group(group_id))
-            await hsm.Dispatch(self.ctx, self.groups[group_id], event)
+            self.last_dispatch_queued = await hsm.Dispatch(
+                self.ctx, self.groups[group_id], event
+            )
             await self.settle_ready_tasks(turns=7)
             self.trace_new_runtime_deferred(self.instances_for_group(group_id))
             self.last_stable_label = "group:" + group_id
@@ -2416,6 +2420,10 @@ class Runner:
             wanted = json.dumps(expect["snapshots"], indent=2, sort_keys=True)
             raise AssertionError(
                 f"snapshot mismatch:\nactual:\n{actual}\nexpected:\n{wanted}"
+            )
+        if "queued" in expect and self.last_dispatch_queued != expect["queued"]:
+            raise AssertionError(
+                f"dispatch queued mismatch: got {self.last_dispatch_queued!r}, want {expect['queued']!r}"
             )
 
     def value_contains(self, actual: Any, expected: Any) -> bool:

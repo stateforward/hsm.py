@@ -327,6 +327,8 @@ await hsm.Stop(instance)
 
 `Dispatch`, `Set`, `Call`, `Restart`, and `Stop` are awaitable in Python. Await them before asserting post-transition state.
 
+Dispatch awaitables resolve to `True` when the addressed machine accepts the event into its queue and `False` for a normal no-op with no active recipient. Queue or runtime failures remain failed awaitables.
+
 Dispatching directly to an unstarted or stopped instance returns a failed awaitable instead of throwing synchronously. Group, `DispatchAll`, and `DispatchTo` calls skip inactive recipients and complete normally when no active recipients are selected.
 
 ## Groups And Broadcast

@@ -3346,6 +3346,19 @@ def _done() -> generic.Awaitable[None]:
 
 
 @functools.cache
+def _dispatch_result(queued: bool) -> generic.Awaitable[bool]:
+    awaitable = generic.Awaitable[bool]()
+    awaitable.set_result(queued)
+    return awaitable
+
+
+def _dispatch_error(exception: BaseException) -> generic.Awaitable[bool]:
+    awaitable = generic.Awaitable[bool]()
+    awaitable.set_exception(exception)
+    return awaitable
+
+
+@functools.cache
 def _error(exception: BaseException) -> generic.Awaitable[None]:
     awaitable = generic.Awaitable[None]()
     awaitable.set_exception(exception)
@@ -3358,7 +3371,7 @@ class Dispatchable(typing.Protocol):
 
     def dispatch(
         self, ctx: context.Context, event: Event
-    ) -> collections.abc.Awaitable[None]: ...
+    ) -> collections.abc.Awaitable[bool]: ...
 
 
 class Instance:
@@ -3366,9 +3379,9 @@ class Instance:
 
     def dispatch(
         self, ctx: context.Context, event: Event
-    ) -> collections.abc.Awaitable[None]:
+    ) -> collections.abc.Awaitable[bool]:
         if self.__hsm is None:
-            return _error(RuntimeError("dispatch requires a started HSM"))
+            return _dispatch_error(RuntimeError("dispatch requires a started HSM"))
         return self.__hsm.dispatch(ctx, event)
 
     def state(self) -> str:
@@ -3596,7 +3609,7 @@ class HSM(BehaviorElement[TInstance]):
         old_value, old_exists = self._attributes.swap(qualified_name, value)
         if old_exists and old_value == value:
             return _done()
-        return self.dispatch(
+        dispatch = self.dispatch(
             ctx,
             Event(
                 name=qualified_name,
@@ -3609,6 +3622,11 @@ class HSM(BehaviorElement[TInstance]):
                 ),
             ),
         )
+
+        async def wait() -> None:
+            await dispatch
+
+        return asyncio.ensure_future(wait())
 
     def call(
         self,
@@ -4099,9 +4117,9 @@ class HSM(BehaviorElement[TInstance]):
         self,
         ctx: context.Context,
         event: Event[TData],
-    ) -> collections.abc.Awaitable[None]:
+    ) -> collections.abc.Awaitable[bool]:
         if self._state == self.model and not self._processing.locked():
-            return _error(RuntimeError("dispatch requires a started HSM"))
+            return _dispatch_error(RuntimeError("dispatch requires a started HSM"))
         process_ctx = self._context
         if not event.id:
             event = Event(
@@ -4114,13 +4132,19 @@ class HSM(BehaviorElement[TInstance]):
                 schema=event.schema,
                 metadata=event.metadata,
             )
+        queued = True
         if error := self._queue.push(ctx, event):
+            queued = False
             _ = self._queue.push(ctx, ErrorEvent.WithData(error))
         if self._context.is_done() and self._processing.locked():
-            return _done()
+            return _dispatch_result(queued)
         if self._processing.try_lock():
+            async def process() -> bool:
+                await self._process(process_ctx, event.id)
+                return queued
+
             task = asyncio.Task(
-                self._process(process_ctx, event.id),
+                process(),
                 loop=asyncio.get_running_loop(),
                 eager_start=True,
             )
@@ -4128,7 +4152,12 @@ class HSM(BehaviorElement[TInstance]):
                 lambda done: None if done.cancelled() else done.exception()
             )
             return asyncio.shield(task)
-        return self._processing.wait()
+
+        async def wait() -> bool:
+            await self._processing.wait()
+            return queued
+
+        return asyncio.ensure_future(wait())
 
     async def _stop(self, ctx: context.Context) -> None:
         async with self._processing:
@@ -4278,9 +4307,9 @@ class Group(BehaviorElement[Instance]):
         self,
         ctx: context.Context,
         event: Event[TData],
-    ) -> collections.abc.Awaitable[None]:
+    ) -> collections.abc.Awaitable[bool]:
         async def dispatch_all():
-            completions: list[collections.abc.Awaitable[None]] = []
+            completions: list[collections.abc.Awaitable[bool]] = []
             source = event.source or _dispatch_source_from_context(ctx)
             for instance in self._instances:
                 machine = getattr(instance, "_Instance__hsm", None)
@@ -4305,10 +4334,11 @@ class Group(BehaviorElement[Instance]):
                     )
                 )
             if not completions:
-                return
-            _ = await asyncio.gather(
+                return False
+            results = await asyncio.gather(
                 *(asyncio.shield(completion) for completion in completions)
             )
+            return any(results)
 
         return asyncio.ensure_future(dispatch_all())
 
@@ -4786,7 +4816,7 @@ def Dispatch(
     ctx: context.Context | None,
     hsm: Dispatchable | None,
     event: Event,
-) -> collections.abc.Awaitable[None]:
+) -> collections.abc.Awaitable[bool]:
     if hsm is not None:
         dispatch_ctx = ctx or hsm.context()
         target = _dispatch_target_for_dispatchable(hsm)
@@ -4806,7 +4836,7 @@ def Dispatch(
         maybe_hsm = ctx.value(Keys.HSM)
         if isinstance(maybe_hsm, HSM):
             return maybe_hsm.dispatch(ctx, event)
-    return _error(RuntimeError("dispatch requires a started HSM"))
+    return _dispatch_error(RuntimeError("dispatch requires a started HSM"))
 
 
 def Get(
@@ -4856,7 +4886,7 @@ def Call(
 def DispatchAll(
     ctx: context.Context | None,
     event: Event[TData],
-) -> collections.abc.Awaitable[None]:
+) -> collections.abc.Awaitable[bool]:
     return DispatchTo(ctx, event)
 
 
@@ -4885,9 +4915,9 @@ def DispatchTo(
     ctx: context.Context | None,
     event: Event[TData],
     *ids: str,
-) -> collections.abc.Awaitable[None]:
+) -> collections.abc.Awaitable[bool]:
     if ctx is None or ctx.is_done():
-        return _done()
+        return _dispatch_result(False)
     maybe_instances = ctx.value(Keys.Instances)
     if isinstance(maybe_instances, collections.abc.Mapping):
         instances = typing.cast(
@@ -4895,8 +4925,8 @@ def DispatchTo(
         )
         candidates: list[object] = list(instances.values())
     else:
-        return _done()
-    completions: list[collections.abc.Awaitable[None]] = []
+        return _dispatch_result(False)
+    completions: list[collections.abc.Awaitable[bool]] = []
     source = event.source or _dispatch_source_from_context(ctx)
     seen: set[str] = set()
     for candidate in candidates:
@@ -4930,12 +4960,13 @@ def DispatchTo(
             )
         )
     if not completions:
-        return _done()
+        return _dispatch_result(False)
 
-    async def wait_all() -> None:
-        _ = await asyncio.gather(
+    async def wait_all() -> bool:
+        results = await asyncio.gather(
             *(asyncio.shield(completion) for completion in completions)
         )
+        return any(results)
 
     return asyncio.Task(
         wait_all(),

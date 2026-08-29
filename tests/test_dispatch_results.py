@@ -92,21 +92,21 @@ def test_top_level_runtime_helpers_are_not_coroutine_functions():
 
 
 @pytest.mark.asyncio
-async def test_top_level_dispatch_resolves_none_on_success():
+async def test_top_level_dispatch_resolves_true_on_success():
     instance = ResultInstance()
     ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, _result_model())
 
     result = await hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
 
-    assert result is None
+    assert result is True
     assert instance.state() == "/ResultMachine/done"
 
     await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
-async def test_top_level_dispatch_returns_machine_completion_handle():
+async def test_top_level_dispatch_returns_dispatch_result_handle():
     instance = ResultInstance()
     ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
     await hsm.Started(ctx, instance, _result_model())
@@ -114,7 +114,7 @@ async def test_top_level_dispatch_returns_machine_completion_handle():
     completion = hsm.Dispatch(ctx, instance, hsm.Event(name="go"))
 
     assert isinstance(completion, asyncio.Future)
-    assert await completion is None
+    assert await completion is True
     assert instance.state() == "/ResultMachine/done"
 
     await instance.stop(instance.context())
@@ -163,14 +163,14 @@ async def test_cancelling_dispatch_completion_does_not_cancel_submitted_event():
 
 
 @pytest.mark.asyncio
-async def test_top_level_dispatch_resolves_none_when_submitted_event_is_deferred():
+async def test_top_level_dispatch_resolves_true_when_submitted_event_is_deferred():
     instance = ResultInstance()
     ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _deferred_model())
 
     result = await hsm.Dispatch(ctx, instance, hsm.Event(name="work"))
 
-    assert result is None
+    assert result is True
     assert instance.state() == "/DeferredResultMachine/holding"
     assert instance.take_snapshot().QueueLen == 1
 
@@ -178,35 +178,35 @@ async def test_top_level_dispatch_resolves_none_when_submitted_event_is_deferred
 
 
 @pytest.mark.asyncio
-async def test_defer_accepts_string_event_names():
+async def test_defer_accepts_string_event_names_and_reports_admission():
     instance = ResultInstance()
     ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _string_deferred_model())
 
     result = await hsm.Dispatch(ctx, instance, hsm.Event(name="work"))
 
-    assert result is None
+    assert result is True
     assert instance.state() == "/StringDeferredResultMachine/holding"
     assert instance.take_snapshot().QueueLen == 1
 
     release_result = await hsm.Dispatch(ctx, instance, hsm.Event(name="release"))
 
-    assert release_result is None
+    assert release_result is True
     assert instance.state() == "/StringDeferredResultMachine/done"
 
     await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
-async def test_deferred_replay_dispatch_resolves_none_for_releasing_event():
+async def test_deferred_replay_dispatch_resolves_true_for_releasing_event():
     instance = ResultInstance()
     ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _deferred_model())
 
-    assert await hsm.Dispatch(ctx, instance, hsm.Event(name="work")) is None
+    assert await hsm.Dispatch(ctx, instance, hsm.Event(name="work")) is True
     result = await hsm.Dispatch(ctx, instance, hsm.Event(name="release"))
 
-    assert result is None
+    assert result is True
     assert instance.state() == "/DeferredResultMachine/done"
     assert instance.take_snapshot().QueueLen == 0
 
@@ -214,21 +214,21 @@ async def test_deferred_replay_dispatch_resolves_none_for_releasing_event():
 
 
 @pytest.mark.asyncio
-async def test_instance_dispatch_awaitable_resolves_none_for_deferred_event():
+async def test_instance_dispatch_awaitable_resolves_true_for_deferred_event():
     instance = ResultInstance()
     ctx = hsm.hsm.context.new_context()
     await hsm.Started(ctx, instance, _deferred_model())
 
     result = await instance.dispatch(instance.context(), hsm.Event(name="work"))
 
-    assert result is None
+    assert result is True
     assert instance.state() == "/DeferredResultMachine/holding"
 
     await instance.stop(instance.context())
 
 
 @pytest.mark.asyncio
-async def test_group_dispatch_resolves_none_when_any_member_defers():
+async def test_group_dispatch_resolves_true_when_any_member_defers():
     deferred_instance = ResultInstance()
     processed_instance = ResultInstance()
     ctx = hsm.hsm.context.new_context()
@@ -238,7 +238,7 @@ async def test_group_dispatch_resolves_none_when_any_member_defers():
 
     result = await hsm.Dispatch(ctx, group, hsm.Event(name="work"))
 
-    assert result is None
+    assert result is True
     assert deferred_instance.state() == "/DeferredGroupMember/holding"
     assert processed_instance.state() == "/ResultMachine/idle"
 
@@ -246,7 +246,7 @@ async def test_group_dispatch_resolves_none_when_any_member_defers():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_all_resolves_none_for_all_members():
+async def test_dispatch_all_resolves_true_for_all_members():
     deferred_instance = ResultInstance()
     processed_instance = ResultInstance()
     ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
@@ -255,20 +255,20 @@ async def test_dispatch_all_resolves_none_for_all_members():
 
     result = await hsm.DispatchAll(ctx, hsm.Event(name="work"))
 
-    assert result is None
+    assert result is True
     assert deferred_instance.state() == "/DeferredBroadcastMember/holding"
     assert processed_instance.state() == "/ResultMachine/idle"
 
     release_result = await hsm.DispatchAll(ctx, hsm.Event(name="release"))
 
-    assert release_result is None
+    assert release_result is True
     assert deferred_instance.state() == "/DeferredBroadcastMember/done"
 
     await hsm.Group(deferred_instance, processed_instance).stop(ctx)
 
 
 @pytest.mark.asyncio
-async def test_dispatch_to_resolves_none_for_selected_ids():
+async def test_dispatch_to_resolves_true_for_selected_ids():
     selected = ResultInstance()
     skipped = ResultInstance()
     ctx = hsm.hsm.context.new_context().WithValue(hsm.Keys.Instances, {})
@@ -277,13 +277,13 @@ async def test_dispatch_to_resolves_none_for_selected_ids():
 
     result = await hsm.DispatchTo(ctx, hsm.Event(name="work"), "target-*")
 
-    assert result is None
+    assert result is True
     assert selected.state() == "/DeferredTargetMember/holding"
     assert skipped.state() == "/ResultMachine/idle"
 
     release_result = await hsm.DispatchTo(ctx, hsm.Event(name="release"), "target-*")
 
-    assert release_result is None
+    assert release_result is True
     assert selected.state() == "/DeferredTargetMember/done"
     assert skipped.state() == "/ResultMachine/idle"
 
@@ -291,18 +291,18 @@ async def test_dispatch_to_resolves_none_for_selected_ids():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_broadcast_helpers_resolve_none_for_no_recipients():
+async def test_dispatch_broadcast_helpers_resolve_false_for_no_recipients():
     ctx = hsm.hsm.context.new_context()
 
-    assert await hsm.DispatchAll(None, hsm.Event(name="noop")) is None
-    assert await hsm.DispatchTo(None, hsm.Event(name="noop"), "missing-*") is None
-    assert await hsm.DispatchAll(ctx, hsm.Event(name="noop")) is None
-    assert await hsm.DispatchTo(ctx, hsm.Event(name="noop"), "missing-*") is None
+    assert await hsm.DispatchAll(None, hsm.Event(name="noop")) is False
+    assert await hsm.DispatchTo(None, hsm.Event(name="noop"), "missing-*") is False
+    assert await hsm.DispatchAll(ctx, hsm.Event(name="noop")) is False
+    assert await hsm.DispatchTo(ctx, hsm.Event(name="noop"), "missing-*") is False
 
     ctx.cancel()
 
-    assert await hsm.DispatchAll(ctx, hsm.Event(name="noop")) is None
-    assert await hsm.DispatchTo(ctx, hsm.Event(name="noop"), "missing-*") is None
+    assert await hsm.DispatchAll(ctx, hsm.Event(name="noop")) is False
+    assert await hsm.DispatchTo(ctx, hsm.Event(name="noop"), "missing-*") is False
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.8 - 2026-08-28
+
+- Return dispatch admission results so callers can observe whether an active
+  recipient accepted an event into its queue.
+
 ## 1.3.7 - 2026-08-27
 
 - Deliver events from completed caller contexts and avoid deadlocks when events

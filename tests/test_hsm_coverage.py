@@ -373,7 +373,7 @@ async def test_not_started_instance_and_top_level_error_contracts():
     assert core.ID(empty) == "empty"
     assert core.QualifiedName(empty) == ""
     assert core.Name(empty) == ""
-    assert await empty.dispatch(empty.context(), core.Event(name="noop")) is None
+    assert await empty.dispatch(empty.context(), core.Event(name="noop")) is False
     await empty.stop(empty.context())
     await empty.restart(empty.context())
     with pytest.raises(TypeError, match="expected hsm.Instance"):
@@ -425,7 +425,7 @@ async def test_dispatch_queue_push_failure_dispatches_error_event():
 
     completion = instance.dispatch(instance.context(), core.Event(name="go"))
     assert pushed == ["go"]
-    await completion
+    assert await completion is False
     assert instance.state() == "/DispatchPushFailure/failed"
     assert seen_errors == [push_error]
 
