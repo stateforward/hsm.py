@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Release the processing mutex when event processing raises, so a failing
+  effect, guard, entry, or exit no longer wedges the machine: the error still
+  propagates to the dispatch caller, but the machine stays stoppable and
+  restartable.
+
 ## 1.3.8 - 2026-08-28
 
 - Return dispatch admission results so callers can observe whether an active

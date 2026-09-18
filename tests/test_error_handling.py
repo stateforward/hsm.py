@@ -209,6 +209,8 @@ async def test_error_in_entry_actions():
     assert 'caught-entry-error' not in instance.log
     assert sm.state() == '/EntryErrorMachine/start'
 
+    await asyncio.wait_for(hsm.stop(sm), timeout=1)
+
 
 @pytest.mark.asyncio
 async def test_error_in_exit_actions():
@@ -253,6 +255,11 @@ async def test_error_in_exit_actions():
     assert 'caught-exit-error' not in instance.log
     assert sm.state() == '/ExitErrorMachine/unstable'
 
+    # Stop re-runs exit behaviors, so the failing exit surfaces again —
+    # but the processing mutex must be released either way (no hang).
+    with pytest.raises(Exception, match='Exit action failed!'):
+        await asyncio.wait_for(hsm.stop(sm), timeout=1)
+
 
 @pytest.mark.asyncio
 async def test_error_in_transition_effects():
@@ -296,6 +303,47 @@ async def test_error_in_transition_effects():
     assert 'effect-will-fail' in instance.log
     assert 'caught-effect-error' not in instance.log
     assert sm.state() == '/EffectErrorMachine/start'
+
+    await asyncio.wait_for(hsm.stop(sm), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_machine_stops_and_restarts_after_effect_error():
+    """A raising effect must not wedge the processing mutex: stop and restart recover"""
+    instance = ErrorInstance()
+
+    def failing_effect(ctx, inst, event):
+        inst.log_action('effect-will-fail')
+        raise Exception('Effect failed!')
+
+    model = hsm.define('RecoverableEffectErrorMachine',
+        hsm.initial(hsm.target('start')),
+        hsm.state('start',
+            hsm.transition(
+                hsm.on('trigger'),
+                hsm.target('../next'),
+                hsm.effect(failing_effect)
+            )
+        ),
+        hsm.state('next')
+    )
+
+    ctx = hsm.context.new_context()
+    sm = await hsm.started(ctx, instance, model)
+
+    with pytest.raises(Exception, match='Effect failed!'):
+        await sm.dispatch(ctx, Event(name='trigger'))
+
+    assert sm.state() == '/RecoverableEffectErrorMachine/start'
+
+    # The machine must remain stoppable after the escaped exception.
+    await asyncio.wait_for(hsm.stop(sm), timeout=1)
+    assert sm.state() == ''
+
+    # ... and restartable afterwards.
+    sm = await hsm.started(hsm.context.new_context(), instance, model)
+    assert sm.state() == '/RecoverableEffectErrorMachine/start'
+    await asyncio.wait_for(hsm.stop(sm), timeout=1)
 
 
 @pytest.mark.asyncio

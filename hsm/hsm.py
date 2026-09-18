@@ -3511,7 +3511,10 @@ class HSM(BehaviorElement[TInstance]):
                         self._state = state
                     await self._process(ctx)
                 except BaseException:
-                    self._processing.release()
+                    # _process releases the mutex itself; only release here
+                    # when startup failed before _process ran.
+                    if self._processing.locked():
+                        self._processing.release()
                     raise
 
             task = asyncio.Task(
@@ -3984,61 +3987,65 @@ class HSM(BehaviorElement[TInstance]):
         current_event_id: str | None = None,
     ) -> None:
         deferred: list[tuple[str, Event]] = []
-        while True:
-            event, ok, error = self._queue.pop(ctx)
-            if error is not None:
-                event = ErrorEvent.WithData(error)
-                ok = True
-            if not ok:
-                break
-            current_qualified_name = self._state.qualified_name
-            defer_owner = self.model.deferred_map.get(current_qualified_name, {}).get(
-                event.name
-            )
-            if (
-                current_event_id is not None
-                and event.id != current_event_id
-                and defer_owner is not None
-            ):
-                deferred.append((defer_owner, event))
-                continue
-            transitioned, defer_owner, transition_source = await self._process_event(
-                ctx, event
-            )
-            if defer_owner is not None:
-                deferred.append((defer_owner, event))
-                continue
-            if transitioned and deferred:
-                active_state = self._state.qualified_name
-                for defer_owner, deferred_event in deferred:
-                    discard = False
-                    current = posixpath.dirname(defer_owner)
-                    while current not in ("", ".", "/"):
-                        current_state = self.model.members.get(current)
-                        if isinstance(current_state, StateElement) and kind.Is(
-                            current_state.kind, SubmachineStateKind
-                        ):
-                            discard = (
-                                active_state != current
-                                and not IsAncestor(current, active_state)
-                                and not (
-                                    transition_source is not None
-                                    and IsAncestor(current, transition_source)
+        try:
+            while True:
+                event, ok, error = self._queue.pop(ctx)
+                if error is not None:
+                    event = ErrorEvent.WithData(error)
+                    ok = True
+                if not ok:
+                    break
+                current_qualified_name = self._state.qualified_name
+                defer_owner = self.model.deferred_map.get(
+                    current_qualified_name, {}
+                ).get(event.name)
+                if (
+                    current_event_id is not None
+                    and event.id != current_event_id
+                    and defer_owner is not None
+                ):
+                    deferred.append((defer_owner, event))
+                    continue
+                transitioned, defer_owner, transition_source = (
+                    await self._process_event(ctx, event)
+                )
+                if defer_owner is not None:
+                    deferred.append((defer_owner, event))
+                    continue
+                if transitioned and deferred:
+                    active_state = self._state.qualified_name
+                    for defer_owner, deferred_event in deferred:
+                        discard = False
+                        current = posixpath.dirname(defer_owner)
+                        while current not in ("", ".", "/"):
+                            current_state = self.model.members.get(current)
+                            if isinstance(current_state, StateElement) and kind.Is(
+                                current_state.kind, SubmachineStateKind
+                            ):
+                                discard = (
+                                    active_state != current
+                                    and not IsAncestor(current, active_state)
+                                    and not (
+                                        transition_source is not None
+                                        and IsAncestor(current, transition_source)
+                                    )
                                 )
+                                break
+                            if current == self.model.qualified_name:
+                                break
+                            current = posixpath.dirname(current)
+                        if discard:
+                            continue
+                        if error := self._queue.push(ctx, deferred_event):
+                            _ = await self._process_event(
+                                ctx, ErrorEvent.WithData(error)
                             )
-                            break
-                        if current == self.model.qualified_name:
-                            break
-                        current = posixpath.dirname(current)
-                    if discard:
-                        continue
-                    if error := self._queue.push(ctx, deferred_event):
-                        _ = await self._process_event(ctx, ErrorEvent.WithData(error))
-                deferred = []
-        for _, deferred_event in deferred:
-            if error := self._queue.push(ctx, deferred_event):
-                _ = await self._process_event(ctx, ErrorEvent.WithData(error))
-        self._processing.release()
+                    deferred = []
+            for _, deferred_event in deferred:
+                if error := self._queue.push(ctx, deferred_event):
+                    _ = await self._process_event(ctx, ErrorEvent.WithData(error))
+        finally:
+            self._processing.release()
         return
 
     async def _transition(
