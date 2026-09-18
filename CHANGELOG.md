@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.9 - 2026-09-18
 
 - Release the processing mutex when event processing raises, so a failing
   effect, guard, entry, or exit no longer wedges the machine: the error still
