@@ -253,10 +253,10 @@ class ObservationElement(
         # Anonymous observations need a unique fallback name. The shared
         # member counter excludes observations (cross-runner numbering
         # parity), so count them back in here to avoid key collisions.
-        fallback_count = sum(
+        fallback_count = _model_member_count(model) + sum(
             1
             for member in model.members.values()
-            if not isinstance(member, (AttributeElement, OperationElement))
+            if isinstance(member, ObservationElement)
         )
         qualified_name = join(
             model.qualified_name,
@@ -1585,7 +1585,9 @@ class DefaultModelFinalizer(ModelFinalizer):
         # effect position 0 and wraps behaviors outermost-first, so reverse
         # application yields declaration-order execution per member.
         for observation in reversed(observations):
-            identity = (observation.operation, tuple(observation.targets))
+            # Targets are an unordered membership test (see matches), so
+            # the identity key sorts them: reordered-but-equal targets dedupe.
+            identity = (observation.operation, tuple(sorted(observation.targets)))
             if identity in model.applied_observations:
                 continue
             model.applied_observations.add(identity)
