@@ -250,9 +250,17 @@ class ObservationElement(
         element: "ObservationElement[TInstance] | None" = None,
     ) -> "ObservationElement[TInstance] | None":
         del stack, element
+        # Anonymous observations need a unique fallback name. The shared
+        # member counter excludes observations (cross-runner numbering
+        # parity), so count them back in here to avoid key collisions.
+        fallback_count = sum(
+            1
+            for member in model.members.values()
+            if not isinstance(member, (AttributeElement, OperationElement))
+        )
         qualified_name = join(
             model.qualified_name,
-            self.qualified_name or f"observation_{_model_member_count(model)}",
+            self.qualified_name or f"observation_{fallback_count}",
         )
         observation = ObservationElement(
             qualified_name=qualified_name,
@@ -261,29 +269,6 @@ class ObservationElement(
             targets=self.targets,
         )
         model.members[qualified_name] = observation
-        for member in list(model.members.values()):
-            if member is observation or IsAncestor(
-                observation.qualified_name, member.qualified_name
-            ):
-                continue
-            if isinstance(member, TransitionElement):
-                if not (
-                    observation.matches(member.qualified_name)
-                    or any(observation.matches(event) for event in member.events)
-                ):
-                    continue
-                member.effect.insert(
-                    0,
-                    observation.observe_event(
-                        model, member.qualified_name
-                    ).qualified_name,
-                )
-            if isinstance(member, BehaviorElement) and observation.matches(
-                member.qualified_name
-            ):
-                observation.wrap_behavior(
-                    model, typing.cast(BehaviorElement[TInstance], member)
-                )
         return observation
 
     def matches(self, qualified_name: str) -> bool:
@@ -583,6 +568,12 @@ class ModelValidator(abc.ABC):
 
 class ModelFinalizer(typing.Protocol):
     def finalize(self, model: "Model") -> "Model": ...
+
+
+# Custom ModelFinalizer implementations must delegate to
+# DefaultModelFinalizer (or replicate its passes, including observation
+# instrumentation): a finalizer that rebuilds only the transition maps
+# silently drops all observation coverage.
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -1019,6 +1010,9 @@ class FinalizedModel(Model):
     transition_map: dict[str, dict[str, list[TransitionElement]]] = dataclasses.field(
         default_factory=dict[str, dict[str, list[TransitionElement]]]
     )
+    applied_observations: set[tuple[typing.Any, tuple[str, ...]]] = dataclasses.field(
+        default_factory=set[tuple[typing.Any, tuple[str, ...]]]
+    )
     deferred_map: dict[str, dict[str, str]] = dataclasses.field(
         default_factory=dict[str, dict[str, str]]
     )
@@ -1065,7 +1059,9 @@ def _model_member_count(model: Model) -> int:
     return sum(
         1
         for member in model.members.values()
-        if not isinstance(member, (AttributeElement, OperationElement))
+        if not isinstance(
+            member, (AttributeElement, OperationElement, ObservationElement)
+        )
     )
 
 
@@ -1571,11 +1567,52 @@ class DefaultModelFinalizer(ModelFinalizer):
         finalized.transition_paths.clear()
         finalized.history_paths.clear()
         finalized.history_targets.clear()
+        self._finalize_observations(finalized)
         self._finalize_transitions(finalized)
         self._finalize_history_paths(finalized)
         self._finalize_transition_map(finalized)
         self._finalize_deferred_map(finalized)
         return finalized
+
+    def _finalize_observations(self, model: FinalizedModel) -> None:
+        observations: list[ObservationElement[typing.Any]] = [
+            member
+            for member in model.members.values()
+            if isinstance(member, ObservationElement)
+        ]
+        namespaces = [member.qualified_name for member in observations]
+        # Apply in reverse declaration order: each application inserts at
+        # effect position 0 and wraps behaviors outermost-first, so reverse
+        # application yields declaration-order execution per member.
+        for observation in reversed(observations):
+            identity = (observation.operation, tuple(observation.targets))
+            if identity in model.applied_observations:
+                continue
+            model.applied_observations.add(identity)
+            for member in list(model.members.values()):
+                if member is observation or any(
+                    IsAncestor(namespace, member.qualified_name)
+                    for namespace in namespaces
+                ):
+                    continue
+                if isinstance(member, TransitionElement):
+                    if not (
+                        observation.matches(member.qualified_name)
+                        or any(observation.matches(event) for event in member.events)
+                    ):
+                        continue
+                    member.effect.insert(
+                        0,
+                        observation.observe_event(
+                            model, member.qualified_name
+                        ).qualified_name,
+                    )
+                if isinstance(member, BehaviorElement) and observation.matches(
+                    member.qualified_name
+                ):
+                    observation.wrap_behavior(
+                        model, typing.cast(BehaviorElement[typing.Any], member)
+                    )
 
     def _finalize_model(self, model: Model) -> FinalizedModel:
         if isinstance(model, FinalizedModel):

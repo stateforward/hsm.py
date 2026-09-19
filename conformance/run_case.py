@@ -1620,6 +1620,8 @@ class Runner:
             def callback(
                 ctx: hsm.Context, instance: hsm.Instance, event: hsm.Event
             ) -> Any:
+                if role == "observation":
+                    self.trace_observation(behavior_id, event)
                 result: Any = None
                 for op in program:
                     result = self.execute_behavior_op_sync(
@@ -1670,6 +1672,26 @@ class Runner:
             "activity_done"
         ):
             self.trace.append({"type": "activity_done", "behavior": behavior_id})
+
+    def trace_observation(self, behavior_id: str, event: hsm.Event) -> None:
+        if not self.trace_contract_includes("observation"):
+            return
+        data = event.data if isinstance(event.data, dict) else {}
+        observed = data.get("event")
+        source = event.source or ""
+        if data.get("occurrence") == "behavior":
+            # Member naming for behaviors is runner-specific; attribute the
+            # firing to the owning transition or state instead.
+            source = posixpath.dirname(source)
+        self.trace.append(
+            {
+                "type": "observation",
+                "observer": behavior_id,
+                "event": getattr(observed, "name", ""),
+                "source": source,
+                "occurrence": data.get("occurrence", ""),
+            }
+        )
 
     def trace_defer_event(self, event_name: str) -> None:
         if self.trace and self.trace[-1] == {"type": "defer", "event": event_name}:
