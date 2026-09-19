@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.10 - 2026-09-19
+
+- Apply observations in finalize so redefined members are covered exactly
+  once: observation instrumentation runs over the final member set with
+  (operation, targets) identity dedup, observer-machinery skip, and
+  declaration-order execution. Fixes silent telemetry loss for members added
+  by redefine and double observation when re-observing.
+
 ## 1.3.9 - 2026-09-18
 
 - Release the processing mutex when event processing raises, so a failing
