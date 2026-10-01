@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.11 - 2026-10-01
+
+- Resolve a host's exit-point handler on a submachine state to the composed
+  machine's own exit point. Exit points on the machine's direct child states
+  no longer count as direct matches, so a child submachine state declared
+  before the machine's exit point can no longer capture the host's handler
+  and leave the machine's exit point unhandled.
+
 ## 1.3.10 - 2026-09-19
 
 - Apply observations in finalize so redefined members are covered exactly
