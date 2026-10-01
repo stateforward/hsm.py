@@ -132,6 +132,43 @@ async def test_submachine_unhandled_exit_point_restores_child_leaf_before_error(
 
 
 @pytest.mark.asyncio
+async def test_submachine_exit_point_ignores_child_state_exit_point_declared_first():
+    inner = hsm.Define(
+        "ExitCaptureInner",
+        hsm.ExitPoint("ok"),
+        hsm.Initial(hsm.Target("idle")),
+        hsm.State("idle", hsm.Transition(hsm.On("finish"), hsm.Target("../ok"))),
+    )
+    child = hsm.Define(
+        "ExitCaptureChild",
+        hsm.Initial(hsm.Target("community")),
+        hsm.SubmachineState(
+            "community",
+            inner,
+            hsm.Transition(hsm.ExitPoint("ok"), hsm.Target("../ok")),
+        ),
+        hsm.ExitPoint("ok"),
+    )
+    parent = hsm.Define(
+        "ExitCaptureParent",
+        hsm.Initial(hsm.Target("drive")),
+        hsm.SubmachineState(
+            "drive",
+            child,
+            hsm.Transition(hsm.ExitPoint("ok"), hsm.Target("../complete")),
+        ),
+        hsm.State("complete"),
+    )
+
+    instance = SubmachineInstance()
+    ctx = hsm.hsm.context.new_context()
+    await hsm.Started(ctx, instance, parent)
+    await hsm.Dispatch(ctx, instance, hsm.Event(name="finish"))
+
+    assert instance.state() == "/ExitCaptureParent/complete"
+
+
+@pytest.mark.asyncio
 async def test_submachine_exit_point_effect_error_short_circuits_at_boundary():
     def fail(ctx, inst: SubmachineInstance, event):
         inst.log.append("exit:effect")

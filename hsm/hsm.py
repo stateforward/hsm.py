@@ -2966,10 +2966,7 @@ class RedefinableExitPoint(RedefinableElement[ExitPointElement]):
                     continue
                 if not IsAncestor(source.qualified_name, member.qualified_name):
                     continue
-                if (
-                    member.owner() == source.qualified_name
-                    or posixpath.dirname(member.owner()) == source.qualified_name
-                ):
+                if member.owner() == source.qualified_name:
                     direct.append(member)
                 else:
                     nested.append(member)
